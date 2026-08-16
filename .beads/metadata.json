@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "activity_tracker_portal",
+  "project_id": "a4627569-d15f-4caf-b15c-248e4e8f744a"
+}
