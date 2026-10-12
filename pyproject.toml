@@ -10,7 +10,10 @@ requires-python = ">=3.14"
 dependencies = []
 
 [project.scripts]
-activity-tracker-portal = "activity_tracker_portal:main"
+portal = "activity_tracker_portal.cli:main"
+
+[tool.uv]
+python-preference = "only-managed"
 
 [build-system]
 requires = ["uv_build>=0.12.2,<0.13.0"]
