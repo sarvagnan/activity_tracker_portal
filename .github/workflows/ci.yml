@@ -26,6 +26,8 @@ jobs:
         run: uv run python -m unittest discover -s tests/governance -v
       - name: Run ingest-protocol@1 acceptance
         run: tests/acceptance/run_ingest_protocol_1.sh
+      - name: Run operational-store@1 acceptance
+        run: tests/acceptance/run_operational_store_1.sh
 
   vouch:
     needs: [test]
