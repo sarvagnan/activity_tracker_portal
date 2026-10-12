@@ -1,0 +1,69 @@
+{
+  "contract_schema": 1,
+  "scope": "project-source-record",
+  "version": "1",
+  "kind": "shared",
+  "purpose": "Define the project-owned deterministic projection from each typed Health Connect record of the pinned stable SDK to its closed, versioned Source Projection: exact canonical UTF-8 JSON bytes carrying every public record field and metadata value, or a named projection refusal.",
+  "inputs": [
+    {
+      "name": "typed_record",
+      "mode": "pure",
+      "description": "One record instance of a concrete health-and-fitness record class exposed by androidx.health.connect:connect-client 1.1.0, as returned by a Health Connect read or constructed by a test."
+    },
+    {
+      "name": "projection_context",
+      "mode": "pure",
+      "description": "The projection-implementation version of the Sender build and the Health Connect provider version observed for the read, supplied by the caller so projection itself reads no clock, locale, package manager, or other ambient state."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "source_projection",
+      "description": "Exact RFC 8785 canonical UTF-8 JSON bytes conforming to the closed schema for the record's type at its declared projection-schema version."
+    },
+    {
+      "name": "projection_refusal",
+      "description": "One named refusal with the record type and the JSON path of the offending field, carrying no field values, so the page reader can block the type with the health-data-free reason projection-refusal."
+    }
+  ],
+  "named_failures": [
+    { "name": "unsupported-record-type", "outcome": "projection-refusal" },
+    { "name": "non-finite-value", "outcome": "projection-refusal" },
+    { "name": "undeclared-constant", "outcome": "projection-refusal" },
+    { "name": "undeclared-variant", "outcome": "projection-refusal" },
+    { "name": "unrepresentable-text", "outcome": "projection-refusal" },
+    { "name": "unrepresentable-instant", "outcome": "projection-refusal" },
+    { "name": "unrepresentable-offset", "outcome": "projection-refusal" }
+  ],
+  "observable_effects": [],
+  "authority": {
+    "owns": [
+      "the closed Source Projection schema and version for every pinned health-and-fitness record type",
+      "the canonical byte encoding of numbers, text, instants, offsets, durations, units, constants, and variants",
+      "inclusion of every public record field and metadata value, including identifiers, origin, recording method, Device, and SDK and provider versions",
+      "the projection refusal vocabulary and its health-data-free detail"
+    ],
+    "does_not_own": [
+      "Health Connect reads, permissions, paging, changes tokens, or retractions",
+      "page-level refusal handling, refusal identity, retry, or scheduling",
+      "outbox staging, encryption, fragmentation, or delivery",
+      "Medical Records/PHR data, which ADR 0015 excludes",
+      "interpretation, reconciliation, or units presented by the Portal"
+    ]
+  },
+  "dependencies": [],
+  "acceptance_oracle": {
+    "specification": "packs/project-source-record-1.spec.md",
+    "executable_tests": {
+      "kotlin": "sender/app/modules/health-connect/android/src/test/java/org/activitytracker/healthconnect/projection/ProjectSourceRecord1Test.kt",
+      "python": "tests/acceptance/test_project_source_record_1.py"
+    },
+    "runner": "tests/acceptance/run_project_source_record_1.sh",
+    "schemas": "projection/v1/schemas/",
+    "vectors": "projection/v1/vectors/",
+    "languages": [
+      "kotlin",
+      "python"
+    ]
+  }
+}
