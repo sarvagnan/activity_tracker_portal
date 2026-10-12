@@ -32,8 +32,19 @@ sealed interface ProjectionResult {
 
 /** Every record type's current Source Projection schema version. */
 val PROJECTION_SCHEMA_VERSIONS: Map<String, Int>
-    get() = throw NotImplementedError("project-source-record@1 is not implemented")
+    get() = SourceRecordEncoder.schemaVersions
 
 /** Project one typed Health Connect record to its Source Projection. */
-fun projectSourceRecord(record: Record, context: ProjectionContext): ProjectionResult =
-    throw NotImplementedError("project-source-record@1 is not implemented")
+fun projectSourceRecord(record: Record, context: ProjectionContext): ProjectionResult {
+    val recordType = SourceRecordEncoder.recordType(record)
+        ?: return ProjectionResult.Refused("unsupported-record-type", null, "")
+    return try {
+        ProjectionResult.Projected(
+            recordType,
+            1,
+            SourceRecordEncoder.encode(record, recordType, context).toByteArray(Charsets.UTF_8),
+        )
+    } catch (refusal: ProjectionFailure) {
+        ProjectionResult.Refused(refusal.failure, recordType, refusal.path)
+    }
+}
