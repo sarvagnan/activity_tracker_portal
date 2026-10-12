@@ -17,8 +17,14 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           prune-cache: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
       - name: Validate governed project contracts
         run: uv run python -m unittest discover -s tests/governance -v
+      - name: Run ingest-protocol@1 acceptance
+        run: tests/acceptance/run_ingest_protocol_1.sh
 
   vouch:
     needs: [test]
