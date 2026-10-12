@@ -273,8 +273,12 @@ def _execute(
         return connection.execute(sql, parameters)
     except sqlite3.Error as error:
         if getattr(error, "sqlite_errorcode", 0) & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
-            raise StoreRetryable("store-busy") from None
-        raise
+            failure: Exception = StoreRetryable("store-busy")
+        else:
+            # SQLite messages, including trigger failures, can contain health data.
+            failure = type(error)("store-database-error")
+    # Raising outside the handler also keeps the original out of __context__.
+    raise failure from None
 
 
 @contextmanager
@@ -380,6 +384,17 @@ def _latest_acknowledged_generation(connection: sqlite3.Connection) -> int | Non
 
 def _free_disk_bytes(path: str | PathLike[str]) -> int:
     return shutil.disk_usage(os.path.dirname(os.path.abspath(path))).free
+
+
+def _sample_free_bytes(probe: Callable[[str | PathLike[str]], int], path: str | PathLike[str]) -> int:
+    try:
+        return probe(path)
+    except Exception as error:
+        if isinstance(error, OSError):
+            failure: Exception = OSError("store-capacity-unavailable")
+        else:
+            failure = RuntimeError("store-capacity-unavailable")
+    raise failure from None
 
 
 class StoreView:
@@ -559,7 +574,7 @@ class StoreView:
         )
 
     def storage_reserve(self) -> ReserveStatus:
-        free = self._free_bytes(self._path)
+        free = _sample_free_bytes(self._free_bytes, self._path)
         return ReserveStatus(free, self._reserve_bytes, free >= self._reserve_bytes)
 
     def settings(self) -> StoreSettings:
@@ -742,7 +757,7 @@ class OperationalStore:
                 ).fetchone() is not None:
                     raise StoreRefusal("cycle-already-completed")
                 sampled_reserve = True
-                if self._free_bytes(self._path) < self._reserve_bytes:
+                if _sample_free_bytes(self._free_bytes, self._path) < self._reserve_bytes:
                     raise StoreRetryable("storage-reserve-exhausted")
                 _execute(
                     self._connection,
@@ -773,7 +788,11 @@ class OperationalStore:
         finally:
             # Even a refused attempt or an identical retry samples the volatile input.
             if not sampled_reserve:
-                self._free_bytes(self._path)
+                try:
+                    self._free_bytes(self._path)
+                except Exception:
+                    # Sampling cannot replace an already determined refusal or receipt.
+                    pass
 
     def _write_batch(self, header: MessageHeader, batch: IngestBatchRecord) -> None:
         _execute(
