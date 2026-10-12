@@ -4,7 +4,7 @@ This document defines how each Governed Scope moves from the scope map to a publ
 
 ## Unit lifecycle
 
-Every unit follows the same eight steps. The Operator owns the three gates; Claude drafts and implements. The worked example is `ingest-protocol@1`.
+Every unit follows the same eight steps. The Operator owns the three gates. Claude drafts contracts and packs, records every Vouch transition, and reviews implementation; GPT 6.1 Sol implements frozen packs and enabling tasks through T3 delegated tasks, so the model that writes the tests is not the model that passes them. Claude implemented the worked example, `ingest-protocol@1`, before the Operator made this assignment on 2026-10-12.
 
 1. **Open.** Claim the unit feature, branch `<scope>-<version>` from `main`, and record the unit and its strict-CI exception together, because CI fails on any nonterminal unit without one:
 
@@ -27,7 +27,7 @@ Every unit follows the same eight steps. The Operator owns the three gates; Clau
    python3 vouch.lock record-evidence --root .vouch --unit <scope>@<version> --kind red -- tests/acceptance/<runner>
    ```
 
-6. **Implement.** Change only unbound implementation files, record GREEN through the same runner, mark the unit done, and add the runner to the project CI `test` job in the same branch. Before committing the implementation separately, `generate`, `check --ci --project . --pending-anchor-ok`, and `formal` must pass.
+6. **Implement.** Delegate the frozen pack to GPT 6.1 Sol with the pack, its Interface, and the rule that only unbound implementation files may change. Claude reviews the result, confirms `check.pack-files-match` still passes, records GREEN through the same runner, marks the unit done, and adds the runner to the project CI `test` job in the same branch. Before committing the implementation separately, `generate`, `check --ci --project . --pending-anchor-ok`, and `formal` must pass.
 7. **Merge.** Push the branch and open a pull request. After CI passes, the Operator merges by fast-forward or merge commit, never rebase-merge, so the frozen-baseline commit keeps its hash. CI on `main` advances the evidence anchor and pushes a `vouch: advance evidence anchors` commit.
 8. **Gate C: acceptance.** The Operator accepts the unit. Pull the anchor commit, then `publish`, which also removes the strict-CI exception, `generate`, and `check --ci --project .`. Commit and push `Publish <scope>@<version>`, close the unit feature and its children, and push Beads with `bd dolt push`.
 
