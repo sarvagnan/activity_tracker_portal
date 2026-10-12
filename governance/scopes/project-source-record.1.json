@@ -8,7 +8,7 @@
     {
       "name": "typed_record",
       "mode": "pure",
-      "description": "One record instance of a concrete health-and-fitness record class exposed by androidx.health.connect:connect-client 1.1.0, as returned by a Health Connect read or constructed by a test."
+      "description": "One record instance of any of the 41 concrete health-and-fitness record classes exposed by androidx.health.connect:connect-client 1.1.0, as returned by a Health Connect read or constructed by a test."
     },
     {
       "name": "projection_context",
@@ -59,6 +59,8 @@
       "python": "tests/acceptance/test_project_source_record_1.py"
     },
     "runner": "tests/acceptance/run_project_source_record_1.sh",
+    "generator": "projection/v1/tools/build_projection.py",
+    "model": "projection/v1/model.json",
     "schemas": "projection/v1/schemas/",
     "vectors": "projection/v1/vectors/",
     "languages": [

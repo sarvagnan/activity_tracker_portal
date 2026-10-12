@@ -1,0 +1,546 @@
+{
+ "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+ "vectors": [
+  {
+   "name": "unknown-record-field",
+   "record_type": "steps",
+   "projection": {
+    "record_type": "steps",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000072",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-72",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-01-15T08:00:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30",
+     "count": 4321,
+     "cadence": 1
+    }
+   }
+  },
+  {
+   "name": "unknown-envelope-field",
+   "record_type": "steps",
+   "projection": {
+    "record_type": "steps",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000072",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-72",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-01-15T08:00:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30",
+     "count": 4321
+    },
+    "extra": "x"
+   }
+  },
+  {
+   "name": "missing-required-field",
+   "record_type": "steps",
+   "projection": {
+    "record_type": "steps",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000072",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-72",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-01-15T08:00:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30"
+    }
+   }
+  },
+  {
+   "name": "missing-metadata-id",
+   "record_type": "weight",
+   "projection": {
+    "record_type": "weight",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-78",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "time": "2026-01-15T07:30:00.250Z",
+     "zone_offset": "+05:30",
+     "weight_grams": 72500.5
+    }
+   }
+  },
+  {
+   "name": "null-optional-field",
+   "record_type": "sleep-session",
+   "projection": {
+    "record_type": "sleep-session",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000068",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-68",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-01-15T08:00:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30",
+     "title": null,
+     "notes": "synthetic notes",
+     "stages": [
+      {
+       "start_time": "2026-01-15T07:30:00Z",
+       "end_time": "2026-01-15T07:40:00Z",
+       "stage": 2
+      },
+      {
+       "start_time": "2026-01-15T07:40:00Z",
+       "end_time": "2026-01-15T08:00:00Z",
+       "stage": 4
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "undeclared-constant-value",
+   "record_type": "sleep-session",
+   "projection": {
+    "record_type": "sleep-session",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000068",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-68",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-01-15T08:00:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30",
+     "title": "Synthetic night",
+     "notes": "synthetic notes",
+     "stages": [
+      {
+       "start_time": "2026-01-15T07:30:00Z",
+       "end_time": "2026-01-15T07:40:00Z",
+       "stage": 99
+      },
+      {
+       "start_time": "2026-01-15T07:40:00Z",
+       "end_time": "2026-01-15T08:00:00Z",
+       "stage": 4
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "offset-without-colon",
+   "record_type": "steps",
+   "projection": {
+    "record_type": "steps",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000072",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-72",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-01-15T08:00:00Z",
+     "start_zone_offset": "+0530",
+     "end_zone_offset": "+05:30",
+     "count": 4321
+    }
+   }
+  },
+  {
+   "name": "instant-with-offset",
+   "record_type": "weight",
+   "projection": {
+    "record_type": "weight",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000078",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-78",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "time": "2026-01-15T13:00:00+05:30",
+     "zone_offset": "+05:30",
+     "weight_grams": 72500.5
+    }
+   }
+  },
+  {
+   "name": "instant-two-fraction-digits",
+   "record_type": "weight",
+   "projection": {
+    "record_type": "weight",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000078",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-78",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "time": "2026-01-15T07:30:00.25Z",
+     "zone_offset": "+05:30",
+     "weight_grams": 72500.5
+    }
+   }
+  },
+  {
+   "name": "client-record-version-number",
+   "record_type": "weight",
+   "projection": {
+    "record_type": "weight",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000078",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": 5,
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-78",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "time": "2026-01-15T07:30:00.250Z",
+     "zone_offset": "+05:30",
+     "weight_grams": 72500.5
+    }
+   }
+  },
+  {
+   "name": "wrong-record-type",
+   "record_type": "weight",
+   "projection": {
+    "record_type": "height",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000078",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-78",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "time": "2026-01-15T07:30:00.250Z",
+     "zone_offset": "+05:30",
+     "weight_grams": 72500.5
+    }
+   }
+  },
+  {
+   "name": "unknown-variant-kind",
+   "record_type": "exercise-session",
+   "projection": {
+    "record_type": "exercise-session",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000028",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-28",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-01-15T08:00:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30",
+     "exercise_type": 56,
+     "title": "Synthetic run é中",
+     "notes": "synthetic notes",
+     "segments": [
+      {
+       "start_time": "2026-01-15T07:30:00Z",
+       "end_time": "2026-01-15T07:45:00Z",
+       "segment_type": 46,
+       "repetitions": 0
+      },
+      {
+       "start_time": "2026-01-15T07:45:00Z",
+       "end_time": "2026-01-15T08:00:00Z",
+       "segment_type": 46,
+       "repetitions": 0
+      }
+     ],
+     "laps": [
+      {
+       "start_time": "2026-01-15T07:30:00Z",
+       "end_time": "2026-01-15T07:40:00Z",
+       "length_meters": 400.0
+      },
+      {
+       "start_time": "2026-01-15T07:40:00Z",
+       "end_time": "2026-01-15T07:50:00Z"
+      }
+     ],
+     "exercise_route_result": {
+      "kind": "partial"
+     },
+     "planned_exercise_session_id": "synthetic-plan-1"
+    }
+   }
+  },
+  {
+   "name": "variant-extra-field",
+   "record_type": "exercise-session",
+   "projection": {
+    "record_type": "exercise-session",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000084",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-84",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-01-15T08:00:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30",
+     "exercise_type": 56,
+     "title": "Synthetic run é中",
+     "notes": "synthetic notes",
+     "segments": [
+      {
+       "start_time": "2026-01-15T07:30:00Z",
+       "end_time": "2026-01-15T07:45:00Z",
+       "segment_type": 46,
+       "repetitions": 0
+      },
+      {
+       "start_time": "2026-01-15T07:45:00Z",
+       "end_time": "2026-01-15T08:00:00Z",
+       "segment_type": 46,
+       "repetitions": 0
+      }
+     ],
+     "laps": [
+      {
+       "start_time": "2026-01-15T07:30:00Z",
+       "end_time": "2026-01-15T07:40:00Z",
+       "length_meters": 400.0
+      },
+      {
+       "start_time": "2026-01-15T07:40:00Z",
+       "end_time": "2026-01-15T07:50:00Z"
+      }
+     ],
+     "exercise_route_result": {
+      "kind": "no-data",
+      "route": []
+     },
+     "planned_exercise_session_id": "synthetic-plan-1"
+    }
+   }
+  },
+  {
+   "name": "integer-as-string",
+   "record_type": "steps",
+   "projection": {
+    "record_type": "steps",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000072",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-72",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-01-15T08:00:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30",
+     "count": "4321"
+    }
+   }
+  }
+ ]
+}

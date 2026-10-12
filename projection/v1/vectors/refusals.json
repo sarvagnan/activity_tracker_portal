@@ -1,0 +1,128 @@
+{
+ "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+ "vectors": [
+  {
+   "name": "unknown-record-class",
+   "failure": "unsupported-record-type",
+   "base": "steps-minimal",
+   "change": {
+    "op": "custom-record"
+   },
+   "path": ""
+  },
+  {
+   "name": "nan-cadence-target",
+   "failure": "non-finite-value",
+   "base": "planned-exercise-session-every-variant",
+   "change": {
+    "op": "set-double",
+    "path": "/record/blocks/0/steps/0/performance_targets/1/min_cadence",
+    "value": "NaN"
+   },
+   "path": "/record/blocks/0/steps/0/performance_targets/1/min_cadence"
+  },
+  {
+   "name": "infinite-cadence-target",
+   "failure": "non-finite-value",
+   "base": "planned-exercise-session-every-variant",
+   "change": {
+    "op": "set-double",
+    "path": "/record/blocks/0/steps/0/performance_targets/1/max_cadence",
+    "value": "Infinity"
+   },
+   "path": "/record/blocks/0/steps/0/performance_targets/1/max_cadence"
+  },
+  {
+   "name": "undeclared-exercise-type",
+   "failure": "undeclared-constant",
+   "base": "exercise-session-minimal",
+   "change": {
+    "op": "set-int",
+    "path": "/record/exercise_type",
+    "value": 999
+   },
+   "path": "/record/exercise_type"
+  },
+  {
+   "name": "undeclared-sleep-stage",
+   "failure": "undeclared-constant",
+   "base": "sleep-session-maximal",
+   "change": {
+    "op": "set-int",
+    "path": "/record/stages/1/stage",
+    "value": 99
+   },
+   "path": "/record/stages/1/stage"
+  },
+  {
+   "name": "undeclared-cervical-mucus-appearance",
+   "failure": "undeclared-constant",
+   "base": "cervical-mucus-maximal",
+   "change": {
+    "op": "set-int",
+    "path": "/record/appearance",
+    "value": 99
+   },
+   "path": "/record/appearance"
+  },
+  {
+   "name": "unknown-completion-goal",
+   "failure": "undeclared-variant",
+   "base": "planned-exercise-session-maximal",
+   "change": {
+    "op": "unknown-variant",
+    "path": "/record/blocks/0/steps/1/completion_goal"
+   },
+   "path": "/record/blocks/0/steps/1/completion_goal"
+  },
+  {
+   "name": "unknown-performance-target",
+   "failure": "undeclared-variant",
+   "base": "planned-exercise-session-maximal",
+   "change": {
+    "op": "unknown-variant",
+    "path": "/record/blocks/0/steps/0/performance_targets/0"
+   },
+   "path": "/record/blocks/0/steps/0/performance_targets/0"
+  },
+  {
+   "name": "lone-surrogate-title",
+   "failure": "unrepresentable-text",
+   "base": "sleep-session-maximal",
+   "change": {
+    "op": "set-string-utf16",
+    "path": "/record/title",
+    "value": [
+     "0x0041",
+     "0xD800"
+    ]
+   },
+   "path": "/record/title"
+  },
+  {
+   "name": "year-10000",
+   "failure": "unrepresentable-instant",
+   "base": "steps-minimal",
+   "change": {
+    "op": "shift-years",
+    "paths": [
+     "/record/start_time",
+     "/record/end_time"
+    ],
+    "years": 7974
+   },
+   "path": "/record/start_time"
+  },
+  {
+   "name": "offset-with-seconds",
+   "failure": "unrepresentable-offset",
+   "base": "steps-maximal",
+   "change": {
+    "op": "offset-seconds",
+    "path": "/record/start_zone_offset",
+    "total_seconds": 3630
+   },
+   "path": "/record/start_zone_offset"
+  }
+ ]
+}

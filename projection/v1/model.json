@@ -1,0 +1,2514 @@
+{
+ "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+ "projection_schema_version": 1,
+ "units": {
+  "BloodGlucose": "millimoles_per_liter",
+  "Energy": "calories",
+  "Length": "meters",
+  "Mass": "grams",
+  "Power": "watts",
+  "Pressure": "millimeters_of_mercury",
+  "Temperature": "celsius",
+  "TemperatureDelta": "celsius",
+  "Velocity": "meters_per_second",
+  "Volume": "liters"
+ },
+ "constants": {
+  "recording-method": {
+   "class": "Metadata",
+   "values": {
+    "RECORDING_METHOD_UNKNOWN": 0,
+    "RECORDING_METHOD_ACTIVELY_RECORDED": 1,
+    "RECORDING_METHOD_AUTOMATICALLY_RECORDED": 2,
+    "RECORDING_METHOD_MANUAL_ENTRY": 3
+   }
+  },
+  "device-type": {
+   "class": "Device",
+   "values": {
+    "TYPE_UNKNOWN": 0,
+    "TYPE_WATCH": 1,
+    "TYPE_PHONE": 2,
+    "TYPE_SCALE": 3,
+    "TYPE_RING": 4,
+    "TYPE_HEAD_MOUNTED": 5,
+    "TYPE_FITNESS_BAND": 6,
+    "TYPE_CHEST_STRAP": 7,
+    "TYPE_SMART_DISPLAY": 8
+   }
+  },
+  "meal-type": {
+   "class": "MealType",
+   "values": {
+    "MEAL_TYPE_UNKNOWN": 0,
+    "MEAL_TYPE_BREAKFAST": 1,
+    "MEAL_TYPE_LUNCH": 2,
+    "MEAL_TYPE_DINNER": 3,
+    "MEAL_TYPE_SNACK": 4
+   }
+  },
+  "blood-glucose-specimen-source": {
+   "class": "BloodGlucoseRecord",
+   "values": {
+    "SPECIMEN_SOURCE_UNKNOWN": 0,
+    "SPECIMEN_SOURCE_INTERSTITIAL_FLUID": 1,
+    "SPECIMEN_SOURCE_CAPILLARY_BLOOD": 2,
+    "SPECIMEN_SOURCE_PLASMA": 3,
+    "SPECIMEN_SOURCE_SERUM": 4,
+    "SPECIMEN_SOURCE_TEARS": 5,
+    "SPECIMEN_SOURCE_WHOLE_BLOOD": 6
+   }
+  },
+  "blood-glucose-relation-to-meal": {
+   "class": "BloodGlucoseRecord",
+   "values": {
+    "RELATION_TO_MEAL_UNKNOWN": 0,
+    "RELATION_TO_MEAL_GENERAL": 1,
+    "RELATION_TO_MEAL_FASTING": 2,
+    "RELATION_TO_MEAL_BEFORE_MEAL": 3,
+    "RELATION_TO_MEAL_AFTER_MEAL": 4
+   }
+  },
+  "blood-pressure-body-position": {
+   "class": "BloodPressureRecord",
+   "values": {
+    "BODY_POSITION_UNKNOWN": 0,
+    "BODY_POSITION_STANDING_UP": 1,
+    "BODY_POSITION_SITTING_DOWN": 2,
+    "BODY_POSITION_LYING_DOWN": 3,
+    "BODY_POSITION_RECLINING": 4
+   }
+  },
+  "blood-pressure-measurement-location": {
+   "class": "BloodPressureRecord",
+   "values": {
+    "MEASUREMENT_LOCATION_UNKNOWN": 0,
+    "MEASUREMENT_LOCATION_LEFT_WRIST": 1,
+    "MEASUREMENT_LOCATION_RIGHT_WRIST": 2,
+    "MEASUREMENT_LOCATION_LEFT_UPPER_ARM": 3,
+    "MEASUREMENT_LOCATION_RIGHT_UPPER_ARM": 4
+   }
+  },
+  "body-temperature-measurement-location": {
+   "class": "BodyTemperatureMeasurementLocation",
+   "values": {
+    "MEASUREMENT_LOCATION_UNKNOWN": 0,
+    "MEASUREMENT_LOCATION_ARMPIT": 1,
+    "MEASUREMENT_LOCATION_FINGER": 2,
+    "MEASUREMENT_LOCATION_FOREHEAD": 3,
+    "MEASUREMENT_LOCATION_MOUTH": 4,
+    "MEASUREMENT_LOCATION_RECTUM": 5,
+    "MEASUREMENT_LOCATION_TEMPORAL_ARTERY": 6,
+    "MEASUREMENT_LOCATION_TOE": 7,
+    "MEASUREMENT_LOCATION_EAR": 8,
+    "MEASUREMENT_LOCATION_WRIST": 9,
+    "MEASUREMENT_LOCATION_VAGINA": 10
+   }
+  },
+  "cervical-mucus-appearance": {
+   "class": "CervicalMucusRecord",
+   "values": {
+    "APPEARANCE_UNKNOWN": 0,
+    "APPEARANCE_DRY": 1,
+    "APPEARANCE_STICKY": 2,
+    "APPEARANCE_CREAMY": 3,
+    "APPEARANCE_WATERY": 4,
+    "APPEARANCE_EGG_WHITE": 5,
+    "APPEARANCE_UNUSUAL": 6
+   }
+  },
+  "cervical-mucus-sensation": {
+   "class": "CervicalMucusRecord",
+   "values": {
+    "SENSATION_UNKNOWN": 0,
+    "SENSATION_LIGHT": 1,
+    "SENSATION_MEDIUM": 2,
+    "SENSATION_HEAVY": 3
+   }
+  },
+  "exercise-type": {
+   "class": "ExerciseSessionRecord",
+   "values": {
+    "EXERCISE_TYPE_OTHER_WORKOUT": 0,
+    "EXERCISE_TYPE_BADMINTON": 2,
+    "EXERCISE_TYPE_BASEBALL": 4,
+    "EXERCISE_TYPE_BASKETBALL": 5,
+    "EXERCISE_TYPE_BIKING": 8,
+    "EXERCISE_TYPE_BIKING_STATIONARY": 9,
+    "EXERCISE_TYPE_BOOT_CAMP": 10,
+    "EXERCISE_TYPE_BOXING": 11,
+    "EXERCISE_TYPE_CALISTHENICS": 13,
+    "EXERCISE_TYPE_CRICKET": 14,
+    "EXERCISE_TYPE_DANCING": 16,
+    "EXERCISE_TYPE_ELLIPTICAL": 25,
+    "EXERCISE_TYPE_EXERCISE_CLASS": 26,
+    "EXERCISE_TYPE_FENCING": 27,
+    "EXERCISE_TYPE_FOOTBALL_AMERICAN": 28,
+    "EXERCISE_TYPE_FOOTBALL_AUSTRALIAN": 29,
+    "EXERCISE_TYPE_FRISBEE_DISC": 31,
+    "EXERCISE_TYPE_GOLF": 32,
+    "EXERCISE_TYPE_GUIDED_BREATHING": 33,
+    "EXERCISE_TYPE_GYMNASTICS": 34,
+    "EXERCISE_TYPE_HANDBALL": 35,
+    "EXERCISE_TYPE_HIGH_INTENSITY_INTERVAL_TRAINING": 36,
+    "EXERCISE_TYPE_HIKING": 37,
+    "EXERCISE_TYPE_ICE_HOCKEY": 38,
+    "EXERCISE_TYPE_ICE_SKATING": 39,
+    "EXERCISE_TYPE_MARTIAL_ARTS": 44,
+    "EXERCISE_TYPE_PADDLING": 46,
+    "EXERCISE_TYPE_PARAGLIDING": 47,
+    "EXERCISE_TYPE_PILATES": 48,
+    "EXERCISE_TYPE_RACQUETBALL": 50,
+    "EXERCISE_TYPE_ROCK_CLIMBING": 51,
+    "EXERCISE_TYPE_ROLLER_HOCKEY": 52,
+    "EXERCISE_TYPE_ROWING": 53,
+    "EXERCISE_TYPE_ROWING_MACHINE": 54,
+    "EXERCISE_TYPE_RUGBY": 55,
+    "EXERCISE_TYPE_RUNNING": 56,
+    "EXERCISE_TYPE_RUNNING_TREADMILL": 57,
+    "EXERCISE_TYPE_SAILING": 58,
+    "EXERCISE_TYPE_SCUBA_DIVING": 59,
+    "EXERCISE_TYPE_SKATING": 60,
+    "EXERCISE_TYPE_SKIING": 61,
+    "EXERCISE_TYPE_SNOWBOARDING": 62,
+    "EXERCISE_TYPE_SNOWSHOEING": 63,
+    "EXERCISE_TYPE_SOCCER": 64,
+    "EXERCISE_TYPE_SOFTBALL": 65,
+    "EXERCISE_TYPE_SQUASH": 66,
+    "EXERCISE_TYPE_STAIR_CLIMBING": 68,
+    "EXERCISE_TYPE_STAIR_CLIMBING_MACHINE": 69,
+    "EXERCISE_TYPE_STRENGTH_TRAINING": 70,
+    "EXERCISE_TYPE_STRETCHING": 71,
+    "EXERCISE_TYPE_SURFING": 72,
+    "EXERCISE_TYPE_SWIMMING_OPEN_WATER": 73,
+    "EXERCISE_TYPE_SWIMMING_POOL": 74,
+    "EXERCISE_TYPE_TABLE_TENNIS": 75,
+    "EXERCISE_TYPE_TENNIS": 76,
+    "EXERCISE_TYPE_VOLLEYBALL": 78,
+    "EXERCISE_TYPE_WALKING": 79,
+    "EXERCISE_TYPE_WATER_POLO": 80,
+    "EXERCISE_TYPE_WEIGHTLIFTING": 81,
+    "EXERCISE_TYPE_WHEELCHAIR": 82,
+    "EXERCISE_TYPE_YOGA": 83
+   }
+  },
+  "exercise-segment-type": {
+   "class": "ExerciseSegment",
+   "values": {
+    "EXERCISE_SEGMENT_TYPE_UNKNOWN": 0,
+    "EXERCISE_SEGMENT_TYPE_ARM_CURL": 1,
+    "EXERCISE_SEGMENT_TYPE_BACK_EXTENSION": 2,
+    "EXERCISE_SEGMENT_TYPE_BALL_SLAM": 3,
+    "EXERCISE_SEGMENT_TYPE_BARBELL_SHOULDER_PRESS": 4,
+    "EXERCISE_SEGMENT_TYPE_BENCH_PRESS": 5,
+    "EXERCISE_SEGMENT_TYPE_BENCH_SIT_UP": 6,
+    "EXERCISE_SEGMENT_TYPE_BIKING": 7,
+    "EXERCISE_SEGMENT_TYPE_BIKING_STATIONARY": 8,
+    "EXERCISE_SEGMENT_TYPE_BURPEE": 9,
+    "EXERCISE_SEGMENT_TYPE_CRUNCH": 10,
+    "EXERCISE_SEGMENT_TYPE_DEADLIFT": 11,
+    "EXERCISE_SEGMENT_TYPE_DOUBLE_ARM_TRICEPS_EXTENSION": 12,
+    "EXERCISE_SEGMENT_TYPE_DUMBBELL_CURL_LEFT_ARM": 13,
+    "EXERCISE_SEGMENT_TYPE_DUMBBELL_CURL_RIGHT_ARM": 14,
+    "EXERCISE_SEGMENT_TYPE_DUMBBELL_FRONT_RAISE": 15,
+    "EXERCISE_SEGMENT_TYPE_DUMBBELL_LATERAL_RAISE": 16,
+    "EXERCISE_SEGMENT_TYPE_DUMBBELL_ROW": 17,
+    "EXERCISE_SEGMENT_TYPE_DUMBBELL_TRICEPS_EXTENSION_LEFT_ARM": 18,
+    "EXERCISE_SEGMENT_TYPE_DUMBBELL_TRICEPS_EXTENSION_RIGHT_ARM": 19,
+    "EXERCISE_SEGMENT_TYPE_DUMBBELL_TRICEPS_EXTENSION_TWO_ARM": 20,
+    "EXERCISE_SEGMENT_TYPE_ELLIPTICAL": 21,
+    "EXERCISE_SEGMENT_TYPE_FORWARD_TWIST": 22,
+    "EXERCISE_SEGMENT_TYPE_FRONT_RAISE": 23,
+    "EXERCISE_SEGMENT_TYPE_HIGH_INTENSITY_INTERVAL_TRAINING": 24,
+    "EXERCISE_SEGMENT_TYPE_HIP_THRUST": 25,
+    "EXERCISE_SEGMENT_TYPE_HULA_HOOP": 26,
+    "EXERCISE_SEGMENT_TYPE_JUMPING_JACK": 27,
+    "EXERCISE_SEGMENT_TYPE_JUMP_ROPE": 28,
+    "EXERCISE_SEGMENT_TYPE_KETTLEBELL_SWING": 29,
+    "EXERCISE_SEGMENT_TYPE_LATERAL_RAISE": 30,
+    "EXERCISE_SEGMENT_TYPE_LAT_PULL_DOWN": 31,
+    "EXERCISE_SEGMENT_TYPE_LEG_CURL": 32,
+    "EXERCISE_SEGMENT_TYPE_LEG_EXTENSION": 33,
+    "EXERCISE_SEGMENT_TYPE_LEG_PRESS": 34,
+    "EXERCISE_SEGMENT_TYPE_LEG_RAISE": 35,
+    "EXERCISE_SEGMENT_TYPE_LUNGE": 36,
+    "EXERCISE_SEGMENT_TYPE_MOUNTAIN_CLIMBER": 37,
+    "EXERCISE_SEGMENT_TYPE_OTHER_WORKOUT": 38,
+    "EXERCISE_SEGMENT_TYPE_PAUSE": 39,
+    "EXERCISE_SEGMENT_TYPE_PILATES": 40,
+    "EXERCISE_SEGMENT_TYPE_PLANK": 41,
+    "EXERCISE_SEGMENT_TYPE_PULL_UP": 42,
+    "EXERCISE_SEGMENT_TYPE_PUNCH": 43,
+    "EXERCISE_SEGMENT_TYPE_REST": 44,
+    "EXERCISE_SEGMENT_TYPE_ROWING_MACHINE": 45,
+    "EXERCISE_SEGMENT_TYPE_RUNNING": 46,
+    "EXERCISE_SEGMENT_TYPE_RUNNING_TREADMILL": 47,
+    "EXERCISE_SEGMENT_TYPE_SHOULDER_PRESS": 48,
+    "EXERCISE_SEGMENT_TYPE_SINGLE_ARM_TRICEPS_EXTENSION": 49,
+    "EXERCISE_SEGMENT_TYPE_SIT_UP": 50,
+    "EXERCISE_SEGMENT_TYPE_SQUAT": 51,
+    "EXERCISE_SEGMENT_TYPE_STAIR_CLIMBING": 52,
+    "EXERCISE_SEGMENT_TYPE_STAIR_CLIMBING_MACHINE": 53,
+    "EXERCISE_SEGMENT_TYPE_STRETCHING": 54,
+    "EXERCISE_SEGMENT_TYPE_SWIMMING_BACKSTROKE": 55,
+    "EXERCISE_SEGMENT_TYPE_SWIMMING_BREASTSTROKE": 56,
+    "EXERCISE_SEGMENT_TYPE_SWIMMING_BUTTERFLY": 57,
+    "EXERCISE_SEGMENT_TYPE_SWIMMING_FREESTYLE": 58,
+    "EXERCISE_SEGMENT_TYPE_SWIMMING_MIXED": 59,
+    "EXERCISE_SEGMENT_TYPE_SWIMMING_OPEN_WATER": 60,
+    "EXERCISE_SEGMENT_TYPE_SWIMMING_OTHER": 61,
+    "EXERCISE_SEGMENT_TYPE_SWIMMING_POOL": 62,
+    "EXERCISE_SEGMENT_TYPE_UPPER_TWIST": 63,
+    "EXERCISE_SEGMENT_TYPE_WALKING": 64,
+    "EXERCISE_SEGMENT_TYPE_WEIGHTLIFTING": 65,
+    "EXERCISE_SEGMENT_TYPE_WHEELCHAIR": 66,
+    "EXERCISE_SEGMENT_TYPE_YOGA": 67
+   }
+  },
+  "exercise-phase": {
+   "class": "PlannedExerciseStep",
+   "values": {
+    "EXERCISE_PHASE_UNKNOWN": 0,
+    "EXERCISE_PHASE_WARMUP": 1,
+    "EXERCISE_PHASE_REST": 2,
+    "EXERCISE_PHASE_ACTIVE": 3,
+    "EXERCISE_PHASE_COOLDOWN": 4,
+    "EXERCISE_PHASE_RECOVERY": 5
+   }
+  },
+  "menstruation-flow": {
+   "class": "MenstruationFlowRecord",
+   "values": {
+    "FLOW_UNKNOWN": 0,
+    "FLOW_LIGHT": 1,
+    "FLOW_MEDIUM": 2,
+    "FLOW_HEAVY": 3
+   }
+  },
+  "mindfulness-session-type": {
+   "class": "MindfulnessSessionRecord",
+   "values": {
+    "MINDFULNESS_SESSION_TYPE_UNKNOWN": 0,
+    "MINDFULNESS_SESSION_TYPE_MEDITATION": 1,
+    "MINDFULNESS_SESSION_TYPE_BREATHING": 2,
+    "MINDFULNESS_SESSION_TYPE_MUSIC": 3,
+    "MINDFULNESS_SESSION_TYPE_MOVEMENT": 4,
+    "MINDFULNESS_SESSION_TYPE_UNGUIDED": 5
+   }
+  },
+  "ovulation-test-result": {
+   "class": "OvulationTestRecord",
+   "values": {
+    "RESULT_INCONCLUSIVE": 0,
+    "RESULT_POSITIVE": 1,
+    "RESULT_HIGH": 2,
+    "RESULT_NEGATIVE": 3
+   }
+  },
+  "sexual-activity-protection-used": {
+   "class": "SexualActivityRecord",
+   "values": {
+    "PROTECTION_USED_UNKNOWN": 0,
+    "PROTECTION_USED_PROTECTED": 1,
+    "PROTECTION_USED_UNPROTECTED": 2
+   }
+  },
+  "skin-temperature-measurement-location": {
+   "class": "SkinTemperatureRecord",
+   "values": {
+    "MEASUREMENT_LOCATION_UNKNOWN": 0,
+    "MEASUREMENT_LOCATION_FINGER": 1,
+    "MEASUREMENT_LOCATION_TOE": 2,
+    "MEASUREMENT_LOCATION_WRIST": 3
+   }
+  },
+  "vo2-max-measurement-method": {
+   "class": "Vo2MaxRecord",
+   "values": {
+    "MEASUREMENT_METHOD_OTHER": 0,
+    "MEASUREMENT_METHOD_METABOLIC_CART": 1,
+    "MEASUREMENT_METHOD_HEART_RATE_RATIO": 2,
+    "MEASUREMENT_METHOD_COOPER_TEST": 3,
+    "MEASUREMENT_METHOD_MULTISTAGE_FITNESS_TEST": 4,
+    "MEASUREMENT_METHOD_ROCKPORT_FITNESS_TEST": 5
+   }
+  },
+  "sleep-stage": {
+   "class": "SleepSessionRecord",
+   "values": {
+    "STAGE_TYPE_UNKNOWN": 0,
+    "STAGE_TYPE_AWAKE": 1,
+    "STAGE_TYPE_SLEEPING": 2,
+    "STAGE_TYPE_OUT_OF_BED": 3,
+    "STAGE_TYPE_LIGHT": 4,
+    "STAGE_TYPE_DEEP": 5,
+    "STAGE_TYPE_REM": 6,
+    "STAGE_TYPE_AWAKE_IN_BED": 7
+   }
+  }
+ },
+ "types": {
+  "metadata.Metadata": [
+   {
+    "property": "id",
+    "json": "id",
+    "kind": "string",
+    "nullable": false
+   },
+   {
+    "property": "dataOrigin",
+    "json": "data_origin",
+    "kind": "object:metadata.DataOrigin",
+    "nullable": false
+   },
+   {
+    "property": "lastModifiedTime",
+    "json": "last_modified_time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "clientRecordId",
+    "json": "client_record_id",
+    "kind": "string",
+    "nullable": true
+   },
+   {
+    "property": "clientRecordVersion",
+    "json": "client_record_version",
+    "kind": "long-string",
+    "nullable": false
+   },
+   {
+    "property": "recordingMethod",
+    "json": "recording_method",
+    "kind": "constant:recording-method",
+    "nullable": false
+   },
+   {
+    "property": "device",
+    "json": "device",
+    "kind": "object:metadata.Device",
+    "nullable": true
+   }
+  ],
+  "metadata.DataOrigin": [
+   {
+    "property": "packageName",
+    "json": "package_name",
+    "kind": "string",
+    "nullable": false
+   }
+  ],
+  "metadata.Device": [
+   {
+    "property": "type",
+    "json": "type",
+    "kind": "constant:device-type",
+    "nullable": false
+   },
+   {
+    "property": "manufacturer",
+    "json": "manufacturer",
+    "kind": "string",
+    "nullable": true
+   },
+   {
+    "property": "model",
+    "json": "model",
+    "kind": "string",
+    "nullable": true
+   }
+  ],
+  "CyclingPedalingCadenceRecord$Sample": [
+   {
+    "property": "time",
+    "json": "time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "revolutionsPerMinute",
+    "json": "revolutions_per_minute",
+    "kind": "double",
+    "nullable": false
+   }
+  ],
+  "HeartRateRecord$Sample": [
+   {
+    "property": "time",
+    "json": "time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "beatsPerMinute",
+    "json": "beats_per_minute",
+    "kind": "long",
+    "nullable": false
+   }
+  ],
+  "PowerRecord$Sample": [
+   {
+    "property": "time",
+    "json": "time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "power",
+    "json": "power_watts",
+    "kind": "measure:Power",
+    "nullable": false
+   }
+  ],
+  "SpeedRecord$Sample": [
+   {
+    "property": "time",
+    "json": "time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "speed",
+    "json": "speed_meters_per_second",
+    "kind": "measure:Velocity",
+    "nullable": false
+   }
+  ],
+  "StepsCadenceRecord$Sample": [
+   {
+    "property": "time",
+    "json": "time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "rate",
+    "json": "rate",
+    "kind": "double",
+    "nullable": false
+   }
+  ],
+  "SkinTemperatureRecord$Delta": [
+   {
+    "property": "time",
+    "json": "time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "delta",
+    "json": "delta_celsius",
+    "kind": "measure:TemperatureDelta",
+    "nullable": false
+   }
+  ],
+  "SleepSessionRecord$Stage": [
+   {
+    "property": "startTime",
+    "json": "start_time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "endTime",
+    "json": "end_time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "stage",
+    "json": "stage",
+    "kind": "constant:sleep-stage",
+    "nullable": false
+   }
+  ],
+  "ExerciseSegment": [
+   {
+    "property": "startTime",
+    "json": "start_time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "endTime",
+    "json": "end_time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "segmentType",
+    "json": "segment_type",
+    "kind": "constant:exercise-segment-type",
+    "nullable": false
+   },
+   {
+    "property": "repetitions",
+    "json": "repetitions",
+    "kind": "int",
+    "nullable": false
+   }
+  ],
+  "ExerciseLap": [
+   {
+    "property": "startTime",
+    "json": "start_time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "endTime",
+    "json": "end_time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "length",
+    "json": "length_meters",
+    "kind": "measure:Length",
+    "nullable": true
+   }
+  ],
+  "ExerciseRoute": [
+   {
+    "property": "route",
+    "json": "route",
+    "kind": "list:ExerciseRoute$Location",
+    "nullable": false
+   }
+  ],
+  "ExerciseRoute$Location": [
+   {
+    "property": "time",
+    "json": "time",
+    "kind": "instant",
+    "nullable": false
+   },
+   {
+    "property": "latitude",
+    "json": "latitude",
+    "kind": "double",
+    "nullable": false
+   },
+   {
+    "property": "longitude",
+    "json": "longitude",
+    "kind": "double",
+    "nullable": false
+   },
+   {
+    "property": "horizontalAccuracy",
+    "json": "horizontal_accuracy_meters",
+    "kind": "measure:Length",
+    "nullable": true
+   },
+   {
+    "property": "verticalAccuracy",
+    "json": "vertical_accuracy_meters",
+    "kind": "measure:Length",
+    "nullable": true
+   },
+   {
+    "property": "altitude",
+    "json": "altitude_meters",
+    "kind": "measure:Length",
+    "nullable": true
+   }
+  ],
+  "PlannedExerciseBlock": [
+   {
+    "property": "repetitions",
+    "json": "repetitions",
+    "kind": "int",
+    "nullable": false
+   },
+   {
+    "property": "steps",
+    "json": "steps",
+    "kind": "list:PlannedExerciseStep",
+    "nullable": false
+   },
+   {
+    "property": "description",
+    "json": "description",
+    "kind": "string",
+    "nullable": true
+   }
+  ],
+  "PlannedExerciseStep": [
+   {
+    "property": "exerciseType",
+    "json": "exercise_type",
+    "kind": "constant:exercise-segment-type",
+    "nullable": false
+   },
+   {
+    "property": "exercisePhase",
+    "json": "exercise_phase",
+    "kind": "constant:exercise-phase",
+    "nullable": false
+   },
+   {
+    "property": "completionGoal",
+    "json": "completion_goal",
+    "kind": "variant:ExerciseCompletionGoal",
+    "nullable": false
+   },
+   {
+    "property": "performanceTargets",
+    "json": "performance_targets",
+    "kind": "list-variant:ExercisePerformanceTarget",
+    "nullable": false
+   },
+   {
+    "property": "description",
+    "json": "description",
+    "kind": "string",
+    "nullable": true
+   }
+  ]
+ },
+ "variants": {
+  "ExerciseRouteResult": {
+   "data": {
+    "class": "ExerciseRouteResult$Data",
+    "fields": [
+     {
+      "property": "exerciseRoute",
+      "json": "exercise_route",
+      "kind": "object:ExerciseRoute",
+      "nullable": false
+     }
+    ]
+   },
+   "no-data": {
+    "class": "ExerciseRouteResult$NoData",
+    "fields": []
+   },
+   "consent-required": {
+    "class": "ExerciseRouteResult$ConsentRequired",
+    "fields": []
+   }
+  },
+  "ExerciseCompletionGoal": {
+   "active-calories-burned": {
+    "class": "ExerciseCompletionGoal$ActiveCaloriesBurnedGoal",
+    "fields": [
+     {
+      "property": "activeCalories",
+      "json": "active_calories_calories",
+      "kind": "measure:Energy",
+      "nullable": false
+     }
+    ]
+   },
+   "distance-and-duration": {
+    "class": "ExerciseCompletionGoal$DistanceAndDurationGoal",
+    "fields": [
+     {
+      "property": "distance",
+      "json": "distance_meters",
+      "kind": "measure:Length",
+      "nullable": false
+     },
+     {
+      "property": "duration",
+      "json": "duration",
+      "kind": "duration",
+      "nullable": false
+     }
+    ]
+   },
+   "distance": {
+    "class": "ExerciseCompletionGoal$DistanceGoal",
+    "fields": [
+     {
+      "property": "distance",
+      "json": "distance_meters",
+      "kind": "measure:Length",
+      "nullable": false
+     }
+    ]
+   },
+   "duration": {
+    "class": "ExerciseCompletionGoal$DurationGoal",
+    "fields": [
+     {
+      "property": "duration",
+      "json": "duration",
+      "kind": "duration",
+      "nullable": false
+     }
+    ]
+   },
+   "manual-completion": {
+    "class": "ExerciseCompletionGoal$ManualCompletion",
+    "fields": []
+   },
+   "repetitions": {
+    "class": "ExerciseCompletionGoal$RepetitionsGoal",
+    "fields": [
+     {
+      "property": "repetitions",
+      "json": "repetitions",
+      "kind": "int",
+      "nullable": false
+     }
+    ]
+   },
+   "steps": {
+    "class": "ExerciseCompletionGoal$StepsGoal",
+    "fields": [
+     {
+      "property": "steps",
+      "json": "steps",
+      "kind": "int",
+      "nullable": false
+     }
+    ]
+   },
+   "total-calories-burned": {
+    "class": "ExerciseCompletionGoal$TotalCaloriesBurnedGoal",
+    "fields": [
+     {
+      "property": "totalCalories",
+      "json": "total_calories_calories",
+      "kind": "measure:Energy",
+      "nullable": false
+     }
+    ]
+   }
+  },
+  "ExercisePerformanceTarget": {
+   "amrap": {
+    "class": "ExercisePerformanceTarget$AmrapTarget",
+    "fields": []
+   },
+   "cadence": {
+    "class": "ExercisePerformanceTarget$CadenceTarget",
+    "fields": [
+     {
+      "property": "minCadence",
+      "json": "min_cadence",
+      "kind": "double",
+      "nullable": false
+     },
+     {
+      "property": "maxCadence",
+      "json": "max_cadence",
+      "kind": "double",
+      "nullable": false
+     }
+    ]
+   },
+   "heart-rate": {
+    "class": "ExercisePerformanceTarget$HeartRateTarget",
+    "fields": [
+     {
+      "property": "minHeartRate",
+      "json": "min_heart_rate",
+      "kind": "double",
+      "nullable": false
+     },
+     {
+      "property": "maxHeartRate",
+      "json": "max_heart_rate",
+      "kind": "double",
+      "nullable": false
+     }
+    ]
+   },
+   "power": {
+    "class": "ExercisePerformanceTarget$PowerTarget",
+    "fields": [
+     {
+      "property": "minPower",
+      "json": "min_power_watts",
+      "kind": "measure:Power",
+      "nullable": false
+     },
+     {
+      "property": "maxPower",
+      "json": "max_power_watts",
+      "kind": "measure:Power",
+      "nullable": false
+     }
+    ]
+   },
+   "rate-of-perceived-exertion": {
+    "class": "ExercisePerformanceTarget$RateOfPerceivedExertionTarget",
+    "fields": [
+     {
+      "property": "rpe",
+      "json": "rpe",
+      "kind": "int",
+      "nullable": false
+     }
+    ]
+   },
+   "speed": {
+    "class": "ExercisePerformanceTarget$SpeedTarget",
+    "fields": [
+     {
+      "property": "minSpeed",
+      "json": "min_speed_meters_per_second",
+      "kind": "measure:Velocity",
+      "nullable": false
+     },
+     {
+      "property": "maxSpeed",
+      "json": "max_speed_meters_per_second",
+      "kind": "measure:Velocity",
+      "nullable": false
+     }
+    ]
+   },
+   "weight": {
+    "class": "ExercisePerformanceTarget$WeightTarget",
+    "fields": [
+     {
+      "property": "mass",
+      "json": "mass_grams",
+      "kind": "measure:Mass",
+      "nullable": false
+     }
+    ]
+   }
+  }
+ },
+ "records": {
+  "active-calories-burned": {
+   "class": "ActiveCaloriesBurnedRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "energy",
+     "json": "energy_calories",
+     "kind": "measure:Energy",
+     "nullable": false
+    }
+   ]
+  },
+  "basal-body-temperature": {
+   "class": "BasalBodyTemperatureRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "temperature",
+     "json": "temperature_celsius",
+     "kind": "measure:Temperature",
+     "nullable": false
+    },
+    {
+     "property": "measurementLocation",
+     "json": "measurement_location",
+     "kind": "constant:body-temperature-measurement-location",
+     "nullable": false
+    }
+   ]
+  },
+  "basal-metabolic-rate": {
+   "class": "BasalMetabolicRateRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "basalMetabolicRate",
+     "json": "basal_metabolic_rate_watts",
+     "kind": "measure:Power",
+     "nullable": false
+    }
+   ]
+  },
+  "blood-glucose": {
+   "class": "BloodGlucoseRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "level",
+     "json": "level_millimoles_per_liter",
+     "kind": "measure:BloodGlucose",
+     "nullable": false
+    },
+    {
+     "property": "specimenSource",
+     "json": "specimen_source",
+     "kind": "constant:blood-glucose-specimen-source",
+     "nullable": false
+    },
+    {
+     "property": "mealType",
+     "json": "meal_type",
+     "kind": "constant:meal-type",
+     "nullable": false
+    },
+    {
+     "property": "relationToMeal",
+     "json": "relation_to_meal",
+     "kind": "constant:blood-glucose-relation-to-meal",
+     "nullable": false
+    }
+   ]
+  },
+  "blood-pressure": {
+   "class": "BloodPressureRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "systolic",
+     "json": "systolic_millimeters_of_mercury",
+     "kind": "measure:Pressure",
+     "nullable": false
+    },
+    {
+     "property": "diastolic",
+     "json": "diastolic_millimeters_of_mercury",
+     "kind": "measure:Pressure",
+     "nullable": false
+    },
+    {
+     "property": "bodyPosition",
+     "json": "body_position",
+     "kind": "constant:blood-pressure-body-position",
+     "nullable": false
+    },
+    {
+     "property": "measurementLocation",
+     "json": "measurement_location",
+     "kind": "constant:blood-pressure-measurement-location",
+     "nullable": false
+    }
+   ]
+  },
+  "body-fat": {
+   "class": "BodyFatRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "percentage",
+     "json": "percentage",
+     "kind": "percentage",
+     "nullable": false
+    }
+   ]
+  },
+  "body-temperature": {
+   "class": "BodyTemperatureRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "temperature",
+     "json": "temperature_celsius",
+     "kind": "measure:Temperature",
+     "nullable": false
+    },
+    {
+     "property": "measurementLocation",
+     "json": "measurement_location",
+     "kind": "constant:body-temperature-measurement-location",
+     "nullable": false
+    }
+   ]
+  },
+  "body-water-mass": {
+   "class": "BodyWaterMassRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "mass",
+     "json": "mass_grams",
+     "kind": "measure:Mass",
+     "nullable": false
+    }
+   ]
+  },
+  "bone-mass": {
+   "class": "BoneMassRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "mass",
+     "json": "mass_grams",
+     "kind": "measure:Mass",
+     "nullable": false
+    }
+   ]
+  },
+  "cervical-mucus": {
+   "class": "CervicalMucusRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "appearance",
+     "json": "appearance",
+     "kind": "constant:cervical-mucus-appearance",
+     "nullable": false
+    },
+    {
+     "property": "sensation",
+     "json": "sensation",
+     "kind": "constant:cervical-mucus-sensation",
+     "nullable": false
+    }
+   ]
+  },
+  "cycling-pedaling-cadence": {
+   "class": "CyclingPedalingCadenceRecord",
+   "shape": "series",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "samples",
+     "json": "samples",
+     "kind": "list:CyclingPedalingCadenceRecord$Sample",
+     "nullable": false
+    }
+   ]
+  },
+  "distance": {
+   "class": "DistanceRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "distance",
+     "json": "distance_meters",
+     "kind": "measure:Length",
+     "nullable": false
+    }
+   ]
+  },
+  "elevation-gained": {
+   "class": "ElevationGainedRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "elevation",
+     "json": "elevation_meters",
+     "kind": "measure:Length",
+     "nullable": false
+    }
+   ]
+  },
+  "exercise-session": {
+   "class": "ExerciseSessionRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "exerciseType",
+     "json": "exercise_type",
+     "kind": "constant:exercise-type",
+     "nullable": false
+    },
+    {
+     "property": "title",
+     "json": "title",
+     "kind": "string",
+     "nullable": true
+    },
+    {
+     "property": "notes",
+     "json": "notes",
+     "kind": "string",
+     "nullable": true
+    },
+    {
+     "property": "segments",
+     "json": "segments",
+     "kind": "list:ExerciseSegment",
+     "nullable": false
+    },
+    {
+     "property": "laps",
+     "json": "laps",
+     "kind": "list:ExerciseLap",
+     "nullable": false
+    },
+    {
+     "property": "exerciseRouteResult",
+     "json": "exercise_route_result",
+     "kind": "variant:ExerciseRouteResult",
+     "nullable": false
+    },
+    {
+     "property": "plannedExerciseSessionId",
+     "json": "planned_exercise_session_id",
+     "kind": "string",
+     "nullable": true
+    }
+   ]
+  },
+  "floors-climbed": {
+   "class": "FloorsClimbedRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "floors",
+     "json": "floors",
+     "kind": "double",
+     "nullable": false
+    }
+   ]
+  },
+  "heart-rate": {
+   "class": "HeartRateRecord",
+   "shape": "series",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "samples",
+     "json": "samples",
+     "kind": "list:HeartRateRecord$Sample",
+     "nullable": false
+    }
+   ]
+  },
+  "heart-rate-variability-rmssd": {
+   "class": "HeartRateVariabilityRmssdRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "heartRateVariabilityMillis",
+     "json": "heart_rate_variability_millis",
+     "kind": "double",
+     "nullable": false
+    }
+   ]
+  },
+  "height": {
+   "class": "HeightRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "height",
+     "json": "height_meters",
+     "kind": "measure:Length",
+     "nullable": false
+    }
+   ]
+  },
+  "hydration": {
+   "class": "HydrationRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "volume",
+     "json": "volume_liters",
+     "kind": "measure:Volume",
+     "nullable": false
+    }
+   ]
+  },
+  "intermenstrual-bleeding": {
+   "class": "IntermenstrualBleedingRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    }
+   ]
+  },
+  "lean-body-mass": {
+   "class": "LeanBodyMassRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "mass",
+     "json": "mass_grams",
+     "kind": "measure:Mass",
+     "nullable": false
+    }
+   ]
+  },
+  "menstruation-flow": {
+   "class": "MenstruationFlowRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "flow",
+     "json": "flow",
+     "kind": "constant:menstruation-flow",
+     "nullable": false
+    }
+   ]
+  },
+  "menstruation-period": {
+   "class": "MenstruationPeriodRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    }
+   ]
+  },
+  "mindfulness-session": {
+   "class": "MindfulnessSessionRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "mindfulnessSessionType",
+     "json": "mindfulness_session_type",
+     "kind": "constant:mindfulness-session-type",
+     "nullable": false
+    },
+    {
+     "property": "title",
+     "json": "title",
+     "kind": "string",
+     "nullable": true
+    },
+    {
+     "property": "notes",
+     "json": "notes",
+     "kind": "string",
+     "nullable": true
+    }
+   ]
+  },
+  "nutrition": {
+   "class": "NutritionRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "energy",
+     "json": "energy_calories",
+     "kind": "measure:Energy",
+     "nullable": true
+    },
+    {
+     "property": "energyFromFat",
+     "json": "energy_from_fat_calories",
+     "kind": "measure:Energy",
+     "nullable": true
+    },
+    {
+     "property": "biotin",
+     "json": "biotin_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "caffeine",
+     "json": "caffeine_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "calcium",
+     "json": "calcium_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "chloride",
+     "json": "chloride_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "cholesterol",
+     "json": "cholesterol_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "chromium",
+     "json": "chromium_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "copper",
+     "json": "copper_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "dietaryFiber",
+     "json": "dietary_fiber_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "folate",
+     "json": "folate_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "folicAcid",
+     "json": "folic_acid_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "iodine",
+     "json": "iodine_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "iron",
+     "json": "iron_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "magnesium",
+     "json": "magnesium_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "manganese",
+     "json": "manganese_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "molybdenum",
+     "json": "molybdenum_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "monounsaturatedFat",
+     "json": "monounsaturated_fat_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "niacin",
+     "json": "niacin_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "pantothenicAcid",
+     "json": "pantothenic_acid_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "phosphorus",
+     "json": "phosphorus_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "polyunsaturatedFat",
+     "json": "polyunsaturated_fat_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "potassium",
+     "json": "potassium_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "protein",
+     "json": "protein_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "riboflavin",
+     "json": "riboflavin_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "saturatedFat",
+     "json": "saturated_fat_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "selenium",
+     "json": "selenium_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "sodium",
+     "json": "sodium_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "sugar",
+     "json": "sugar_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "thiamin",
+     "json": "thiamin_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "totalCarbohydrate",
+     "json": "total_carbohydrate_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "totalFat",
+     "json": "total_fat_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "transFat",
+     "json": "trans_fat_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "unsaturatedFat",
+     "json": "unsaturated_fat_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "vitaminA",
+     "json": "vitamin_a_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "vitaminB12",
+     "json": "vitamin_b12_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "vitaminB6",
+     "json": "vitamin_b6_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "vitaminC",
+     "json": "vitamin_c_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "vitaminD",
+     "json": "vitamin_d_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "vitaminE",
+     "json": "vitamin_e_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "vitaminK",
+     "json": "vitamin_k_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "zinc",
+     "json": "zinc_grams",
+     "kind": "measure:Mass",
+     "nullable": true
+    },
+    {
+     "property": "name",
+     "json": "name",
+     "kind": "string",
+     "nullable": true
+    },
+    {
+     "property": "mealType",
+     "json": "meal_type",
+     "kind": "constant:meal-type",
+     "nullable": false
+    }
+   ]
+  },
+  "ovulation-test": {
+   "class": "OvulationTestRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "result",
+     "json": "result",
+     "kind": "constant:ovulation-test-result",
+     "nullable": false
+    }
+   ]
+  },
+  "oxygen-saturation": {
+   "class": "OxygenSaturationRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "percentage",
+     "json": "percentage",
+     "kind": "percentage",
+     "nullable": false
+    }
+   ]
+  },
+  "planned-exercise-session": {
+   "class": "PlannedExerciseSessionRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "hasExplicitTime",
+     "json": "has_explicit_time",
+     "kind": "bool",
+     "nullable": false
+    },
+    {
+     "property": "exerciseType",
+     "json": "exercise_type",
+     "kind": "constant:exercise-type",
+     "nullable": false
+    },
+    {
+     "property": "title",
+     "json": "title",
+     "kind": "string",
+     "nullable": true
+    },
+    {
+     "property": "notes",
+     "json": "notes",
+     "kind": "string",
+     "nullable": true
+    },
+    {
+     "property": "completedExerciseSessionId",
+     "json": "completed_exercise_session_id",
+     "kind": "string",
+     "nullable": true
+    },
+    {
+     "property": "blocks",
+     "json": "blocks",
+     "kind": "list:PlannedExerciseBlock",
+     "nullable": false
+    }
+   ]
+  },
+  "power": {
+   "class": "PowerRecord",
+   "shape": "series",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "samples",
+     "json": "samples",
+     "kind": "list:PowerRecord$Sample",
+     "nullable": false
+    }
+   ]
+  },
+  "respiratory-rate": {
+   "class": "RespiratoryRateRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "rate",
+     "json": "rate",
+     "kind": "double",
+     "nullable": false
+    }
+   ]
+  },
+  "resting-heart-rate": {
+   "class": "RestingHeartRateRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "beatsPerMinute",
+     "json": "beats_per_minute",
+     "kind": "long",
+     "nullable": false
+    }
+   ]
+  },
+  "sexual-activity": {
+   "class": "SexualActivityRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "protectionUsed",
+     "json": "protection_used",
+     "kind": "constant:sexual-activity-protection-used",
+     "nullable": false
+    }
+   ]
+  },
+  "skin-temperature": {
+   "class": "SkinTemperatureRecord",
+   "shape": "series",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "baseline",
+     "json": "baseline_celsius",
+     "kind": "measure:Temperature",
+     "nullable": true
+    },
+    {
+     "property": "deltas",
+     "json": "deltas",
+     "kind": "list:SkinTemperatureRecord$Delta",
+     "nullable": false
+    },
+    {
+     "property": "measurementLocation",
+     "json": "measurement_location",
+     "kind": "constant:skin-temperature-measurement-location",
+     "nullable": false
+    }
+   ]
+  },
+  "sleep-session": {
+   "class": "SleepSessionRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "title",
+     "json": "title",
+     "kind": "string",
+     "nullable": true
+    },
+    {
+     "property": "notes",
+     "json": "notes",
+     "kind": "string",
+     "nullable": true
+    },
+    {
+     "property": "stages",
+     "json": "stages",
+     "kind": "list:SleepSessionRecord$Stage",
+     "nullable": false
+    }
+   ]
+  },
+  "speed": {
+   "class": "SpeedRecord",
+   "shape": "series",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "samples",
+     "json": "samples",
+     "kind": "list:SpeedRecord$Sample",
+     "nullable": false
+    }
+   ]
+  },
+  "steps": {
+   "class": "StepsRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "count",
+     "json": "count",
+     "kind": "long",
+     "nullable": false
+    }
+   ]
+  },
+  "steps-cadence": {
+   "class": "StepsCadenceRecord",
+   "shape": "series",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "samples",
+     "json": "samples",
+     "kind": "list:StepsCadenceRecord$Sample",
+     "nullable": false
+    }
+   ]
+  },
+  "total-calories-burned": {
+   "class": "TotalCaloriesBurnedRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "energy",
+     "json": "energy_calories",
+     "kind": "measure:Energy",
+     "nullable": false
+    }
+   ]
+  },
+  "weight": {
+   "class": "WeightRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "weight",
+     "json": "weight_grams",
+     "kind": "measure:Mass",
+     "nullable": false
+    }
+   ]
+  },
+  "vo2-max": {
+   "class": "Vo2MaxRecord",
+   "shape": "instantaneous",
+   "fields": [
+    {
+     "property": "time",
+     "json": "time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "zoneOffset",
+     "json": "zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "vo2MillilitersPerMinuteKilogram",
+     "json": "vo2_milliliters_per_minute_kilogram",
+     "kind": "double",
+     "nullable": false
+    },
+    {
+     "property": "measurementMethod",
+     "json": "measurement_method",
+     "kind": "constant:vo2-max-measurement-method",
+     "nullable": false
+    }
+   ]
+  },
+  "wheelchair-pushes": {
+   "class": "WheelchairPushesRecord",
+   "shape": "interval",
+   "fields": [
+    {
+     "property": "startTime",
+     "json": "start_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "startZoneOffset",
+     "json": "start_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "endTime",
+     "json": "end_time",
+     "kind": "instant",
+     "nullable": false
+    },
+    {
+     "property": "endZoneOffset",
+     "json": "end_zone_offset",
+     "kind": "offset",
+     "nullable": true
+    },
+    {
+     "property": "count",
+     "json": "count",
+     "kind": "long",
+     "nullable": false
+    }
+   ]
+  }
+ }
+}
