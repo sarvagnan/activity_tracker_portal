@@ -1,0 +1,111 @@
+{
+  "contract_schema": 1,
+  "scope": "operational-store",
+  "version": "1",
+  "kind": "shared",
+  "purpose": "Preserve the ingest-side domain invariants of the Portal's single SQLite Operational Store through deep transactional operations: Sender Installation lifecycle records, one-use enrollment codes, capability generations, exact archival of accepted Outbox Messages, Delivery Block and sequence-gap evidence, Sync Checkpoint history, the storage reserve, and coherent current-state reads.",
+  "inputs": [
+    {
+      "name": "domain_transactions",
+      "mode": "pure",
+      "description": "Caller-supplied lifecycle intents, enrollment-code digests, capability advertisements, accepted-message archival records with exact envelope and receipt bytes, and Delivery Block records, each carrying a timezone-aware Portal time."
+    },
+    {
+      "name": "database_file",
+      "mode": "effectful",
+      "description": "The one SQLite database file at a deployment-chosen path, with its write-ahead log, either absent or created by this or a later store version."
+    },
+    {
+      "name": "free_space",
+      "mode": "volatile",
+      "description": "Free bytes on the database file's filesystem compared with the deployment-configured storage reserve at the moment of each archival transaction."
+    },
+    {
+      "name": "sqlite_runtime",
+      "mode": "volatile",
+      "description": "The SQLite library version linked into the running Python interpreter."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "opened_store",
+      "description": "A store handle on a database at exactly the baseline schema, with WAL journaling, synchronous FULL, and foreign keys enforced, or a named startup refusal."
+    },
+    {
+      "name": "archive_result",
+      "description": "The Delivery Receipt bytes committed with a newly archived message, or the identical prior receipt for an identical retry with no write."
+    },
+    {
+      "name": "lifecycle_record",
+      "description": "An append-only Sender Installation lifecycle event and the resulting installation state."
+    },
+    {
+      "name": "coherent_view",
+      "description": "Reads served from one SQLite read transaction: installation states and operational facts, accepted envelopes in sequence order, archived items, honored capability generations, sequence gaps, Delivery Blocks, paginated Sync Checkpoint history, and storage-reserve status."
+    },
+    {
+      "name": "store_refusal",
+      "description": "A named refusal that leaves the database exactly as it was before the operation."
+    }
+  ],
+  "named_failures": [
+    { "name": "sqlite-runtime-unsupported", "outcome": "startup-refusal" },
+    { "name": "store-migration-required", "outcome": "startup-refusal" },
+    { "name": "store-schema-unsupported", "outcome": "startup-refusal" },
+    { "name": "store-migration-checksum-mismatch", "outcome": "startup-refusal" },
+    { "name": "storage-reserve-exhausted", "outcome": "retryable" },
+    { "name": "store-busy", "outcome": "retryable" },
+    { "name": "timestamp-invalid", "outcome": "invariant-refusal" },
+    { "name": "enrollment-code-unknown", "outcome": "invariant-refusal" },
+    { "name": "enrollment-code-expired", "outcome": "invariant-refusal" },
+    { "name": "enrollment-code-consumed", "outcome": "invariant-refusal" },
+    { "name": "enrollment-code-exists", "outcome": "invariant-refusal" },
+    { "name": "installation-exists", "outcome": "invariant-refusal" },
+    { "name": "installation-unknown", "outcome": "invariant-refusal" },
+    { "name": "installation-transition-invalid", "outcome": "invariant-refusal" },
+    { "name": "active-installation-exists", "outcome": "invariant-refusal" },
+    { "name": "installation-not-delivering", "outcome": "invariant-refusal" },
+    { "name": "message-digest-mismatch", "outcome": "invariant-refusal" },
+    { "name": "sequence-content-conflict", "outcome": "invariant-refusal" },
+    { "name": "sequence-out-of-order", "outcome": "invariant-refusal" },
+    { "name": "generation-unknown", "outcome": "invariant-refusal" },
+    { "name": "generation-not-monotonic", "outcome": "invariant-refusal" },
+    { "name": "generation-still-required", "outcome": "invariant-refusal" },
+    { "name": "cycle-already-completed", "outcome": "invariant-refusal" }
+  ],
+  "observable_effects": [
+    {
+      "name": "operational-database-writes",
+      "description": "Committed SQLite transactions on the Operational Store file and its write-ahead log; a refused or failed operation commits nothing."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the baseline SQLite schema, its recorded checksummed migration, and connection durability settings",
+      "transactional invariants for one active or draining Sender Installation, one-use enrollment codes, and append-only lifecycle events",
+      "exact envelope and per-item archival, sequence uniqueness and ordering, sequence-gap evidence, and Last Delivery",
+      "capability generation monotonicity and the rule that a generation stops being honored only after a later generation's acknowledgement is archived",
+      "health-data-free Delivery Block and Sync Checkpoint history records",
+      "storage-reserve enforcement at write time and coherent read snapshots"
+    ],
+    "does_not_own": [
+      "wire decoding, delivery evaluation, receipts, or compatibility decisions",
+      "Operator intent, enrollment-offer issuance, or when lifecycle transitions happen",
+      "Polling Freshness classification or clock-skew conditions",
+      "Source Record identity, reconciliation, processing, summaries, policies, cutovers, deletion, export, or backup",
+      "upgrading an existing database to a later schema",
+      "HTTP ingress, Authorized Ingress, or the deployment's reserve value"
+    ]
+  },
+  "dependencies": [],
+  "acceptance_oracle": {
+    "specification": "packs/operational-store-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_operational_store_1.py"
+    },
+    "runner": "tests/acceptance/run_operational_store_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}

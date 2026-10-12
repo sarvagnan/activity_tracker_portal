@@ -102,3 +102,16 @@ This log records friction encountered while adopting Vouch mk2 in its first exte
 **Friction**: Binding shared runner configuration makes every later dependency change look like moved goalposts for this unit, while leaving it unbound is exactly the residual Vouch warns about. Vouch offers no way to bind part of a file or to scope a binding to the dependencies one unit uses.
 
 **Decision**: Proposed for the Operator's freeze approval: bind only unit-owned runner configuration, namely `tests/acceptance/run_ingest_protocol_1.sh`, which fixes the exact commands and runs `uv run --frozen`, and `sender/protocol/package.json`. Leave `pyproject.toml`, `uv.lock`, and `.node-version` unbound, and record that residual in the freeze proposal.
+
+## 2026-10-12 — Strict-CI exceptions apply only after freeze
+
+**Context**: Opening `operational-store@1`, the second unit, under the delivery flow that recorded its strict-CI exception at specification.
+
+**Evidence**:
+
+- `mark-open-in-ci` on a unit that is only `specified` fails with `ci-policy.exception-not-open: unit 'operational-store@1' is not post-specified and nonterminal`.
+- `check --ci` passes with that unit specified and no exception: `CI policy strict enforced; all post-specified units are terminal or excepted`.
+
+**Friction**: The rule is sound, since a specified unit has nothing frozen to keep open, but neither the command help nor the generated context says that exceptions begin at freeze, so the first written procedure placed the exception one step too early.
+
+**Decision**: Record the exception at Gate B immediately after `freeze`, and update `docs/governance/delivery-flow.md` accordingly.
