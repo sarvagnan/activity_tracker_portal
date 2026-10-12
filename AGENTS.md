@@ -2,7 +2,7 @@
 
 ## Vouch Governance
 
-Forward behavioral or architectural change: read `.vouch/vouch-context.md`, `docs/governance/scope-map.md`, and the matching contract under `governance/scopes/` before planning. The Operator approves its acceptance pack before freeze; implementation begins only against that frozen pack.
+Forward behavioral or architectural change: read `.vouch/vouch-context.md`, `docs/governance/scope-map.md`, and the matching contract under `governance/scopes/` before planning. The Operator approves its acceptance pack before freeze; implementation begins only against that frozen pack. Deliver each unit through the lifecycle in `docs/governance/delivery-flow.md`.
 
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 

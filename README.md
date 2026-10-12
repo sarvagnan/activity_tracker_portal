@@ -11,6 +11,7 @@ The documents have deliberately different jobs:
 - [CONTEXT.md](CONTEXT.md) is the canonical domain glossary.
 - [docs/adr/](docs/adr/) records accepted architectural decisions and their trade-offs.
 - [docs/governance/scope-map.md](docs/governance/scope-map.md) is the normative functional decomposition used to define Vouch units.
+- [docs/governance/delivery-flow.md](docs/governance/delivery-flow.md) defines the per-unit delivery procedure, its Operator gates, and the phase order; Beads holds live status.
 - [architecture-plan.html](architecture-plan.html) is a readable, non-normative overview of the accepted architecture.
 - [docs/vouch-adoption-log.md](docs/vouch-adoption-log.md) records first-project friction and limitations discovered while using Vouch.
 
@@ -38,15 +39,10 @@ Manual health entry, generic file import, advanced cross-metric analysis, iOS de
 
 Each Vouch unit is the lifecycle carrier for one project-owned Governed Scope contract. The Operator approves an acceptance pack before it is frozen; Claude implements only against the frozen pack. A mismatch becomes a recorded deviation rather than an unreviewed change to the goalposts.
 
-The initial governed sequence is:
-
-1. `ingest-protocol@1`
-2. `project-source-record@1`
-3. `operational-store@1`
-4. `receipt-bound-delivery@1`
+`ingest-protocol@1` is published. [docs/governance/delivery-flow.md](docs/governance/delivery-flow.md) sequences the remaining units in nine phases, starting with `project-source-record@1` and `operational-store@1`.
 
 After Vouch initialization, read `.vouch/vouch-context.md` before planning or implementing governed work. The vendored `vouch.lock` is the project-pinned executable; no Vouch installation or network access is needed to use it.
 
 ## Development status
 
-The repository currently contains the accepted design and initial package skeleton. Physical-device findings are release-qualification evidence, not unresolved architecture: representative Health Connect record shapes, changes, retractions, background execution, interruption, and restart behavior must be exercised before a native-adapter release.
+The repository contains the accepted design and the published `ingest-protocol@1` Wire Protocol Version 1 implementation in Python and TypeScript. Physical-device findings are release-qualification evidence, not unresolved architecture: representative Health Connect record shapes, changes, retractions, background execution, interruption, and restart behavior must be exercised before a native-adapter release.

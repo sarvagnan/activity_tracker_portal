@@ -4,7 +4,7 @@ This file provides instructions and context for AI coding agents working on this
 
 ## Vouch Governance
 
-Forward behavioral or architectural change: read `.vouch/vouch-context.md`, `docs/governance/scope-map.md`, and the matching contract under `governance/scopes/` before planning. The Operator approves its acceptance pack before freeze; implementation begins only against that frozen pack.
+Forward behavioral or architectural change: read `.vouch/vouch-context.md`, `docs/governance/scope-map.md`, and the matching contract under `governance/scopes/` before planning. The Operator approves its acceptance pack before freeze; implementation begins only against that frozen pack. Deliver each unit through the lifecycle in `docs/governance/delivery-flow.md`.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 ## Beads Issue Tracker
