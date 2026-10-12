@@ -7,6 +7,8 @@ version = '0.1.0'
 android {
   namespace 'org.activitytracker.healthconnect'
   defaultConfig {
+    versionCode 1
+    versionName project.version.toString()
     minSdkVersion 34
   }
   testOptions {
