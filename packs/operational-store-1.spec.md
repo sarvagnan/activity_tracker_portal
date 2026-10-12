@@ -2,7 +2,7 @@
 
 **Status:** Draft approved by the Operator on 2026-10-12, including the five decisions below; the executable pack adds the refinements its tests pin down. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
 
-**Acceptance owner:** Operator. **Pack drafter:** Claude. **Implementer after freeze:** GPT 6.1 Sol through a T3 delegated task, reviewed by Claude.
+**Acceptance owner:** Operator, who approved the draft semantics. **Pack drafter:** Claude. **Implementer after freeze:** GPT 6.1 Sol through a T3 delegated task. **Approver for freeze, implementation review, merge, and publication:** GPT 6 Astra through a T3 delegated task, as a separate agent from the drafter and implementer.
 
 This unit carries the `operational-store` Governed Scope contract in `governance/scopes/operational-store.1.json`. Version 1 covers only the ingest side of the scope-map row: the transactions that `manage-sender-installation`, `accept-ingest-batch`, `accept-sync-completion`, and `accept-sync-checkpoint` need. Processing, publication, and data-rights transactions arrive in `@2` to `@4` (see `docs/governance/delivery-flow.md`), each additive to this Interface.
 
