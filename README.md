@@ -37,7 +37,7 @@ Manual health entry, generic file import, advanced cross-metric analysis, iOS de
 
 [Vouch mk2](https://github.com/sarvagnan/vouch_mk2) governs every forward behavioral or architectural change at the `standard` assurance tier with CI anchoring. Beads tracks tasks and dependencies; Vouch binds acceptance packs, evidence, lifecycle, and publication gates.
 
-Each Vouch unit is the lifecycle carrier for one project-owned Governed Scope contract. The Operator approves an acceptance pack before it is frozen. Claude drafts packs and records Vouch transitions; GPT 6.1 Sol implements only against the frozen pack. A mismatch becomes a recorded deviation rather than an unreviewed change to the goalposts.
+Each Vouch unit is the lifecycle carrier for one project-owned Governed Scope contract. The Operator approves what each unit does at draft review. Claude drafts packs and records Vouch transitions, GPT 6.1 Sol implements only against the frozen pack, and GPT 6 Astra, a separate approver agent, approves each freeze, implementation, merge, and publication. A mismatch becomes a recorded deviation rather than an unreviewed change to the goalposts.
 
 `ingest-protocol@1` is published. [docs/governance/delivery-flow.md](docs/governance/delivery-flow.md) sequences the remaining units in nine phases, starting with `project-source-record@1` and `operational-store@1`.
 

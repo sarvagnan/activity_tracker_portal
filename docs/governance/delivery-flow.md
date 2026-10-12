@@ -2,40 +2,53 @@
 
 This document defines how each Governed Scope moves from the scope map to a published Vouch unit and the phase order that sequences the remaining units toward version 1. Beads holds live status, ownership, and dependency readiness: each unit has one `Deliver <scope>@<version>` feature under its phase epic, and `bd ready` shows what can start. Vouch holds the lifecycle record. This document holds neither and therefore never records progress.
 
+## Roles
+
+Each role is a separate agent with its own context, as Vouch's method requires: the agent that drafts a pack never implements it, and the implementer never edits a pack. Vouch asks for separated duties between agents, not different models or vendors; its own decision records treat model and vendor differences as a heuristic, and independence stays human attested.
+
+| Role | Agent | Owns |
+|---|---|---|
+| Operator | the Operator | Gate A for each unit's semantics, and every escalation |
+| Drafter and lifecycle | Claude | contracts, packs, Beads, every Vouch transition, commits, pushes, and merges |
+| Implementer | GPT 6.1 Sol, delegated through T3 | frozen packs and enabling tasks, editing only unbound files |
+| Approver | GPT 6 Astra, delegated through T3 | Gate B freeze approval, implementation review, merge approval, and Gate C acceptance |
+
+The approver escalates to the Operator, and Claude stops, for a deviation, an approver objection that Claude disputes, a change since Gate A that reverses an approved decision or removes a guarantee, an irreversible or destructive action, or a release go/no-go. Clarifications and refinements that keep the approved semantics are the approver's to accept. Each approver verdict is posted on the pull request, and Vouch transitions it authorizes are recorded with `--actor approver:gpt-6-astra`.
+
 ## Unit lifecycle
 
-Every unit follows the same eight steps. The Operator owns the three gates. Claude drafts contracts and packs, records every Vouch transition, and reviews implementation; GPT 6.1 Sol implements frozen packs and enabling tasks through T3 delegated tasks, so the model that writes the tests is not the model that passes them. Claude implemented the worked example, `ingest-protocol@1`, before the Operator made this assignment on 2026-10-12.
+Every unit follows the same eight steps. Claude implemented the worked example, `ingest-protocol@1`, before these roles were assigned on 2026-10-12.
 
-1. **Open.** Claim the unit feature, branch `<scope>-<version>` from `main`, and record the unit and its strict-CI exception together, because CI fails on any nonterminal unit without one:
+1. **Open.** Claim the unit feature, branch `<scope>-<version>` from `main`, and record the unit:
 
    ```bash
    python3 vouch.lock specify --root .vouch --name <scope> --version <version> --depends-on <dep> ...
-   python3 vouch.lock mark-open-in-ci --root .vouch --name <scope> --reason "<why it may stay open>"
    python3 vouch.lock generate --root .vouch
    ```
 
-   Create four children under the unit feature: a `human` decision to review the draft, a task to complete the executable pack, a `human` decision to freeze and record RED, and a task to implement.
+   Strict CI ignores a unit that is only specified, and Vouch refuses a strict-CI exception until the unit is frozen, so the exception is recorded at Gate B. Create four children under the unit feature: a `human` decision to review the draft, a task to complete the executable pack, an approver decision to freeze and record RED, and a task to implement.
 2. **Draft.** Write `governance/scopes/<scope>.<version>.json` and `packs/<scope>-<version>.spec.md` with the proposed requirements, named failures, and test inventory, and extend `tests/governance/test_governed_scope_contracts.py` for the new contract.
-3. **Gate A: draft approval.** The Operator approves the draft's semantics and failure vocabulary or requests amendments. Approval authorizes executable pack work only.
-4. **Executable pack.** Add acceptance tests in every implementing language, synthetic vectors or fixtures, the runner `tests/acceptance/run_<scope_with_underscores>_<version>.sh`, and Interface stubs. Show genuine RED, in which every failure comes from the stubs, and present the exact file binding.
-5. **Gate B: freeze approval.** On approval, freeze the binding, mark the unit ready, start it, record RED through the runner, and commit the frozen baseline by itself:
+3. **Gate A: draft approval (Operator).** The Operator approves the draft's semantics and failure vocabulary or requests amendments. Approval authorizes executable pack work only.
+4. **Executable pack.** Add acceptance tests in every implementing language, synthetic vectors or fixtures, the runner `tests/acceptance/run_<scope_with_underscores>_<version>.sh`, and Interface stubs. Show genuine RED, in which every failure comes from the stubs. The implementer reviews the pack read-only for tests a correct implementation could not pass, and Claude resolves its findings before freeze.
+5. **Gate B: freeze approval (approver).** The approver checks that the pack faithfully carries the Operator-approved draft, that RED is genuine, and that the binding and its stated residuals are complete. On approval, freeze the binding, record the strict-CI exception that CI requires for every frozen unit until it publishes, mark the unit ready, start it, record RED through the runner, and commit the frozen baseline by itself:
 
    ```bash
-   python3 vouch.lock freeze --root .vouch --name <scope> --pack-version <scope>-pack/<version> --pack-file <spec> ... --pack-test-file <test> ...
+   python3 vouch.lock freeze --root .vouch --actor approver:gpt-6-astra --name <scope> --pack-version <scope>-pack/<version> --pack-file <spec> ... --pack-test-file <test> ...
+   python3 vouch.lock mark-open-in-ci --root .vouch --name <scope> --reason "<why it may stay open>"
    python3 vouch.lock mark-ready --root .vouch --name <scope>
    python3 vouch.lock start --root .vouch --name <scope>
    python3 vouch.lock record-evidence --root .vouch --unit <scope>@<version> --kind red -- tests/acceptance/<runner>
    ```
 
-6. **Implement.** Delegate the frozen pack to GPT 6.1 Sol with the pack, its Interface, and the rule that only unbound implementation files may change. Claude reviews the result, confirms `check.pack-files-match` still passes, records GREEN through the same runner, marks the unit done, and adds the runner to the project CI `test` job in the same branch. Before committing the implementation separately, `generate`, `check --ci --project . --pending-anchor-ok`, and `formal` must pass.
-7. **Merge.** Push the branch and open a pull request. After CI passes, the Operator merges by fast-forward or merge commit, never rebase-merge, so the frozen-baseline commit keeps its hash. CI on `main` advances the evidence anchor and pushes a `vouch: advance evidence anchors` commit.
-8. **Gate C: acceptance.** The Operator accepts the unit. Pull the anchor commit, then `publish`, which also removes the strict-CI exception, `generate`, and `check --ci --project .`. Commit and push `Publish <scope>@<version>`, close the unit feature and its children, and push Beads with `bd dolt push`.
+6. **Implement.** Delegate the frozen pack to the implementer with the pack, its Interface, and the rule that only unbound implementation files may change. Claude confirms `check.pack-files-match` still passes, records GREEN through the same runner, marks the unit done, and adds the runner to the project CI `test` job in the same branch. Before committing the implementation separately, `generate`, `check --ci --project . --pending-anchor-ok`, and `formal` must pass. The approver then reviews the implementation against the frozen pack; requested changes go back to the implementer as a new round.
+7. **Merge (approver).** Push the branch and open a pull request. After CI passes and the approver approves the pull request, Claude merges it with a merge commit, never rebase-merge, so the frozen-baseline commit keeps its hash. CI on `main` advances the evidence anchor and pushes a `vouch: advance evidence anchors` commit.
+8. **Gate C: acceptance (approver).** Once the anchor commit has landed and CI on `main` passed, the approver accepts the unit. Pull the anchor commit, then `publish --actor approver:gpt-6-astra`, which also removes the strict-CI exception, `generate`, and `check --ci --project .`. Commit and push `Publish <scope>@<version>`, close the unit feature and its children, and push Beads with `bd dolt push`.
 
-A mismatch discovered after freeze becomes an `open-deviation`, never an edit to a bound file.
+A mismatch discovered after freeze becomes an `open-deviation` for the Operator, never an edit to a bound file. Enabling tasks skip the Vouch steps but follow the same implement, approver review, and merge sequence.
 
 ## Sequencing rules
 
-- Specify a unit in Vouch only when its work starts. Vouch refuses a unit whose dependencies are not yet specified, and strict CI requires an exception for every specified unit that is not yet terminal.
+- Specify a unit in Vouch only when its work starts. Vouch refuses a unit whose dependencies are not yet specified, and strict CI requires an exception for every frozen unit that is not yet terminal.
 - Publication requires every Vouch dependency to be `published` or `release-bound`. A unit may be drafted and implemented against a frozen upstream pack, but Beads waits for upstream publication so implementation never chases a moving interface.
 - `operational-store` grows by versions. A new version requires superseding its predecessor, and a superseded dependency blocks dependent publication until its successor publishes. Each successor therefore waits in Beads until every dependent of the previous version is published. Each version stays additive so published dependents keep their packs; a breaking change would require `rebind-pack` for every affected dependent.
 - Enabling tasks pin toolchains and build shells, adapters, and primitives. They carry no governed behavior, and what they build is exercised by unit acceptance packs.
