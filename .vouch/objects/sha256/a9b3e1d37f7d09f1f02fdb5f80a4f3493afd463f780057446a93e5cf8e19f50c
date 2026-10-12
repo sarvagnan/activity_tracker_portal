@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_project_source_record_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"95be5bd34215a3da4936c10b54bf8d62e24ffa4669c642b12501cbf75fc574df","parent":"GENESIS","recorded_at":"2026-10-12T19:27:02+00:00","sequence":1,"unit":{"name":"project-source-record","version":"1"}}
