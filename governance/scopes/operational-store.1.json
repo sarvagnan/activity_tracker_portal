@@ -59,6 +59,7 @@
     { "name": "enrollment-code-unknown", "outcome": "invariant-refusal" },
     { "name": "enrollment-code-expired", "outcome": "invariant-refusal" },
     { "name": "enrollment-code-consumed", "outcome": "invariant-refusal" },
+    { "name": "enrollment-code-exists", "outcome": "invariant-refusal" },
     { "name": "installation-exists", "outcome": "invariant-refusal" },
     { "name": "installation-unknown", "outcome": "invariant-refusal" },
     { "name": "installation-transition-invalid", "outcome": "invariant-refusal" },

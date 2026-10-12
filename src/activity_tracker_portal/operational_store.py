@@ -30,6 +30,7 @@ INVARIANT_FAILURES = frozenset(
         "enrollment-code-unknown",
         "enrollment-code-expired",
         "enrollment-code-consumed",
+        "enrollment-code-exists",
         "installation-exists",
         "installation-unknown",
         "installation-transition-invalid",
@@ -45,6 +46,10 @@ INVARIANT_FAILURES = frozenset(
     }
 )
 FAILURES = STARTUP_FAILURES | RETRYABLE_FAILURES | INVARIANT_FAILURES
+
+# Ordered (version, exact SQL) pairs; store_migrations records the SHA-256 of each
+# migration's UTF-8 SQL. The baseline is migration 1.
+MIGRATIONS: tuple[tuple[int, str], ...] = ()
 
 InstallationState = Literal["pending", "active", "draining", "retired", "withdrawn"]
 RetirementKind = Literal["drained", "destructive"]
@@ -93,6 +98,10 @@ class BatchItem:
     projection: bytes | None = None
     retracted_identity: str | None = None
 
+    def __post_init__(self) -> None:
+        if (self.projection is None) == (self.retracted_identity is None):
+            raise ValueError("a batch item carries exactly one of projection or retracted_identity")
+
 
 @dataclass(frozen=True)
 class IngestBatchRecord:
@@ -118,6 +127,10 @@ class CompletionRecord:
     fragment_count: int
     record_count: int
     final_chain: str
+
+    def __post_init__(self) -> None:
+        if (self.completion_kind == "snapshot") != (self.snapshot_kind is not None):
+            raise ValueError("a snapshot completion carries a snapshot kind and a change completion does not")
 
 
 @dataclass(frozen=True)

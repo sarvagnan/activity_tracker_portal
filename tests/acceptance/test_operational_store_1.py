@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 import unittest
 from dataclasses import fields
 from datetime import datetime, timedelta, timezone
@@ -189,6 +190,18 @@ class StoreCase(unittest.TestCase):
         finally:
             connection.close()
 
+    def persistent_state(self) -> tuple[list[str], int, str]:
+        connection = sqlite3.connect(self.path)
+        try:
+            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        finally:
+            connection.close()
+        return self.dump(), user_version, journal_mode
+
+    def file_state(self) -> tuple[str, list[str]]:
+        return digest(self.path.read_bytes()), sorted(entry.name for entry in self.directory.iterdir())
+
     def assertRefused(self, failure: str, operation, *args, **kwargs) -> StoreRefusal:
         with self.assertRaises(StoreRefusal) as caught:
             operation(*args, **kwargs)
@@ -244,10 +257,27 @@ class R1GovernedScopeContract(unittest.TestCase):
 
 class R2RuntimeAndDurability(StoreCase):
     def test_unsupported_sqlite_runtime_refuses_before_creating_file(self) -> None:
-        with patch.object(sqlite3, "sqlite_version_info", (3, 50, 4)), patch.object(sqlite3, "sqlite_version", "3.50.4"):
+        with patch.object(sqlite3, "sqlite_version_info", (3, 50, 4)):
             self.assertRefused("sqlite-runtime-unsupported", open_store, self.path, reserve_bytes=RESERVE, free_bytes=self.free)
         self.assertFalse(self.path.exists())
         self.assertEqual(list(self.directory.iterdir()), [])
+
+    def test_runtime_minimum_is_exactly_3_51_3(self) -> None:
+        with patch.object(sqlite3, "sqlite_version_info", (3, 51, 2)):
+            self.assertRefused("sqlite-runtime-unsupported", open_store, self.path, reserve_bytes=RESERVE, free_bytes=self.free)
+        self.assertFalse(self.path.exists())
+        with patch.object(sqlite3, "sqlite_version_info", (3, 51, 3)):
+            store = self.open()
+        self.assertEqual(store.settings().schema_migrations[0][0], 1)
+
+    def test_unsupported_runtime_leaves_existing_database_untouched(self) -> None:
+        store = open_store(self.path, reserve_bytes=RESERVE, free_bytes=self.free)
+        self.enrolled(store)
+        store.close()
+        before = self.file_state()
+        with patch.object(sqlite3, "sqlite_version_info", (3, 50, 4)):
+            self.assertRefused("sqlite-runtime-unsupported", open_store, self.path, reserve_bytes=RESERVE, free_bytes=self.free)
+        self.assertEqual(self.file_state(), before)
 
     def test_connections_use_wal_full_sync_and_foreign_keys(self) -> None:
         store = self.open(busy_timeout_ms=1234)
@@ -262,10 +292,12 @@ class R2RuntimeAndDurability(StoreCase):
         self.assertEqual(self.external().execute("PRAGMA journal_mode").fetchone()[0], "wal")
 
     def test_lock_contention_beyond_timeout_is_store_busy(self) -> None:
-        store = self.open(busy_timeout_ms=50)
+        store = self.open(busy_timeout_ms=200)
         blocker = self.external()
         blocker.execute("BEGIN IMMEDIATE")
+        started = time.monotonic()
         self.assertRetryable("store-busy", store.record_enrollment_offer, code("busy"), at(30), at(0))
+        self.assertGreaterEqual(time.monotonic() - started, 0.15)
         blocker.execute("ROLLBACK")
         store.record_enrollment_offer(code("busy"), at(30), at(0))
         store.enroll_installation(code("busy"), INSTALLATION, fingerprint(INSTALLATION), at(1))
@@ -280,8 +312,10 @@ class R3BaselineSchemaAndMigrations(StoreCase):
         migrations = store.settings().schema_migrations
         self.assertEqual(len(migrations), 1)
         version, checksum = migrations[0]
+        self.assertEqual([number for number, _ in store_module.MIGRATIONS], [1])
         self.assertEqual(version, 1)
-        self.assertRegex(checksum, HEX)
+        self.assertIsNotNone(HEX.fullmatch(checksum))
+        self.assertEqual(checksum, digest(store_module.MIGRATIONS[0][1].encode("utf-8")))
         self.assertEqual(self.migration_rows(), [(1, checksum)])
         self.assertEqual(self.external().execute("PRAGMA user_version").fetchone()[0], 1)
 
@@ -305,29 +339,35 @@ class R3BaselineSchemaAndMigrations(StoreCase):
 
     def test_older_schema_requires_explicit_migration(self) -> None:
         self.prepared("DELETE FROM store_migrations", "PRAGMA user_version = 0")
-        before = self.dump()
+        before = self.persistent_state()
         self.assertRefused("store-migration-required", open_store, self.path, reserve_bytes=RESERVE, free_bytes=self.free)
-        self.assertEqual(self.dump(), before)
-        self.assertEqual(self.external().execute("PRAGMA user_version").fetchone()[0], 0)
+        self.assertEqual(self.persistent_state(), before)
+        self.assertEqual(before[1], 0)
 
     def test_unknown_later_schema_is_unsupported(self) -> None:
         self.prepared(
             "INSERT INTO store_migrations (version, checksum, applied_at) VALUES (2, '%s', '2026-10-12T09:00:00.000000Z')" % ("f" * 64),
             "PRAGMA user_version = 2",
         )
+        before = self.persistent_state()
         self.assertRefused("store-schema-unsupported", open_store, self.path, reserve_bytes=RESERVE, free_bytes=self.free)
+        self.assertEqual(self.persistent_state(), before)
 
     def test_foreign_database_is_unsupported_and_untouched(self) -> None:
         connection = self.external()
         connection.execute("CREATE TABLE unrelated (value TEXT)")
         connection.execute("INSERT INTO unrelated VALUES ('synthetic')")
-        before = self.dump()
+        connection.close()
+        before = self.persistent_state()
+        self.assertEqual(before[2], "delete")
         self.assertRefused("store-schema-unsupported", open_store, self.path, reserve_bytes=RESERVE, free_bytes=self.free)
-        self.assertEqual(self.dump(), before)
+        self.assertEqual(self.persistent_state(), before)
 
     def test_changed_migration_checksum_is_refused(self) -> None:
         self.prepared("UPDATE store_migrations SET checksum = '%s' WHERE version = 1" % ("0" * 64))
+        before = self.persistent_state()
         self.assertRefused("store-migration-checksum-mismatch", open_store, self.path, reserve_bytes=RESERVE, free_bytes=self.free)
+        self.assertEqual(self.persistent_state(), before)
 
 
 class R4OneUseEnrollmentCodes(StoreCase):
@@ -377,6 +417,17 @@ class R4OneUseEnrollmentCodes(StoreCase):
         reopened = self.open()
         self.assertRefused("enrollment-code-consumed", reopened.enroll_installation, code("a"), OTHER, fingerprint(OTHER), at(2))
         reopened.enroll_installation(code("b"), OTHER, fingerprint(OTHER), at(3))
+
+    def test_enrollment_offer_digest_is_recorded_once(self) -> None:
+        store = self.open()
+        store.record_enrollment_offer(code("a"), at(30), at(0))
+        self.assertRefused("enrollment-code-exists", store.record_enrollment_offer, code("a"), at(60), at(1))
+        store.enroll_installation(code("a"), INSTALLATION, fingerprint(INSTALLATION), at(2))
+        self.assertRefused("enrollment-code-exists", store.record_enrollment_offer, code("a"), at(90), at(3))
+        self.assertRefused("enrollment-code-consumed", store.enroll_installation, code("a"), OTHER, fingerprint(OTHER), at(4))
+        store.record_enrollment_offer(code("b"), at(5), at(0))
+        self.assertRefused("enrollment-code-exists", store.record_enrollment_offer, code("b"), at(90), at(6))
+        self.assertRefused("enrollment-code-expired", store.enroll_installation, code("b"), OTHER, fingerprint(OTHER), at(6))
 
 
 class R5SenderInstallationLifecycle(StoreCase):
@@ -513,6 +564,18 @@ class R6CapabilityGenerations(StoreCase):
             self.assertEqual([item.generation for item in view.honored_generations()], [2])
         self.assertRefused("generation-not-monotonic", store.honor_generation, 1, b'{"synthetic-advertisement":1}', at(6))
 
+    def test_archival_under_stopped_generation_is_refused(self) -> None:
+        store = self.ready()
+        first = header(1, generation=1)
+        store.archive_ingest_batch(first, batch())
+        store.honor_generation(2, b'{"synthetic-advertisement":2}', at(1))
+        store.archive_capability_acknowledgement(header(2, kind="capability-acknowledgement", generation=2))
+        store.stop_honoring_generation(1, at(3))
+        self.assertRefused("generation-unknown", store.archive_ingest_batch, header(3, generation=1), batch(page=2))
+        self.assertRefused("generation-unknown", store.stop_honoring_generation, 1, at(4))
+        self.assertEqual(store.archive_ingest_batch(header(1, generation=1, receipt_time=at(5)), batch()), first.receipt)
+        store.archive_ingest_batch(header(3, generation=2), batch(page=2))
+
     def test_archival_under_unknown_generation_is_refused(self) -> None:
         store = self.ready()
         self.assertRefused("generation-unknown", store.archive_ingest_batch, header(1, generation=7), batch())
@@ -555,6 +618,30 @@ class R7AtomicExactArchival(StoreCase):
         with store.read() as view:
             self.assertEqual(view.archived_items(INSTALLATION, 1), items)
             self.assertEqual(view.archived_message(INSTALLATION, 1).batch.items, items)
+        connection = self.external()
+        columns = [
+            (table, column[1])
+            for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+            for column in connection.execute(f'PRAGMA table_info("{table}")')
+        ]
+        for item in items:
+            if not item.projection:
+                continue
+            matches = sum(
+                connection.execute(f'SELECT count(*) FROM "{table}" WHERE "{column}" = ?', (item.projection,)).fetchone()[0]
+                for table, column in columns
+            )
+            self.assertEqual(matches, 1, item.projection)
+
+    def test_record_types_reject_invalid_combinations(self) -> None:
+        with self.assertRaises(ValueError):
+            BatchItem()
+        with self.assertRaises(ValueError):
+            BatchItem(projection=b"synthetic", retracted_identity="synthetic-identity")
+        with self.assertRaises(ValueError):
+            CompletionRecord("snapshot", None, "steps", CYCLE, 1, 1, 1, "0" * 64)
+        with self.assertRaises(ValueError):
+            CompletionRecord("change", "initial", "steps", CYCLE, 1, 1, 1, "0" * 64)
 
     def install_fault_triggers(self) -> sqlite3.Connection:
         connection = self.external()
@@ -589,13 +676,24 @@ class R7AtomicExactArchival(StoreCase):
     def test_failure_mid_transaction_commits_nothing(self) -> None:
         store = self.ready()
         items = tuple(BatchItem(projection=b'{"synthetic-projection":%d}' % index) for index in range(5))
+        store.honor_generation(2, b'{"synthetic-advertisement":2}', T0)
         faults = self.install_fault_triggers()
         self.assert_every_partial_failure_commits_nothing(faults, lambda: store.archive_ingest_batch(header(1), batch(*items)))
         self.assert_every_partial_failure_commits_nothing(faults, lambda: store.archive_sync_checkpoint(header(3, kind="sync-checkpoint"), checkpoint(1)))
+        self.assert_every_partial_failure_commits_nothing(faults, lambda: store.archive_completion(header(4, kind="snapshot-completion"), completion()))
+        self.assert_every_partial_failure_commits_nothing(
+            faults, lambda: store.archive_capability_acknowledgement(header(6, kind="capability-acknowledgement", generation=2))
+        )
         with store.read() as view:
+            status = view.installation(INSTALLATION)
             self.assertEqual(view.archived_items(INSTALLATION, 1), items)
-            self.assertEqual(view.installation(INSTALLATION).highest_sequence, 3)
-            self.assertEqual([(gap.gap_after, gap.sequence) for gap in view.sequence_gaps(INSTALLATION)], [(1, 3)])
+            self.assertEqual(view.archived_message(INSTALLATION, 3).checkpoint, checkpoint(1))
+            self.assertEqual(view.archived_message(INSTALLATION, 4).completion, completion())
+            self.assertEqual(view.archived_message(INSTALLATION, 6).kind, "capability-acknowledgement")
+            self.assertEqual(view.latest_acknowledged_generation(), 2)
+            self.assertEqual([(gap.gap_after, gap.sequence) for gap in view.sequence_gaps(INSTALLATION)], [(1, 3), (4, 6)])
+        self.assertEqual((status.highest_sequence, status.last_delivery_at), (6, at(6)))
+        self.assertEqual((status.latest_checkpoint_receipt_at, status.background_scheduling), (at(3), "available"))
 
     def test_envelope_digest_mismatch_is_refused(self) -> None:
         store = self.ready()
@@ -629,11 +727,17 @@ class R7AtomicExactArchival(StoreCase):
         self.assertRefused("cycle-already-completed", store.archive_completion, header(3, kind="change-completion"), completion(CYCLE, "change"))
         change = completion(OTHER_CYCLE, "change")
         store.archive_completion(header(3, kind="change-completion"), change)
+        store.begin_draining(INSTALLATION, at(4))
+        store.retire_installation(INSTALLATION, "drained", at(4))
+        self.active(store, OTHER, 5)
+        store.archive_completion(header(1, kind="snapshot-completion", installation_id=OTHER), snapshot)
         with store.read() as view:
             first = view.archived_message(INSTALLATION, 2)
             second = view.archived_message(INSTALLATION, 3)
+            replacement = view.archived_message(OTHER, 1)
         self.assertEqual((first.kind, first.completion, first.batch), ("snapshot-completion", snapshot, None))
         self.assertEqual((second.kind, second.completion), ("change-completion", change))
+        self.assertEqual(replacement.completion, snapshot)
 
 
 class R8IdempotencyOrderingAndGaps(StoreCase):
@@ -676,6 +780,30 @@ class R8IdempotencyOrderingAndGaps(StoreCase):
             replay = [sequence for sequence, _ in view.accepted_envelopes(INSTALLATION)]
         self.assertEqual([(gap.gap_after, gap.sequence, gap.detected_at) for gap in gaps], [(0, 2, at(2)), (3, 6, at(6))])
         self.assertEqual(replay, [2, 3, 6])
+
+
+    def test_refusal_precedence_is_deterministic(self) -> None:
+        store = self.ready()
+        first = header(1)
+        store.archive_ingest_batch(first, batch())
+        store.archive_ingest_batch(header(3), batch(page=3))
+        self.free.value = 0
+        self.assertRefused("sequence-content-conflict", store.archive_ingest_batch, header(1, data=envelope(1, salt="x")), batch())
+        self.assertRefused("sequence-out-of-order", store.archive_ingest_batch, header(2), batch(page=2))
+        self.assertRefused("generation-unknown", store.archive_ingest_batch, header(4, generation=9), batch(page=4))
+        self.assertRetryable("storage-reserve-exhausted", store.archive_ingest_batch, header(4), batch(page=4))
+        self.free.value = PLENTY
+        store.begin_draining(INSTALLATION, at(5))
+        store.retire_installation(INSTALLATION, "drained", at(5))
+        self.assertEqual(store.archive_ingest_batch(header(1, receipt_time=at(6)), batch()), first.receipt)
+        self.assertRefused("sequence-content-conflict", store.archive_ingest_batch, header(1, data=envelope(1, salt="x")), batch())
+        self.assertRefused("installation-not-delivering", store.archive_ingest_batch, header(4), batch(page=4))
+        self.assertRefused("installation-unknown", store.archive_ingest_batch, header(1, installation_id=THIRD), batch())
+        store.record_enrollment_offer(code("late"), at(10), at(0))
+        store.enroll_installation(code("late"), OTHER, fingerprint(OTHER), at(1))
+        self.assertRefused("enrollment-code-consumed", store.enroll_installation, code("late"), THIRD, fingerprint(THIRD), at(20))
+        self.assertRefused("installation-unknown", store.retire_installation, THIRD, "drained", at(20))
+        self.assertRefused("installation-transition-invalid", store.begin_draining, OTHER, at(20))
 
 
 class R9DeliveryBlocksAndCheckpoints(StoreCase):
@@ -744,9 +872,11 @@ class R10StorageReserve(StoreCase):
             lambda: store.archive_capability_acknowledgement(header(1, kind="capability-acknowledgement")),
         )
         for attempt in attempts:
+            self.free.paths.clear()
             self.assertRetryable("storage-reserve-exhausted", attempt)
+            self.assertTrue(self.free.paths)
+            self.assertEqual(set(self.free.paths), {os.fspath(self.path)})
         self.assertEqual(self.dump(), before)
-        self.assertIn(os.fspath(self.path), self.free.paths)
 
     def test_non_archival_operations_remain_available_below_reserve(self) -> None:
         store = self.ready()
@@ -772,9 +902,11 @@ class R10StorageReserve(StoreCase):
         with store.read() as view:
             self.assertEqual(view.storage_reserve(), store_module.ReserveStatus(RESERVE, RESERVE, True))
         store.archive_ingest_batch(header(1), batch())
-        self.free.value = RESERVE - 1
         with store.read() as view:
+            self.free.value = RESERVE - 1
             self.assertEqual(view.storage_reserve(), store_module.ReserveStatus(RESERVE - 1, RESERVE, False))
+            self.free.value = RESERVE + 1
+            self.assertEqual(view.storage_reserve(), store_module.ReserveStatus(RESERVE + 1, RESERVE, True))
 
 
 class R11CoherentReadsAndReplay(StoreCase):
