@@ -1,0 +1,21 @@
+{
+  "name": "@activity-tracker-portal/sender-workspace",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "26.11.1",
+    "npm": "11.20.0"
+  },
+  "packageManager": "npm@11.20.0",
+  "workspaces": [
+    "app",
+    "protocol"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspace @activity-tracker-portal/sender",
+    "test": "npm run test --workspaces",
+    "prebuild": "npm run prebuild --workspace @activity-tracker-portal/sender",
+    "test:kotlin": "./scripts/gradle.sh :health-connect:testDebugUnitTest",
+    "build:android": "./scripts/gradle.sh :app:assembleDebug"
+  }
+}

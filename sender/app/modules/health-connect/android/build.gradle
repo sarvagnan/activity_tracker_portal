@@ -1,0 +1,38 @@
+apply plugin: 'com.android.library'
+apply plugin: 'expo-module-gradle-plugin'
+
+group = 'org.activitytracker.healthconnect'
+version = '0.1.0'
+
+android {
+  namespace 'org.activitytracker.healthconnect'
+  defaultConfig {
+    versionCode 1
+    versionName project.version.toString()
+    minSdkVersion 34
+  }
+  testOptions {
+    unitTests.all {
+      testLogging {
+        events 'passed', 'skipped', 'failed'
+      }
+      afterSuite { descriptor, result ->
+        if (descriptor.parent == null) {
+          println "Health Connect seam: ${result.testCount} tests, ${result.failedTestCount} failures, ${result.skippedTestCount} skipped"
+        }
+      }
+    }
+  }
+}
+
+kotlin {
+  jvmToolchain {
+    languageVersion = JavaLanguageVersion.of(17)
+    vendor = JvmVendorSpec.ADOPTIUM
+  }
+}
+
+dependencies {
+  implementation 'androidx.health.connect:connect-client:1.1.0'
+  testImplementation 'junit:junit:4.13.2'
+}
