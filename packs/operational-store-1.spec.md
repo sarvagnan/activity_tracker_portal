@@ -1,6 +1,6 @@
 # Draft acceptance pack — `operational-store@1`
 
-**Status:** Draft for Operator review. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
+**Status:** Draft approved by the Operator on 2026-10-12, including the five decisions below; the executable pack adds the refinements its tests pin down. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
 
 **Acceptance owner:** Operator. **Pack drafter:** Claude. **Implementer after freeze:** GPT 6.1 Sol through a T3 delegated task, reviewed by Claude.
 
@@ -12,13 +12,14 @@ The store is protocol-agnostic. It never decodes or evaluates Wire Protocol mess
 
 Python module `activity_tracker_portal.operational_store`, standard library only, on the pinned SQLite runtime.
 
-- `open_store(path, *, reserve_bytes, free_bytes=None) -> OperationalStore` creates a database at the baseline schema or opens one already at it. `free_bytes(path) -> int` defaults to `shutil.disk_usage` and exists so tests can supply the volatile input.
+- `open_store(path, *, reserve_bytes, free_bytes=None, busy_timeout_ms=5000) -> OperationalStore` creates a database at the baseline schema or opens one already at it. `free_bytes(path) -> int` is called with the database file path, defaults to the free bytes reported by `shutil.disk_usage` for that file's directory, and exists so tests can supply the volatile input.
 - `StoreRefusal(failure)` carries exactly one named failure from the contract; `StoreRetryable(failure)` carries `storage-reserve-exhausted` or `store-busy`.
 - Lifecycle: `record_enrollment_offer(code_digest, expires_at, at)`, `enroll_installation(code_digest, installation_id, fingerprint, at)`, `activate_installation(installation_id, at)`, `begin_draining(installation_id, at)`, `retire_installation(installation_id, kind, at)` with `kind` either `drained` or `destructive`, and `withdraw_installation(installation_id, at)`.
 - Capability generations: `honor_generation(generation, advertisement, at)` and `stop_honoring_generation(generation, at)`.
 - Archival, one method per accepted message kind, each taking a `MessageHeader(installation_id, sequence, message_sha256, staged_generation, receipt_time, envelope, receipt)` plus its kind-specific record: `archive_ingest_batch(header, batch)`, `archive_completion(header, completion)`, `archive_sync_checkpoint(header, checkpoint)`, and `archive_capability_acknowledgement(header)`. Each returns the committed receipt bytes, or the identical prior receipt for an identical retry.
 - `record_delivery_block(installation_id, sequence, message_sha256, failure, at)` records a health-data-free block; `installation_id` and `sequence` are optional because a malformed message may not reveal them.
-- `read()` is a context manager yielding a `StoreView` bound to one read transaction, exposing `installation`, `installations`, `installation_events`, `accepted_envelopes`, `archived_items`, `honored_generations`, `latest_acknowledged_generation`, `sequence_gaps`, `delivery_blocks`, `sync_checkpoints`, `storage_reserve`, and `settings`.
+- `read()` is a context manager yielding a `StoreView` bound to one read transaction, exposing `installation`, `installations`, `installation_events`, `accepted_envelopes`, `archived_message`, `archived_items`, `honored_generations`, `latest_acknowledged_generation`, `sequence_gaps`, `delivery_blocks`, `sync_checkpoints`, `storage_reserve`, and `settings`. `OperationalStore.settings` reports the writer connection.
+- The record and result types are the frozen dataclasses defined in the module: `MessageHeader`, `BatchItem`, `IngestBatchRecord`, `CompletionRecord`, `RecordTypeOutcome`, `SyncCheckpointRecord`, `InstallationStatus`, `LifecycleEvent`, `ArchivedMessage`, `SequenceGap`, `DeliveryBlockRecord`, `ArchivedCheckpoint`, `HonoredGeneration`, `ReserveStatus`, and `StoreSettings`. The module also exports `FAILURES` partitioned into `STARTUP_FAILURES`, `RETRYABLE_FAILURES`, and `INVARIANT_FAILURES`.
 
 Every time argument must be timezone-aware; the store records UTC RFC 3339 text with microsecond precision.
 
@@ -34,27 +35,29 @@ Proposed tests: `test_governed_scope_contract_has_required_shape`, `test_every_n
 
 ### R2 — Runtime and durability settings
 
-Opening refuses a SQLite runtime below 3.51.3 with `sqlite-runtime-unsupported` before touching the file. Every connection uses WAL journaling, `synchronous=FULL`, and enforced foreign keys, and waits a bounded time for locks before failing with retryable `store-busy`. `settings` reports these values from the live connections.
+Opening reads `sqlite3.sqlite_version_info` at call time and refuses a runtime below 3.51.3 with `sqlite-runtime-unsupported` before creating or touching any file. Every connection uses WAL journaling, `synchronous=FULL`, and enforced foreign keys, and waits a bounded time for locks before failing with retryable `store-busy`. `settings` reports these values from the live connections.
 
 Proposed tests: `test_unsupported_sqlite_runtime_refuses_before_creating_file`, `test_connections_use_wal_full_sync_and_foreign_keys`, `test_lock_contention_beyond_timeout_is_store_busy`.
 
 ### R3 — Baseline schema and migration boundary
 
-A missing or empty file is created at the baseline schema in one transaction that records migration 1 and the SHA-256 of its exact SQL. An existing database opens only when its recorded migrations equal the known sequence with matching checksums; fewer is `store-migration-required`, unknown or later is `store-schema-unsupported`, and a changed checksum is `store-migration-checksum-mismatch`. Opening never upgrades an existing database; that belongs to `migrate-operational-store`.
+The migration record is part of this contract because `migrate-operational-store` and the backup scopes will read it: `PRAGMA user_version` holds the latest applied migration, and the table `store_migrations(version INTEGER PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)` holds each applied migration's lowercase SHA-256 of its exact SQL. A missing file, or one with no schema objects, is created at the baseline schema in one transaction that records migration 1. An existing database opens only when its recorded migrations equal the known sequence with matching checksums; a strict prefix is `store-migration-required`, any unknown or later migration or a database without `store_migrations` is `store-schema-unsupported`, and a changed checksum is `store-migration-checksum-mismatch`. A refused open changes nothing, and opening never upgrades an existing database; that belongs to `migrate-operational-store`.
 
-Proposed tests: `test_new_database_records_baseline_migration_checksum`, `test_reopen_preserves_committed_state`, `test_older_schema_requires_explicit_migration`, `test_unknown_later_schema_is_unsupported`, `test_changed_migration_checksum_is_refused`.
+Proposed tests: `test_new_database_records_baseline_migration_checksum`, `test_reopen_preserves_committed_state`, `test_older_schema_requires_explicit_migration`, `test_unknown_later_schema_is_unsupported`, `test_foreign_database_is_unsupported_and_untouched`, `test_changed_migration_checksum_is_refused`.
 
 ### R4 — One-use enrollment codes
 
-The store keeps only an enrollment code's digest, expiry, and consumption time. `enroll_installation` consumes an unexpired, unconsumed code and creates the pending installation atomically, or fails with `enrollment-code-unknown`, `enrollment-code-expired`, `enrollment-code-consumed`, or `installation-exists` and changes nothing.
+The store keeps only an enrollment code's digest, expiry, and consumption time. A code is usable while the enrollment time is earlier than its expiry. `enroll_installation` consumes an unexpired, unconsumed code and creates the pending installation atomically, or fails with `enrollment-code-unknown`, `enrollment-code-expired`, `enrollment-code-consumed`, or `installation-exists` and changes nothing.
 
-Proposed tests: `test_enrollment_consumes_code_and_creates_pending_installation_atomically`, `test_enrollment_code_is_single_use`, `test_expired_or_unknown_code_is_refused`, `test_raw_enrollment_codes_are_never_stored`.
+Proposed tests: `test_enrollment_consumes_code_and_creates_pending_installation_atomically`, `test_enrollment_code_is_single_use`, `test_expired_or_unknown_code_is_refused`, `test_refused_enrollment_does_not_consume_code`, `test_enrollment_code_state_survives_reopen`.
 
 ### R5 — Sender Installation lifecycle
 
 States are `pending`, `active`, `draining`, `retired`, and `withdrawn`. Allowed transitions are pending to active or withdrawn, active to draining, draining to retired as `drained`, and active or draining to retired as `destructive`; any other is `installation-transition-invalid`. At most one installation is active or draining at once, enforced by the schema, so activation fails with `active-installation-exists` until the previous installation is retired. Every transition appends a lifecycle event with its time. Operational facts are scoped to one installation, so a newly activated installation has no Last Delivery and no checkpoint regardless of retired installations.
 
-Proposed tests: `test_lifecycle_follows_declared_transitions_only`, `test_second_active_or_draining_installation_is_refused`, `test_lifecycle_events_are_append_only_and_ordered`, `test_new_installation_inherits_no_operational_state`.
+A naive time is `timestamp-invalid` for every operation; times are returned timezone-aware in UTC with their microseconds.
+
+Proposed tests: `test_lifecycle_follows_declared_transitions_only`, `test_draining_installation_can_be_retired_destructively`, `test_second_active_or_draining_installation_is_refused`, `test_lifecycle_events_are_append_only_and_ordered`, `test_new_installation_inherits_no_operational_state`, `test_timestamps_must_be_timezone_aware_and_are_returned_in_utc`.
 
 ### R6 — Capability generations
 
@@ -66,11 +69,13 @@ Proposed tests: `test_generations_strictly_increase_with_exact_bytes`, `test_gen
 
 Each archival operation commits in one transaction the exact envelope BLOB, its SHA-256, sequence, kind, staged generation, receipt time, exact receipt bytes, its kind-specific record, the installation's Last Delivery, and any sequence gap; a failure at any point commits nothing. The store verifies that the envelope hashes to the header's `message_sha256` (`message-digest-mismatch`) and that the installation is active or draining (`installation-not-delivering`). An Ingest Batch stores every Source Projection as its own exact BLOB and every Source Retraction as its Source Identity, in item order, with record type, cycle identity and kind, source-page index, fragment index, and previous chain. A completion records its kind, record type, cycle identity, counts, and final chain, and a second completion for the same cycle is `cycle-already-completed`.
 
+The atomicity test injects a failure after each successive row write through test-owned SQLite triggers and requires the committed database to be unchanged every time.
+
 Proposed tests: `test_archive_commits_exact_envelope_and_receipt`, `test_ingest_batch_items_are_stored_as_separate_exact_blobs`, `test_failure_mid_transaction_commits_nothing`, `test_envelope_digest_mismatch_is_refused`, `test_archival_requires_delivering_installation`, `test_completion_records_counts_and_chain_once`.
 
 ### R8 — Idempotency, ordering, and gaps
 
-Archiving an identical message at an archived sequence returns the original receipt without a write. Different bytes at an archived sequence are `sequence-content-conflict`. A sequence at or below the installation's highest archived sequence that was never archived is `sequence-out-of-order`. A sequence more than one above the highest records a gap naming the last accepted sequence while archiving the message normally.
+Archiving an identical message at an archived sequence returns the original receipt without a write. Different bytes at an archived sequence are `sequence-content-conflict`. A sequence at or below the installation's highest archived sequence that was never archived is `sequence-out-of-order`. A sequence more than one above the highest records a gap naming the highest archived sequence, or 0 when none, while archiving the message normally, matching the `ingest-protocol` gap report.
 
 Proposed tests: `test_identical_retry_returns_prior_receipt_without_write`, `test_conflicting_bytes_at_archived_sequence_are_refused`, `test_lower_unarchived_sequence_is_out_of_order`, `test_gap_is_recorded_and_message_still_archived`.
 
@@ -82,13 +87,13 @@ Proposed tests: `test_delivery_block_is_health_data_free_and_coalesced`, `test_c
 
 ### R10 — Storage reserve
 
-Before any write, an archival operation compares `free_bytes` with `reserve_bytes`; below the reserve it fails with retryable `storage-reserve-exhausted` and writes nothing. Lifecycle, generation, and Delivery Block operations stay available below the reserve, so the Operator can still act. `storage_reserve` reports free bytes, the reserve, and whether archival is admitted.
+Before any write, an archival operation compares `free_bytes` with `reserve_bytes`; below the reserve it fails with retryable `storage-reserve-exhausted` and writes nothing. Free bytes equal to the reserve still admit archival. An identical retry, which writes nothing, still returns its prior receipt below the reserve. Lifecycle, generation, and Delivery Block operations stay available below the reserve, so the Operator can still act. `storage_reserve` reports free bytes, the reserve, and whether archival is admitted.
 
-Proposed tests: `test_archival_below_reserve_is_retryable_and_writes_nothing`, `test_non_archival_operations_remain_available_below_reserve`, `test_storage_reserve_status_reports_admission`.
+Proposed tests: `test_archival_below_reserve_is_retryable_and_writes_nothing`, `test_non_archival_operations_remain_available_below_reserve`, `test_identical_retry_below_reserve_returns_prior_receipt`, `test_storage_reserve_status_reports_admission`.
 
 ### R11 — Coherent reads and replay
 
-A `StoreView` sees exactly the state committed when it opened, even while later writes commit. `accepted_envelopes(installation_id)` yields every archived sequence and exact envelope in ascending order, so callers can rebuild `ingest-protocol` delivery state; `honored_generations` and `latest_acknowledged_generation` supply its capability inputs. `installation` reports state, fingerprint, lifecycle times, highest sequence, Last Delivery, latest checkpoint receipt time, and the last reported Background Scheduling Status with its receipt time.
+A `StoreView` establishes its snapshot when it opens and sees exactly the state committed then, even while later writes commit. `accepted_envelopes(installation_id)` yields every archived sequence and exact envelope in ascending order, so callers can rebuild `ingest-protocol` delivery state; `honored_generations` and `latest_acknowledged_generation` supply its capability inputs. `installation` reports state, fingerprint, lifecycle times, highest sequence, Last Delivery, latest checkpoint receipt time, and the last reported Background Scheduling Status with its receipt time.
 
 Proposed tests: `test_view_is_isolated_from_later_commits`, `test_accepted_envelopes_replay_in_sequence_order`, `test_installation_status_reports_operational_facts`.
 
