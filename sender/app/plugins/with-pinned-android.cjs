@@ -12,19 +12,9 @@ module.exports = function withPinnedAndroid(config) {
       "classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')",
       "classpath('org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.20')",
     );
-    if (!contents.includes("// Sender JDK toolchain")) {
-      contents += `
-// Sender JDK toolchain: the launcher provisions the exact Temurin patch locally.
-subprojects { project ->
-  project.plugins.withId('org.jetbrains.kotlin.android') {
-    project.kotlin.jvmToolchain {
-      languageVersion = JavaLanguageVersion.of(17)
-      vendor = JvmVendorSpec.ADOPTIUM
-    }
-  }
-}
-`;
-    }
+    // React Native configures JDK 17 before evaluating Android libraries. Its root
+    // plugin eagerly evaluates :app, so changing toolchains here is already too
+    // late. gradle.sh restricts resolution to the checksum-verified local JDK.
     config.modResults.contents = contents;
     return config;
   });

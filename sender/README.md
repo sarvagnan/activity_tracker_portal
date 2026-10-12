@@ -34,9 +34,10 @@ same interface without a device, emulator, Android context, or actual reads.
 Continuous Native Generation keeps `app/android/` ignored. Prebuild packs the
 lockfile-installed `expo-template-bare-minimum` 57.0.30 into an ignored local
 tarball, so generation never follows a moving template tag. The config plugin
-reapplies the Gradle wrapper checksum, explicit AGP/Kotlin classpaths, and JDK
-17 toolchains. Do not edit generated Android files; change the config/plugin or
-project-owned module and regenerate instead.
+reapplies the Gradle wrapper checksum and explicit AGP/Kotlin classpaths.
+React Native configures JDK 17 toolchains; the launcher restricts their resolution
+to the pinned local JDK. Do not edit generated Android files; change the
+config/plugin or project-owned module and regenerate instead.
 
 Pins:
 
@@ -46,9 +47,8 @@ Pins:
   @types/react 19.2.18, and @types/node 26.6.5. The protocol workspace is 0.1.0.
 - `app/app.config.ts`: Android minimum API 34, compile/target API 36,
   build-tools 36.0.0, Kotlin 2.1.20, and backup disabled.
-- `app/plugins/with-pinned-android.cjs`: AGP 8.12.0, Kotlin 2.1.20, and Gradle
-  Java toolchains restricted to Adoptium JDK 17. The locked React Native catalog
-  also fixes NDK 27.1.12297006.
+- `app/plugins/with-pinned-android.cjs`: AGP 8.12.0 and Kotlin 2.1.20. The locked
+  React Native catalog also fixes NDK 27.1.12297006.
 - `toolchain/gradle-wrapper.properties`: Gradle 9.3.1 and its distribution SHA-256.
   The wrapper launcher/JAR come from the locked native template.
 - `scripts/jdk.sh`: Temurin 17.0.20.1+1, exact release URLs and SHA-256 values
@@ -57,9 +57,13 @@ Pins:
 - `app/modules/health-connect/android/build.gradle`: stable Health Connect
   connect-client 1.1.0 and JUnit 4.13.2.
 
-`gradle.sh` provisions that JDK before invoking the wrapper, so host JDK 27 is
-never used by Android tooling. Gradle toolchain auto-detection/download is off;
-only the provisioned JDK is eligible. Gradle caches also stay in `sender/.cache/`.
+`gradle.sh` provisions that JDK before invoking the wrapper and sets both
+`JAVA_HOME` and `org.gradle.java.home` to it. Gradle toolchain auto-detection and
+auto-download are off; the sole installation path is the provisioned JDK. These
+settings use system properties so they also apply to included plugin builds.
+Java/Kotlin compilation and JVM tests therefore use the same pinned JDK without
+rewriting toolchains after React Native finalizes them. Gradle caches also stay
+in `sender/.cache/`.
 An existing Android SDK with accepted licenses is required. Set `ANDROID_HOME`
 (or `ANDROID_SDK_ROOT`); macOS defaults to `$HOME/Library/Android/sdk`.
 AGP may download missing SDK/NDK packages under that SDK using accepted licenses.
