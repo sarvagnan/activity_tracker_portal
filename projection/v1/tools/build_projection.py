@@ -887,7 +887,7 @@ def positives() -> list[dict]:
             record = times(record_type, maximal) | record_body(record_type, maximal)
             tags = ["coverage", "maximal" if maximal else "minimal"]
             if maximal:
-                tags += ["envelope", "large-integer", "offset", "order"]
+                tags += ["envelope", "large-integer", "offset"]
             else:
                 tags += ["absent"]
             if any(kind.rstrip("?").startswith("measure:") or kind == "percentage" for _p, kind in RECORDS[record_type][2]):
@@ -908,7 +908,7 @@ def positives() -> list[dict]:
 
     variant_vector("exercise-session-route-consent-required", "exercise-session", route("consent-required"), ["route", "variants"])
     variant_vector("exercise-session-route-no-data", "exercise-session", route("no-data"), ["route", "variants"])
-    variant_vector("exercise-session-route-data", "exercise-session", lambda record: None, ["route", "variants", "order"])
+    variant_vector("exercise-session-route-data", "exercise-session", lambda record: None, ["route", "variants"])
 
     goals = [
         {"kind": "active-calories-burned", "active_calories_calories": 300000.0},
@@ -937,7 +937,40 @@ def positives() -> list[dict]:
         ]
         record["blocks"] = [{"repetitions": 1, "steps": steps}]
 
-    variant_vector("planned-exercise-session-every-variant", "planned-exercise-session", all_variants, ["variants", "duration", "order"])
+    variant_vector("planned-exercise-session-every-variant", "planned-exercise-session", all_variants, ["variants", "duration"])
+
+    def hard_numbers(record):
+        hard = [
+            {"kind": "cadence", "min_cadence": 5e-324, "max_cadence": 1e23},
+            {"kind": "heart-rate", "min_heart_rate": -0.0, "max_heart_rate": 1e21},
+            {"kind": "cadence", "min_cadence": 0.000001, "max_cadence": 999999999999999900000.0},
+            {"kind": "heart-rate", "min_heart_rate": 9.999999999999997e-7, "max_heart_rate": 1.7976931348623157e308},
+        ]
+        record["blocks"][0]["steps"][0]["performance_targets"] = hard
+
+    variant_vector("planned-exercise-session-hard-numbers", "planned-exercise-session", hard_numbers, ["numbers"])
+
+    def long_duration(record):
+        record["blocks"][0]["steps"][1]["completion_goal"] = {"kind": "duration", "duration": str((2**63 - 1) * 1_000_000_000 + 999_999_999)}
+
+    variant_vector("planned-exercise-session-long-duration", "planned-exercise-session", long_duration, ["duration"])
+
+    def unsorted_samples(record):
+        record["samples"] = [{"time": instant(20), "beats_per_minute": 90}, {"time": instant(5), "beats_per_minute": 72}, {"time": instant(10), "beats_per_minute": 75}]
+
+    variant_vector("heart-rate-unsorted-samples", "heart-rate", unsorted_samples, ["order"])
+
+    def unsorted_route(record):
+        record["exercise_route_result"] = {"kind": "data", "exercise_route": {"route": [location(20, False), location(5, True), location(10, False)]}}
+
+    variant_vector("exercise-session-unsorted-route", "exercise-session", unsorted_route, ["order", "route"])
+
+    def several_blocks(record):
+        first = copy.deepcopy(record["blocks"][0])
+        second = {"repetitions": 3, "description": "synthetic second block", "steps": [{"exercise_type": 46, "exercise_phase": 4, "completion_goal": {"kind": "manual-completion"}, "performance_targets": []}]}
+        record["blocks"] = [second, first]
+
+    variant_vector("planned-exercise-session-several-blocks", "planned-exercise-session", several_blocks, ["order"])
     variant_vector("planned-exercise-session-date-only", "planned-exercise-session", lambda record: record.__setitem__("has_explicit_time", False), ["coverage"])
 
     def precision(record):
@@ -986,6 +1019,14 @@ REFUSALS = [
     {"name": "lone-surrogate-title", "failure": "unrepresentable-text", "base": "sleep-session-maximal", "change": {"op": "set-string-utf16", "path": "/record/title", "value": ["0x0041", "0xD800"]}, "path": "/record/title"},
     {"name": "year-10000", "failure": "unrepresentable-instant", "base": "steps-minimal", "change": {"op": "shift-years", "paths": ["/record/start_time", "/record/end_time"], "years": 7974}, "path": "/record/start_time"},
     {"name": "offset-with-seconds", "failure": "unrepresentable-offset", "base": "steps-maximal", "change": {"op": "offset-seconds", "path": "/record/start_zone_offset", "total_seconds": 3630}, "path": "/record/start_zone_offset"},
+    {"name": "earlier-field-refuses-first", "failure": "unrepresentable-text", "base": "sleep-session-maximal", "change": {"op": "multi", "changes": [
+        {"op": "set-int", "path": "/record/stages/0/stage", "value": 99},
+        {"op": "set-string-utf16", "path": "/record/title", "value": ["0xDC00"]},
+    ]}, "path": "/record/title"},
+    {"name": "metadata-refuses-before-record", "failure": "unrepresentable-text", "base": "sleep-session-maximal", "change": {"op": "multi", "changes": [
+        {"op": "set-string-utf16", "path": "/record/title", "value": ["0xD800"]},
+        {"op": "set-string-utf16", "path": "/metadata/client_record_id", "value": ["0x0061", "0xDBFF"]},
+    ]}, "path": "/metadata/client_record_id"},
 ]
 
 

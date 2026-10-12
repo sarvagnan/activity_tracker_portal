@@ -107,8 +107,9 @@ class R11SharedSchemasAndVectors(unittest.TestCase):
         canonical = generator().canonical_bytes
         for vector in POSITIVE:
             data = vector["bytes"].encode("utf-8")
-            self.assertEqual(json.loads(data), vector["projection"], vector["name"])
-            self.assertEqual(canonical(json.loads(data)), data, vector["name"])
+            self.assertEqual(canonical(vector["projection"]), data, vector["name"])
+            # ECMAScript parses every JSON number as a double, so integers do too here.
+            self.assertEqual(canonical(json.loads(data, parse_int=float)), data, vector["name"])
             self.assertEqual(hashlib.sha256(data).hexdigest(), vector["sha256"], vector["name"])
             self.assertFalse(data.startswith(b"\xef\xbb\xbf"), vector["name"])
 

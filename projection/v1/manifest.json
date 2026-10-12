@@ -43,8 +43,8 @@
   "schemas/vo2-max.schema.json": "76a127f7a67b270a27d1e564fdeaa54c8c78ef7008eb7c01b6be81da3ae6abea",
   "schemas/weight.schema.json": "da3cd69355e327d7a5d00a719c12c019c1c9d1cf7f08b976e97126b6504eff84",
   "schemas/wheelchair-pushes.schema.json": "4344e9ed799edc2ba5d71649122242d33fb1649629bc8c9438914ad90e34cbf8",
-  "vectors/positive.json": "0c127cdc11f9cc37fc99f200c33935247b7a080d8e1c305fe25a62b45db38451",
-  "vectors/refusals.json": "9f3fda0015c4d1131ec4ee6526c7f50f4d1e62c5086c8452c57b7413886f0987",
+  "vectors/positive.json": "f22fd245afd033c2a8169fe1f070b7137573e122f005f37296986e3bff2d7500",
+  "vectors/refusals.json": "4ea1489e9cc92b54c7d154f2163fc215fbf0ec7c9d3bc9c8220f7d02e29b7c1f",
   "vectors/schema-negatives.json": "15bb56cf50d6381020b9f2a06c685fc959d09a7710a82b189c137bd83d30aa90"
  }
 }

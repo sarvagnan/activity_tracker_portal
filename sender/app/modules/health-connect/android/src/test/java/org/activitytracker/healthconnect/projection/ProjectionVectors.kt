@@ -90,7 +90,7 @@ class RecordBuilder(private val overrides: Map<String, Any?> = emptyMap()) {
         return when {
             kind == "instant" -> Instant.parse(primitive())
             kind == "offset" -> ZoneOffset.of(primitive())
-            kind == "duration" -> Duration.ofNanos(primitive().toLong())
+            kind == "duration" -> primitive().toBigInteger().divideAndRemainder(NANOS_PER_SECOND).let { (seconds, nanos) -> Duration.ofSeconds(seconds.toLong(), nanos.toLong()) }
             kind == "string" -> primitive()
             kind == "bool" -> primitive().toBooleanStrict()
             kind == "int" -> primitive().toInt()
@@ -180,7 +180,10 @@ class RecordBuilder(private val overrides: Map<String, Any?> = emptyMap()) {
             return RecordBuilder(overrides(change, base["projection"]!!.jsonObject)).build(base)
         }
 
+        private val NANOS_PER_SECOND: java.math.BigInteger = java.math.BigInteger.valueOf(1_000_000_000)
+
         private fun overrides(change: JsonObject, projection: JsonObject): Map<String, Any?> = when (change.text("op")) {
+            "multi" -> change["changes"]!!.jsonArray.fold(emptyMap()) { merged, each -> merged + overrides(each.jsonObject, projection) }
             "set-double" -> mapOf(change.text("path") to when (change.text("value")) {
                 "NaN" -> Double.NaN
                 "Infinity" -> Double.POSITIVE_INFINITY

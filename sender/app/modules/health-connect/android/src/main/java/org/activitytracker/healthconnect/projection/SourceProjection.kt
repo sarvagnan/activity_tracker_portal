@@ -6,7 +6,12 @@ import androidx.health.connect.client.records.Record
 data class ProjectionContext(
     val implementationVersion: String,
     val providerVersion: String,
-)
+) {
+    init {
+        require(implementationVersion.isNotEmpty()) { "implementationVersion must not be empty" }
+        require(providerVersion.isNotEmpty()) { "providerVersion must not be empty" }
+    }
+}
 
 /** The outcome of projecting one record (project-source-record@1). */
 sealed interface ProjectionResult {

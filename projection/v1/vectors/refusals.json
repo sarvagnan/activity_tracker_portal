@@ -123,6 +123,55 @@
     "total_seconds": 3630
    },
    "path": "/record/start_zone_offset"
+  },
+  {
+   "name": "earlier-field-refuses-first",
+   "failure": "unrepresentable-text",
+   "base": "sleep-session-maximal",
+   "change": {
+    "op": "multi",
+    "changes": [
+     {
+      "op": "set-int",
+      "path": "/record/stages/0/stage",
+      "value": 99
+     },
+     {
+      "op": "set-string-utf16",
+      "path": "/record/title",
+      "value": [
+       "0xDC00"
+      ]
+     }
+    ]
+   },
+   "path": "/record/title"
+  },
+  {
+   "name": "metadata-refuses-before-record",
+   "failure": "unrepresentable-text",
+   "base": "sleep-session-maximal",
+   "change": {
+    "op": "multi",
+    "changes": [
+     {
+      "op": "set-string-utf16",
+      "path": "/record/title",
+      "value": [
+       "0xD800"
+      ]
+     },
+     {
+      "op": "set-string-utf16",
+      "path": "/metadata/client_record_id",
+      "value": [
+       "0x0061",
+       "0xDBFF"
+      ]
+     }
+    ]
+   },
+   "path": "/metadata/client_record_id"
   }
  ]
 }

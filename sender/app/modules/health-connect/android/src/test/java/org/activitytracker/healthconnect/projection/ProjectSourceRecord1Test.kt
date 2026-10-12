@@ -148,6 +148,13 @@ class ProjectSourceRecord1Test {
     @Test
     fun metadata_device_and_client_id_are_optional() = assertProjects(ProjectionVectors.tagged("minimal"))
 
+    @Test
+    fun projection_context_requires_nonempty_versions() {
+        for ((implementation, provider) in listOf("" to "synthetic-provider-1", "0.1.0-synthetic" to "")) {
+            assertTrue(runCatching { ProjectionContext(implementation, provider) }.exceptionOrNull() is IllegalArgumentException)
+        }
+    }
+
     // R4 — Canonical bytes
 
     @Test

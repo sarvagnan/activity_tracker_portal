@@ -20,7 +20,7 @@ Record type names are the SDK class names without `Record`, in kebab case, which
 
 Kotlin, package `org.activitytracker.healthconnect.projection` in the project-owned Health Connect module, with no Android framework calls:
 
-- `ProjectionContext(implementationVersion: String, providerVersion: String)`.
+- `ProjectionContext(implementationVersion: String, providerVersion: String)`, whose construction requires both versions to be non-empty and otherwise throws `IllegalArgumentException`; an empty version is a caller error, not a projection refusal.
 - `projectSourceRecord(record: Record, context: ProjectionContext): ProjectionResult`, where `ProjectionResult` is either `Projected(recordType: String, schemaVersion: Int, bytes: ByteArray)` or `Refused(failure: String, recordType: String?, path: String)`.
 - `PROJECTION_SCHEMA_VERSIONS: Map<String, Int>`, every record type's current schema version, all `1` in this version.
 
@@ -44,7 +44,7 @@ Proposed tests: `every_pinned_record_class_has_one_schema`, `every_public_proper
 
 Each projection is one JSON object with `record_type`, `projection_schema_version`, `projection_implementation_version`, `sdk_version` (`androidx.health.connect:connect-client:1.1.0`), `provider_version`, `metadata`, and `record`. `metadata` carries `id`, `data_origin`, `last_modified_time`, `client_record_version`, `recording_method`, and, when present, `client_record_id` and `device` with its `type`, `manufacturer`, and `model`. `record` carries the type's own properties under snake_case names.
 
-Proposed tests: `projection_envelope_carries_versions_and_metadata`, `metadata_device_and_client_id_are_optional`.
+Proposed tests: `projection_envelope_carries_versions_and_metadata`, `metadata_device_and_client_id_are_optional`, `projection_context_requires_nonempty_versions`.
 
 ### R4 — Canonical bytes
 
@@ -54,7 +54,7 @@ Proposed tests: `bytes_match_rfc8785_canonical_form`, `large_integers_are_decima
 
 ### R5 — Time and duration
 
-Instants are RFC 3339 UTC with `Z` and keep the source precision in groups of three fractional digits, as `java.time.Instant.toString` prints them; a year outside 0000 to 9999 is `unrepresentable-instant`. Zone offsets are separate `±hh:mm` fields, omitted when the source has none; a zero offset is `+00:00`, not `Z`; an offset with nonzero seconds is `unrepresentable-offset`. Durations are whole nanoseconds as decimal strings.
+Instants are RFC 3339 UTC with `Z` and keep the source precision in groups of three fractional digits, as `java.time.Instant.toString` prints them; a year outside 0000 to 9999 is `unrepresentable-instant`. Zone offsets are separate `±hh:mm` fields, omitted when the source has none; a zero offset is `+00:00`, not `Z`; an offset with nonzero seconds is `unrepresentable-offset`. Durations are whole nanoseconds as decimal strings, computed without overflow, so the SDK's largest duration of `Long.MAX_VALUE` seconds plus 999,999,999 nanoseconds is `9223372036854775807999999999`.
 
 Proposed tests: `instants_keep_source_precision_in_utc`, `zone_offsets_are_separate_and_optional`, `unrepresentable_instants_and_offsets_are_refused`, `durations_are_exact_nanoseconds`.
 
@@ -84,19 +84,19 @@ Proposed tests: `exercise_route_results_project_by_kind`.
 
 ### R10 — Determinism and purity
 
-The same record and context always produce the same bytes regardless of default locale, time zone, or process; projection performs no I/O and reads no clock, package manager, or system property.
+The same record and context always produce the same bytes regardless of default locale, time zone, or process; projection performs no I/O and reads no clock, package manager, or system property. Tests observe determinism and context propagation; freedom from I/O and ambient reads is confirmed by the approver's implementation review because no test can observe its absence.
 
 Proposed tests: `projection_is_independent_of_locale_and_time_zone`, `projection_reads_only_its_inputs`.
 
 ### R11 — Shared schemas and vectors
 
-`projection/v1/tools/build_projection.py` generates, and with `--check` verifies, everything else under `projection/v1/`: `model.json`, the field-by-field model the Kotlin tests read; one closed JSON Schema Draft 2020-12 per type in `schemas/`, with `additionalProperties: false` throughout; `vectors/positive.json`, 92 synthetic projections with exact bytes and SHA-256, a minimal and a maximal record for every type plus tagged vectors for numbers, text, precision, offsets, durations, variants, routes, and context; `vectors/refusals.json`, 11 SDK-level refusal cases covering every named failure; `vectors/schema-negatives.json`, 14 projections the schemas must reject; and `manifest.json`. The Python suite validates every positive vector against its schema, rejects every schema negative, and confirms canonical form and the manifest; the Kotlin suite builds each vector's SDK record through the SDK's own constructors and compares the projection's bytes exactly.
+`projection/v1/tools/build_projection.py` generates, and with `--check` verifies, everything else under `projection/v1/`: `model.json`, the field-by-field model the Kotlin tests read; one closed JSON Schema Draft 2020-12 per type in `schemas/`, with `additionalProperties: false` throughout; `vectors/positive.json`, 97 synthetic projections with exact bytes and SHA-256, a minimal and a maximal record for every type plus tagged vectors for numbers (including `5e-324`, `1e+23`, `1e+21`, negative zero, and both sides of `1e-6`), text, precision, offsets, durations (including one beyond `Long` nanoseconds), non-chronological list order, variants, routes, and context; `vectors/refusals.json`, 13 SDK-level refusal cases covering every named failure and the refusal traversal order; `vectors/schema-negatives.json`, 14 projections the schemas must reject; and `manifest.json`. The Python suite validates every positive vector against its schema, rejects every schema negative, and confirms canonical form and the manifest; the Kotlin suite builds each vector's SDK record through the SDK's own constructors and compares the projection's bytes exactly.
 
 Proposed tests: `every_vector_projects_to_its_expected_bytes` (Kotlin); `test_every_record_type_has_one_closed_schema`, `test_schemas_are_closed`, `test_positive_vectors_conform_to_their_schemas`, `test_schema_negatives_are_rejected`, `test_vectors_are_canonical`, `test_vector_manifest_matches_files`, `test_refusal_vectors_cover_every_named_failure` (Python).
 
 ### R12 — Health-data-free refusals
 
-A refusal carries only the failure name, the record type when known, and the JSON path of the offending field, never field values, so the page reader can persist a health-data-free refusal identity.
+A refusal carries only the failure name, the record type when known, and the JSON path of the offending field, never field values, so the page reader can persist a health-data-free refusal identity. When several fields would refuse, the refusal names the first in a fixed traversal: `metadata` before `record`; within an object, fields in the order `projection/v1/model.json` declares them, not serialization order; list elements by index; depth first.
 
 Proposed tests: `refusals_carry_no_field_values`.
 
