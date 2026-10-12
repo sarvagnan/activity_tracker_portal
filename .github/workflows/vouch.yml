@@ -1,0 +1,167 @@
+name: vouch
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+    inputs:
+      anchoring:
+        description: Publish a Vouch anchor after the caller's required jobs pass
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: vouch-anchor-${{ github.repository_id }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - name: Verify vouch.lock against the recorded digest
+        shell: bash
+        run: python vouch.lock self-check --expect @.vouch/config.json
+      - name: Vouch check
+        shell: bash
+        run: python vouch.lock check --ci --root .vouch --project . --pending-anchor-ok
+      - name: Exhaustive Vouch formal check
+        shell: bash
+        run: python vouch.lock formal
+
+  anchor_plan:
+    needs: [validation]
+    if: inputs.anchoring == true && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.candidate.outputs.changed }}
+      candidate: ${{ steps.candidate.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - name: Verify vouch.lock against the recorded digest
+        shell: bash
+        run: python vouch.lock self-check --expect @.vouch/config.json
+      - name: Advance evidence anchors and prepare candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' > "$RUNNER_TEMP/vouch-evidence-heads"
+          import json
+          from pathlib import Path
+
+          state = json.loads(Path(".vouch/state.json").read_text())
+          for head in state["evidence_heads"]:
+              if not head["anchor_run_id"]:
+                  print(head["unit_name"])
+          PY
+          while IFS= read -r unit_name; do
+            python vouch.lock advance-anchor --root .vouch --unit-name "$unit_name"
+          done < "$RUNNER_TEMP/vouch-evidence-heads"
+          python vouch.lock generate --root .vouch
+          python vouch.lock check --ci --root .vouch --project .
+          python vouch.lock formal
+          git add -- .vouch/
+          if git diff --cached --quiet; then
+            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "vouch-anchor-bot"
+          git config user.email "vouch-anchor-bot@users.noreply.github.com"
+          git commit -m "vouch: advance evidence anchors"
+          candidate="$(git rev-parse HEAD)"
+          git branch vouch-candidate "$candidate"
+          git bundle create "$RUNNER_TEMP/vouch-candidate.bundle" refs/heads/vouch-candidate
+          git branch -D vouch-candidate
+          (cd "$RUNNER_TEMP" && sha256sum vouch-candidate.bundle > vouch-candidate.bundle.sha256)
+          printf 'changed=true\ncandidate=%s\n' "$candidate" >> "$GITHUB_OUTPUT"
+      - name: Upload same-run candidate transport
+        if: steps.candidate.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vouch-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/vouch-candidate.bundle
+            ${{ runner.temp }}/vouch-candidate.bundle.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  anchor_publish:
+    needs: [anchor_plan]
+    if: needs.anchor_plan.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download same-run candidate transport
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vouch-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vouch-candidate
+      - name: Validate candidate and publish
+        shell: bash
+        env:
+          VOUCH_PUSH_TOKEN: ${{ github.token }}
+          PLANNED_BASE: ${{ github.sha }}
+          CANDIDATE: ${{ needs.anchor_plan.outputs.candidate }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          transport="$RUNNER_TEMP/vouch-candidate"
+          (cd "$transport" && sha256sum -c vouch-candidate.bundle.sha256) || exit 1
+          [[ "$PLANNED_BASE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+
+          publish="$RUNNER_TEMP/vouch-publish"
+          git init -q "$publish"
+          cd "$publish"
+          git remote add origin "https://x-access-token:${VOUCH_PUSH_TOKEN}@github.com/${{ github.repository }}.git"
+          git fetch -q --no-tags origin "$PLANNED_BASE"
+          git fetch -q "$transport/vouch-candidate.bundle" refs/heads/vouch-candidate
+          test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE" || exit 1
+
+          # The candidate has exactly one parent and it is the plan job's exact base.
+          parents="$(git rev-list --parents -n 1 "$CANDIDATE")"
+          test "$(printf '%s\n' "$parents" | awk '{print NF - 1}')" -eq 1 || exit 1
+          test "$(git rev-parse "$CANDIDATE^")" = "$PLANNED_BASE" || exit 1
+
+          git diff-tree --no-commit-id --name-only -r -z "$PLANNED_BASE" "$CANDIDATE" > "$RUNNER_TEMP/vouch-paths"
+          git ls-tree -r -z "$CANDIDATE" -- .vouch > "$RUNNER_TEMP/vouch-tree"
+          # Reject paths outside .vouch/, symlink mode 120000, submodule 160000,
+          # or any other non-regular mode before the write credential is used.
+          python - "$RUNNER_TEMP/vouch-paths" "$RUNNER_TEMP/vouch-tree" <<'PY'
+          import sys
+          from pathlib import Path
+
+          paths = tuple(item for item in Path(sys.argv[1]).read_bytes().split(b"\0") if item)
+          if not paths or any(not item.startswith(b".vouch/") for item in paths):
+              raise SystemExit("candidate changes a path outside .vouch/")
+          records = tuple(item for item in Path(sys.argv[2]).read_bytes().split(b"\0") if item)
+          for record in records:
+              metadata, _path = record.split(b"\t", 1)
+              mode = metadata.split(b" ", 1)[0]
+              if mode not in {b"100644", b"100755"}:
+                  raise SystemExit(f"candidate introduces non-regular mode {mode!r}")
+          PY
+
+          live="$(git ls-remote origin "refs/heads/$DEFAULT_BRANCH" | awk 'NR == 1 {print $1}')"
+          test "$live" = "$PLANNED_BASE" || exit 1
+          git config core.hooksPath /dev/null
+          git push origin "$CANDIDATE:refs/heads/$DEFAULT_BRANCH"

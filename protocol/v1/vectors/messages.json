@@ -1,0 +1,609 @@
+{
+  "description": "Positive messages: exact canonical bytes, identity, and decoded value.",
+  "vectors": [
+    {
+      "name": "enrollment-offer",
+      "tags": [
+        "enrollment"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "enrollment-offer",
+        "enrollment_code": "SYNTHETICCODE234",
+        "portal_url": "http://portal.synthetic.invalid:8000",
+        "expires_at": "2030-01-01T00:10:00.000Z"
+      },
+      "bytes": {
+        "text": "{\"enrollment_code\":\"SYNTHETICCODE234\",\"expires_at\":\"2030-01-01T00:10:00.000Z\",\"kind\":\"enrollment-offer\",\"portal_url\":\"http://portal.synthetic.invalid:8000\",\"wire_version\":1}"
+      },
+      "sha256": "b8fd10883d534cfb69d471bc6e45b17bb6251de9c234ad08e5287dd2148fba80"
+    },
+    {
+      "name": "enrollment-confirmation",
+      "tags": [
+        "enrollment"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "enrollment-confirmation",
+        "enrollment_code": "SYNTHETICCODE234",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "fingerprint": "11e594f481958c10e3015d0bf0447a22f068a8a647f475df15ce2c7ab4b8f3f1"
+      },
+      "bytes": {
+        "text": "{\"enrollment_code\":\"SYNTHETICCODE234\",\"fingerprint\":\"11e594f481958c10e3015d0bf0447a22f068a8a647f475df15ce2c7ab4b8f3f1\",\"kind\":\"enrollment-confirmation\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"wire_version\":1}"
+      },
+      "sha256": "4926282cb720e7b4c801fee1b3311dd07c17d35e8b2581cbb93b6540e0fc059d"
+    },
+    {
+      "name": "capability-advertisement",
+      "tags": [
+        "capability"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "capability-advertisement",
+        "generation": 1,
+        "wire_versions": [
+          1
+        ],
+        "projection_schemas": [
+          {
+            "record_type": "heart-rate",
+            "versions": [
+              1
+            ]
+          },
+          {
+            "record_type": "steps",
+            "versions": [
+              1,
+              2
+            ]
+          }
+        ],
+        "max_record_count": 3,
+        "max_message_bytes": 4096
+      },
+      "bytes": {
+        "text": "{\"generation\":1,\"kind\":\"capability-advertisement\",\"max_message_bytes\":4096,\"max_record_count\":3,\"projection_schemas\":[{\"record_type\":\"heart-rate\",\"versions\":[1]},{\"record_type\":\"steps\",\"versions\":[1,2]}],\"wire_version\":1,\"wire_versions\":[1]}"
+      },
+      "sha256": "f69d6e1b9497730dbc8d30595adfe64f65b37224703975d3f134b047b481c533"
+    },
+    {
+      "name": "capability-advertisement-several-types",
+      "tags": [
+        "capability"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "capability-advertisement",
+        "generation": 2,
+        "wire_versions": [
+          1
+        ],
+        "projection_schemas": [
+          {
+            "record_type": "heart-rate",
+            "versions": [
+              1
+            ]
+          },
+          {
+            "record_type": "sleep-session",
+            "versions": [
+              1
+            ]
+          },
+          {
+            "record_type": "steps",
+            "versions": [
+              1,
+              2
+            ]
+          }
+        ],
+        "max_record_count": 500,
+        "max_message_bytes": 1048576
+      },
+      "bytes": {
+        "text": "{\"generation\":2,\"kind\":\"capability-advertisement\",\"max_message_bytes\":1048576,\"max_record_count\":500,\"projection_schemas\":[{\"record_type\":\"heart-rate\",\"versions\":[1]},{\"record_type\":\"sleep-session\",\"versions\":[1]},{\"record_type\":\"steps\",\"versions\":[1,2]}],\"wire_version\":1,\"wire_versions\":[1]}"
+      },
+      "sha256": "d3ad5ed0f2f15421deebb3d7b3225252e7381a4f25e6e96c0636fb41605bf091"
+    },
+    {
+      "name": "capability-acknowledgement",
+      "tags": [
+        "capability",
+        "acknowledgement"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "capability-acknowledgement",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 1,
+        "capability_generation": 1
+      },
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"kind\":\"capability-acknowledgement\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+      },
+      "sha256": "78819a40d2294b7f3380b749857d3b564d473d2f36f46e667e377c138ab3ea00"
+    },
+    {
+      "name": "ingest-batch-projections",
+      "tags": [
+        "ingest-items"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "ingest-batch",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "capability_generation": 1,
+        "record_type": "steps",
+        "projection_schema_version": 1,
+        "cycle_kind": "initial-snapshot",
+        "cycle_id": "00000000-0000-4000-8000-100000000001",
+        "source_page_index": 1,
+        "fragment_index": 1,
+        "previous_chain": "05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7",
+        "items": [
+          {
+            "kind": "projection",
+            "data": "eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0="
+          },
+          {
+            "kind": "projection",
+            "data": "eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0="
+          }
+        ]
+      },
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+    },
+    {
+      "name": "ingest-batch-retraction-and-escaping",
+      "tags": [
+        "ingest-items",
+        "escaping"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "ingest-batch",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 3,
+        "capability_generation": 1,
+        "record_type": "heart-rate",
+        "projection_schema_version": 1,
+        "cycle_kind": "change-cycle",
+        "cycle_id": "00000000-0000-4000-8000-100000000002",
+        "source_page_index": 1,
+        "fragment_index": 1,
+        "previous_chain": "6d3bfb4fcfe9dee63c5f3f28b5d63632190759c36838c21dc042d29d75f872ae",
+        "items": [
+          {
+            "kind": "retraction",
+            "source_identity": "synthetic-\"quoted\"-\\-ü-雪"
+          },
+          {
+            "kind": "projection",
+            "data": "eyJzeW50aGV0aWMiOiJoZWFydC1yYXRlLTEifQ=="
+          }
+        ]
+      },
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000002\",\"cycle_kind\":\"change-cycle\",\"fragment_index\":1,\"items\":[{\"kind\":\"retraction\",\"source_identity\":\"synthetic-\\\"quoted\\\"-\\\\-ü-雪\"},{\"data\":\"eyJzeW50aGV0aWMiOiJoZWFydC1yYXRlLTEifQ==\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"6d3bfb4fcfe9dee63c5f3f28b5d63632190759c36838c21dc042d29d75f872ae\",\"projection_schema_version\":1,\"record_type\":\"heart-rate\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "sha256": "7930071eff1d90d396c7d9da71a07ca913b5e405a6403e498500a69147af69cd"
+    },
+    {
+      "name": "ingest-batch-empty-page",
+      "tags": [
+        "ingest-items",
+        "empty-page"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "ingest-batch",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 4,
+        "capability_generation": 1,
+        "record_type": "steps",
+        "projection_schema_version": 1,
+        "cycle_kind": "initial-snapshot",
+        "cycle_id": "00000000-0000-4000-8000-100000000003",
+        "source_page_index": 1,
+        "fragment_index": 1,
+        "previous_chain": "85e50a88376e61f275dc04fef0abb891dfd367dda83cefc658382fd2ae420042",
+        "items": []
+      },
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000003\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[],\"kind\":\"ingest-batch\",\"previous_chain\":\"85e50a88376e61f275dc04fef0abb891dfd367dda83cefc658382fd2ae420042\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":4,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "sha256": "f8d248231ed8c9991d94395da235ffa72b279b4bae70149fa3e32b6aff60a637"
+    },
+    {
+      "name": "ingest-batch-opaque-projection-bytes",
+      "tags": [
+        "ingest-items",
+        "opaque"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "ingest-batch",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 8,
+        "capability_generation": 1,
+        "record_type": "steps",
+        "projection_schema_version": 1,
+        "cycle_kind": "initial-snapshot",
+        "cycle_id": "00000000-0000-4000-8000-100000000004",
+        "source_page_index": 1,
+        "fragment_index": 1,
+        "previous_chain": "1731338d1685061328bba055197180b09869b818a23d1bab4eb9924ace5f3f28",
+        "items": [
+          {
+            "kind": "projection",
+            "data": "eyJzeW50aGV0aWMiOv/+AA=="
+          }
+        ]
+      },
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000004\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOv/+AA==\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"1731338d1685061328bba055197180b09869b818a23d1bab4eb9924ace5f3f28\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":8,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "sha256": "7567c08b533584074e9c5fc24b3ea6db44c6f39013cf78f468efbeb35a4bbfbf"
+    },
+    {
+      "name": "snapshot-completion-initial",
+      "tags": [
+        "completion"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "snapshot-completion",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 9,
+        "capability_generation": 1,
+        "snapshot_kind": "initial",
+        "record_type": "steps",
+        "cycle_id": "00000000-0000-4000-8000-100000000001",
+        "page_count": 2,
+        "fragment_count": 3,
+        "record_count": 6,
+        "final_chain": "9ab46e2687701573a7de40c52da3efa0dc8c81ed18f7664ee2399b3af23b9a8c"
+      },
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"final_chain\":\"9ab46e2687701573a7de40c52da3efa0dc8c81ed18f7664ee2399b3af23b9a8c\",\"fragment_count\":3,\"kind\":\"snapshot-completion\",\"page_count\":2,\"record_count\":6,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":9,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+      },
+      "sha256": "3431e43c56c1d18c4bc1456c643c0b54eb321a3df0af13667731d5935dce07bc"
+    },
+    {
+      "name": "snapshot-completion-reconciliation",
+      "tags": [
+        "completion"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "snapshot-completion",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 10,
+        "capability_generation": 1,
+        "snapshot_kind": "reconciliation",
+        "record_type": "steps",
+        "cycle_id": "00000000-0000-4000-8000-100000000005",
+        "page_count": 1,
+        "fragment_count": 1,
+        "record_count": 2,
+        "final_chain": "f64953692b04f9fba671c6e0cbdf5300cd0ac9b7f5f0060985b49ed8be9fc3d9"
+      },
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000005\",\"final_chain\":\"f64953692b04f9fba671c6e0cbdf5300cd0ac9b7f5f0060985b49ed8be9fc3d9\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":10,\"snapshot_kind\":\"reconciliation\",\"wire_version\":1}"
+      },
+      "sha256": "9cdc7f19492b1a42a09f80ab25e06fdb6056fc90e53ac1feb166b41cebad3228"
+    },
+    {
+      "name": "change-completion",
+      "tags": [
+        "completion"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "change-completion",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 11,
+        "capability_generation": 1,
+        "record_type": "heart-rate",
+        "cycle_id": "00000000-0000-4000-8000-100000000002",
+        "page_count": 1,
+        "fragment_count": 1,
+        "record_count": 2,
+        "final_chain": "81c104bc0b3c45d828d9b8158a17d060f1285f2ac1ab3469be4862e7961c0b7e"
+      },
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000002\",\"final_chain\":\"81c104bc0b3c45d828d9b8158a17d060f1285f2ac1ab3469be4862e7961c0b7e\",\"fragment_count\":1,\"kind\":\"change-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"heart-rate\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":11,\"wire_version\":1}"
+      },
+      "sha256": "7e501c6f7e58bb57391b10f45097bd23c6cd230428d8dcf859811596312e3465"
+    },
+    {
+      "name": "change-completion-empty-cycle",
+      "tags": [
+        "completion",
+        "empty-cycle"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "change-completion",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 12,
+        "capability_generation": 1,
+        "record_type": "steps",
+        "cycle_id": "00000000-0000-4000-8000-100000000006",
+        "page_count": 0,
+        "fragment_count": 0,
+        "record_count": 0,
+        "final_chain": "7f404081c15a89085b85d5ab4cfc7bd7d4d53a8b664ec2c86b16bb34dcf3a0ca"
+      },
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000006\",\"final_chain\":\"7f404081c15a89085b85d5ab4cfc7bd7d4d53a8b664ec2c86b16bb34dcf3a0ca\",\"fragment_count\":0,\"kind\":\"change-completion\",\"page_count\":0,\"record_count\":0,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":12,\"wire_version\":1}"
+      },
+      "sha256": "480acf1dae8352555af3966957f42b2ffe9a5552b852da112740b6ea2c43b1ac"
+    },
+    {
+      "name": "sync-checkpoint-every-outcome-and-reason",
+      "tags": [
+        "checkpoint"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "sync-checkpoint",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 5,
+        "capability_generation": 1,
+        "run_sequence": 5,
+        "trigger": "background",
+        "started_at": "2030-01-01T00:00:00.000Z",
+        "ended_at": "2030-01-01T00:01:30.250Z",
+        "background_scheduling": "available",
+        "record_types": [
+          {
+            "record_type": "active-calories-burned",
+            "outcome": "not-due",
+            "source_data_staged": false
+          },
+          {
+            "record_type": "blood-pressure",
+            "outcome": "no-change",
+            "source_data_staged": false
+          },
+          {
+            "record_type": "body-fat",
+            "outcome": "progressed",
+            "source_data_staged": true,
+            "reason": "time-budget-reached"
+          },
+          {
+            "record_type": "distance",
+            "outcome": "progressed",
+            "source_data_staged": true
+          },
+          {
+            "record_type": "exercise-session",
+            "outcome": "completed",
+            "source_data_staged": true
+          },
+          {
+            "record_type": "heart-rate",
+            "outcome": "deferred",
+            "source_data_staged": false,
+            "reason": "collection-disabled"
+          },
+          {
+            "record_type": "height",
+            "outcome": "deferred",
+            "source_data_staged": false,
+            "reason": "storage-pressure"
+          },
+          {
+            "record_type": "hydration",
+            "outcome": "deferred",
+            "source_data_staged": false,
+            "reason": "screen-lock-removed"
+          },
+          {
+            "record_type": "nutrition",
+            "outcome": "blocked",
+            "source_data_staged": false,
+            "reason": "projection-refusal"
+          },
+          {
+            "record_type": "oxygen-saturation",
+            "outcome": "blocked",
+            "source_data_staged": false,
+            "reason": "record-too-large"
+          },
+          {
+            "record_type": "respiratory-rate",
+            "outcome": "blocked",
+            "source_data_staged": false,
+            "reason": "delivery-blocked"
+          },
+          {
+            "record_type": "resting-heart-rate",
+            "outcome": "not-permitted",
+            "source_data_staged": false
+          },
+          {
+            "record_type": "sleep-session",
+            "outcome": "failed",
+            "source_data_staged": false,
+            "reason": "read-failed"
+          },
+          {
+            "record_type": "steps",
+            "outcome": "progressed",
+            "source_data_staged": true,
+            "reason": "changes-token-expired"
+          },
+          {
+            "record_type": "total-calories-burned",
+            "outcome": "interrupted",
+            "source_data_staged": false
+          },
+          {
+            "record_type": "weight",
+            "outcome": "interrupted",
+            "source_data_staged": false,
+            "reason": "permission-missing"
+          }
+        ],
+        "outbox_messages_before_checkpoint": 4,
+        "outbox_bytes_before_checkpoint": 18432,
+        "elapsed_ms": 90250
+      },
+      "bytes": {
+        "text": "{\"background_scheduling\":\"available\",\"capability_generation\":1,\"elapsed_ms\":90250,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"not-due\",\"record_type\":\"active-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"no-change\",\"record_type\":\"blood-pressure\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"time-budget-reached\",\"record_type\":\"body-fat\",\"source_data_staged\":true},{\"outcome\":\"progressed\",\"record_type\":\"distance\",\"source_data_staged\":true},{\"outcome\":\"completed\",\"record_type\":\"exercise-session\",\"source_data_staged\":true},{\"outcome\":\"deferred\",\"reason\":\"collection-disabled\",\"record_type\":\"heart-rate\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"storage-pressure\",\"record_type\":\"height\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"screen-lock-removed\",\"record_type\":\"hydration\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"projection-refusal\",\"record_type\":\"nutrition\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"record-too-large\",\"record_type\":\"oxygen-saturation\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"delivery-blocked\",\"record_type\":\"respiratory-rate\",\"source_data_staged\":false},{\"outcome\":\"not-permitted\",\"record_type\":\"resting-heart-rate\",\"source_data_staged\":false},{\"outcome\":\"failed\",\"reason\":\"read-failed\",\"record_type\":\"sleep-session\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"changes-token-expired\",\"record_type\":\"steps\",\"source_data_staged\":true},{\"outcome\":\"interrupted\",\"record_type\":\"total-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"interrupted\",\"reason\":\"permission-missing\",\"record_type\":\"weight\",\"source_data_staged\":false}],\"run_sequence\":5,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":5,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"background\",\"wire_version\":1}"
+      },
+      "sha256": "f2237a7251eccf2977423bb74bf6d47e4d17790733954444cc5fb600918e89bb"
+    },
+    {
+      "name": "sync-checkpoint-without-elapsed-duration",
+      "tags": [
+        "checkpoint"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "sync-checkpoint",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 6,
+        "capability_generation": 1,
+        "run_sequence": 6,
+        "trigger": "foreground",
+        "started_at": "2030-01-01T00:00:00.000Z",
+        "ended_at": "2030-01-01T00:01:30.250Z",
+        "background_scheduling": "restricted",
+        "record_types": [
+          {
+            "record_type": "steps",
+            "outcome": "no-change",
+            "source_data_staged": false
+          }
+        ],
+        "outbox_messages_before_checkpoint": 4,
+        "outbox_bytes_before_checkpoint": 18432
+      },
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "sha256": "ec07ad1b77150081044e022244e70e1f982a5bdf3bcd94adee1797efdc7cd063"
+    },
+    {
+      "name": "sync-checkpoint-no-record-types",
+      "tags": [
+        "checkpoint"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "sync-checkpoint",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 7,
+        "capability_generation": 1,
+        "run_sequence": 7,
+        "trigger": "manual",
+        "started_at": "2030-01-01T00:00:00.000Z",
+        "ended_at": "2030-01-01T00:01:30.250Z",
+        "background_scheduling": "unregistered",
+        "record_types": [],
+        "outbox_messages_before_checkpoint": 4,
+        "outbox_bytes_before_checkpoint": 18432,
+        "elapsed_ms": 0
+      },
+      "bytes": {
+        "text": "{\"background_scheduling\":\"unregistered\",\"capability_generation\":1,\"elapsed_ms\":0,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[],\"run_sequence\":7,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":7,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"manual\",\"wire_version\":1}"
+      },
+      "sha256": "13bff246cba50d0659798e011c44056eb23418c128ac770a6bb919f22fe1063f"
+    },
+    {
+      "name": "delivery-receipt",
+      "tags": [
+        "receipt"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "delivery-receipt",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "bytes": {
+        "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+      },
+      "sha256": "6e1be200eac2d5c03ec9fc54dcef044aeffc86a52945fd3cb5df7b163a2e7d67"
+    },
+    {
+      "name": "retryable-failure-storage-reserve-exhausted",
+      "tags": [
+        "retryable"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "retryable-failure",
+        "reason": "storage-reserve-exhausted"
+      },
+      "bytes": {
+        "text": "{\"kind\":\"retryable-failure\",\"reason\":\"storage-reserve-exhausted\",\"wire_version\":1}"
+      },
+      "sha256": "6183ba5165855f299cd21125a7e9d5d679b5c76ef0a7c452f9529e4f0f92a311"
+    },
+    {
+      "name": "retryable-failure-temporarily-unavailable",
+      "tags": [
+        "retryable"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "retryable-failure",
+        "reason": "temporarily-unavailable"
+      },
+      "bytes": {
+        "text": "{\"kind\":\"retryable-failure\",\"reason\":\"temporarily-unavailable\",\"wire_version\":1}"
+      },
+      "sha256": "91839595eaa2509fa2db52412a75ca7e63078200a9629ead4b6e290f24a9b23b"
+    },
+    {
+      "name": "delivery-block-with-identity",
+      "tags": [
+        "block"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "delivery-block",
+        "failure": "completion-chain-mismatch",
+        "message_sha256": "3431e43c56c1d18c4bc1456c643c0b54eb321a3df0af13667731d5935dce07bc",
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 9
+      },
+      "bytes": {
+        "text": "{\"failure\":\"completion-chain-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"3431e43c56c1d18c4bc1456c643c0b54eb321a3df0af13667731d5935dce07bc\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":9,\"wire_version\":1}"
+      },
+      "sha256": "72bca5f3652e5b45341831b4fc9591a63ff3a302a3b016c0cbfb82997079c9a3"
+    },
+    {
+      "name": "delivery-block-without-identity",
+      "tags": [
+        "block"
+      ],
+      "value": {
+        "wire_version": 1,
+        "kind": "delivery-block",
+        "failure": "malformed-message",
+        "message_sha256": "a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89"
+      },
+      "bytes": {
+        "text": "{\"failure\":\"malformed-message\",\"kind\":\"delivery-block\",\"message_sha256\":\"a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89\",\"wire_version\":1}"
+      },
+      "sha256": "ade93307e06651fb4b9a74f67c83e451a6243a2ced7f5b4a686e0e5d381beb05"
+    }
+  ]
+}

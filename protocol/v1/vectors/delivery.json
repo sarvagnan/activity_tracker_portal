@@ -1,0 +1,2747 @@
+{
+  "description": "Portal delivery evaluation: ordered steps with their exact responses.",
+  "vectors": [
+    {
+      "name": "first-fragment-accepted",
+      "tags": [
+        "receipt-identity"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "identical-retry-returns-same-receipt",
+      "tags": [
+        "identical-retry"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "same-sequence-different-bytes-blocks",
+      "tags": [
+        "sequence-content"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "sequence-content-mismatch",
+            "response": {
+              "text": "{\"failure\":\"sequence-content-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"6dad37871f5b392f8b982c55d43c35721ffba631a7efb608de35e3e4f63b8a19\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "gap-is-reported",
+      "tags": [
+        "gap"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":1,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"41c5def57169591b8fca4cffdf508c2a4f0c4601a2cb973d2106375bb25f29f3\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":3,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"48fbab3e68a33f0f2ff7b7723926ca4c3b5754f6222a1ddf92dd0a8321c12ac2\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+            },
+            "gap_after": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "first-message-after-lost-history-reports-gap",
+      "tags": [
+        "gap"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":3,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"48fbab3e68a33f0f2ff7b7723926ca4c3b5754f6222a1ddf92dd0a8321c12ac2\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+            },
+            "gap_after": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "older-unseen-sequence-blocks",
+      "tags": [
+        "out-of-order"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":1,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"41c5def57169591b8fca4cffdf508c2a4f0c4601a2cb973d2106375bb25f29f3\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":3,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"48fbab3e68a33f0f2ff7b7723926ca4c3b5754f6222a1ddf92dd0a8321c12ac2\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+            },
+            "gap_after": 1
+          }
+        },
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":2,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "sequence-out-of-order",
+            "response": {
+              "text": "{\"failure\":\"sequence-out-of-order\",\"kind\":\"delivery-block\",\"message_sha256\":\"452629ec10a2ad3bbc1df5531f69b8c0f2571f44656543b9f1ed3ce9aa3d68da\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unhonored-generation-blocks",
+      "tags": [
+        "versions",
+        "staging-generation"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":2,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":1,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "unsupported-wire-protocol",
+            "response": {
+              "text": "{\"failure\":\"unsupported-wire-protocol\",\"kind\":\"delivery-block\",\"message_sha256\":\"3ed8c58359bd0d207977016437b1ea3c14c4309a2070ad8a776a67da1ad499b4\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "projection-schema-independent-of-wire-version",
+      "tags": [
+        "versions",
+        "no-partial-success"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":3,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "unsupported-source-projection-schema",
+            "response": {
+              "text": "{\"failure\":\"unsupported-source-projection-schema\",\"kind\":\"delivery-block\",\"message_sha256\":\"d30f285585f58e6d9ef1f764b154ba6f3a4929f1685551d4ef87e4b65465b4a5\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"f389dece85f09dd359ba0a88baa5fa9961cb26cf87df359eef8d5efc9f35aed4\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "record-type-outside-generation-blocks",
+      "tags": [
+        "versions"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJ3ZWlnaHQtMSJ9\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"weight\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "unsupported-source-projection-schema",
+            "response": {
+              "text": "{\"failure\":\"unsupported-source-projection-schema\",\"kind\":\"delivery-block\",\"message_sha256\":\"0d869d86dd995100728615863f9ab7ea3a618cd248ed29f7db77639efbf723e5\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "record-count-limit-blocks",
+      "tags": [
+        "limits",
+        "no-partial-success"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0zIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy00In0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "record-count-limit-exceeded",
+            "response": {
+              "text": "{\"failure\":\"record-count-limit-exceeded\",\"kind\":\"delivery-block\",\"message_sha256\":\"593462e6725261e3bb07d8aafb7256fedea1772ad268cf76fa6335bde34aacaf\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "byte-limit-blocks",
+      "tags": [
+        "limits"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "uncompressed-byte-limit-exceeded",
+            "response": {
+              "text": "{\"failure\":\"uncompressed-byte-limit-exceeded\",\"kind\":\"delivery-block\",\"message_sha256\":\"dbf3da3d80e2c596c9383ff42a5050a88499bdab7647171db4b84d077aba4068\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "multi-page-snapshot-completes",
+      "tags": [
+        "completion-accepted"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000011\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0zIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"338ae1f83b32763b4340aba962ba63d6daaf030f0c01d4e0458325965628b777\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"3f72eee3224f834b370a495c815c25397a8344337a7060f3b6195acdb74c9b1d\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000011\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":2,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"8b593593fa3dbe307cc1770ba5b9e89e1eb2d3323a0602b8520ab8647787b8ca\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"8a77007b88230ee8939a8ec512141872b7f27813ae3544c843389395fa4f6fc8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000011\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"374b89f194d8b892d4b9066530420c64626b78aab35be380e0e04938a245bec7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"source_page_index\":2,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"5bc28eb5b6f7856f855681f927f815c3b93e9f3e8aae3a21f607606720bed7ae\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000011\",\"final_chain\":\"91cc0db74eef8983183bdd344230ffa7efd072ef4189a107f7bbe337ca5c6d19\",\"fragment_count\":3,\"kind\":\"snapshot-completion\",\"page_count\":2,\"record_count\":6,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":4,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"07a9dfbf216263fc8d465b75f82751088dab77597d7b51884056f7525d01bb00\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":4,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "first-fragment-without-starting-chain-blocks",
+      "tags": [
+        "fragment-order"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "fragment-order-mismatch",
+            "response": {
+              "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"e82b327c29ad648bb365657263b62d9d1b48f95bec86e16bd855d19907dedc19\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "first-fragment-not-on-page-one-blocks",
+      "tags": [
+        "fragment-order"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":2,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "fragment-order-mismatch",
+            "response": {
+              "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"c0d66986b4c9f3a2ec0d99f9f762d0acde3458d352fd3ae97acd5341e3e1e09f\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "skipped-fragment-blocks",
+      "tags": [
+        "fragment-order"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":3,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"f98ed64f7157cb9f983a350f74caaae9056822cc146f40b80a4d5cdcb8ed6fb9\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "fragment-order-mismatch",
+            "response": {
+              "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"a87f37551058da36f677405e957ccf171a4c841230c1bb84bc8046c76be99ef0\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "skipped-page-blocks",
+      "tags": [
+        "fragment-order"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"f98ed64f7157cb9f983a350f74caaae9056822cc146f40b80a4d5cdcb8ed6fb9\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":3,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "fragment-order-mismatch",
+            "response": {
+              "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"d0cd1bafda312945d4bdcba88c598a34c0ca8feb8766da723bd499f9dba467fe\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "wrong-previous-chain-blocks",
+      "tags": [
+        "fragment-order"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":2,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "fragment-order-mismatch",
+            "response": {
+              "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"425df5a100478436fa39e91cca650071d66fe83a9712b23d5fdd4e82cdfc7fc0\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "record-type-change-within-cycle-blocks",
+      "tags": [
+        "fragment-order"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":2,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJoZWFydC1yYXRlLTEifQ==\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"f98ed64f7157cb9f983a350f74caaae9056822cc146f40b80a4d5cdcb8ed6fb9\",\"projection_schema_version\":1,\"record_type\":\"heart-rate\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "fragment-order-mismatch",
+            "response": {
+              "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"37661fcfe1654dfb0d8b4354739f36cdc3947d6a02293dcb7df135a04d1881d6\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "cycle-kind-change-within-cycle-blocks",
+      "tags": [
+        "fragment-order"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"change-cycle\",\"fragment_index\":2,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"f98ed64f7157cb9f983a350f74caaae9056822cc146f40b80a4d5cdcb8ed6fb9\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "fragment-order-mismatch",
+            "response": {
+              "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"13a7da4875e2b833f71d20284269c7477dacea7b6e9af7b541436b448b20c2ed\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "next-fragment-and-next-page-continue-cycle",
+      "tags": [
+        "fragment-order"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000011\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0zIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"338ae1f83b32763b4340aba962ba63d6daaf030f0c01d4e0458325965628b777\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"3f72eee3224f834b370a495c815c25397a8344337a7060f3b6195acdb74c9b1d\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000011\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":2,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"8b593593fa3dbe307cc1770ba5b9e89e1eb2d3323a0602b8520ab8647787b8ca\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"8a77007b88230ee8939a8ec512141872b7f27813ae3544c843389395fa4f6fc8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000011\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"374b89f194d8b892d4b9066530420c64626b78aab35be380e0e04938a245bec7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"source_page_index\":2,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"5bc28eb5b6f7856f855681f927f815c3b93e9f3e8aae3a21f607606720bed7ae\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "fragment-after-completion-blocks",
+      "tags": [
+        "fragment-after-completion"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"bfd57c91af925b466e7b2c2d6dea7753a09cc251940bb66844984ebb4d4e2bdb\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"350674f660009f5163a90bb6e47cde0554a66b8603bcaaf47e06e77530e943b8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"final_chain\":\"dc26484bb8ee2addc91717678e1668903d50790754f9cf691b1f72e055b16c5d\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"85693c2e79576fa2733966e9c46493709e320f16dd3e8dc3e22e3f26023d22d8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"dc26484bb8ee2addc91717678e1668903d50790754f9cf691b1f72e055b16c5d\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"source_page_index\":2,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "fragment-order-mismatch",
+            "response": {
+              "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"582d224c4171583aeada2c0551ce37705a062ac6e894be3728e66e688bb9b25c\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "fragment-after-empty-cycle-completion-blocks",
+      "tags": [
+        "fragment-after-completion",
+        "empty-cycle"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000016\",\"final_chain\":\"e79605ae330f2aa27374990d28532d4bd48ed746c519015d0652e45a57dbd69e\",\"fragment_count\":0,\"kind\":\"change-completion\",\"page_count\":0,\"record_count\":0,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"c240e9855792f051faf6dd132120f343a84d7186b5872c1f27afa1a2e3234676\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000016\",\"cycle_kind\":\"change-cycle\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"e79605ae330f2aa27374990d28532d4bd48ed746c519015d0652e45a57dbd69e\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "fragment-order-mismatch",
+            "response": {
+              "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"e1dd1527b9d58e487c084ed269f79e0c658b21bdbcae08c8d86ff8ca0ed016db\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "completion-record-type-mismatch-blocks",
+      "tags": [
+        "completion-mismatch"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"bfd57c91af925b466e7b2c2d6dea7753a09cc251940bb66844984ebb4d4e2bdb\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"350674f660009f5163a90bb6e47cde0554a66b8603bcaaf47e06e77530e943b8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"final_chain\":\"dc26484bb8ee2addc91717678e1668903d50790754f9cf691b1f72e055b16c5d\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"heart-rate\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-identity-mismatch",
+            "response": {
+              "text": "{\"failure\":\"completion-identity-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"3a9991cb9ad7750c3bcaae995e52aa222ed27832852c6de44894a57c392905c0\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "second-completion-blocks",
+      "tags": [
+        "completion-mismatch"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"bfd57c91af925b466e7b2c2d6dea7753a09cc251940bb66844984ebb4d4e2bdb\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"350674f660009f5163a90bb6e47cde0554a66b8603bcaaf47e06e77530e943b8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"final_chain\":\"dc26484bb8ee2addc91717678e1668903d50790754f9cf691b1f72e055b16c5d\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"85693c2e79576fa2733966e9c46493709e320f16dd3e8dc3e22e3f26023d22d8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"final_chain\":\"dc26484bb8ee2addc91717678e1668903d50790754f9cf691b1f72e055b16c5d\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-identity-mismatch",
+            "response": {
+              "text": "{\"failure\":\"completion-identity-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"cf1e03e899abf1d20dd4b5705afaebaba46c52cd7063fccbd1f2b2d44a783b1c\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "snapshot-kind-mismatch-blocks",
+      "tags": [
+        "completion-mismatch"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"bfd57c91af925b466e7b2c2d6dea7753a09cc251940bb66844984ebb4d4e2bdb\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"350674f660009f5163a90bb6e47cde0554a66b8603bcaaf47e06e77530e943b8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"final_chain\":\"dc26484bb8ee2addc91717678e1668903d50790754f9cf691b1f72e055b16c5d\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"snapshot_kind\":\"reconciliation\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-kind-mismatch",
+            "response": {
+              "text": "{\"failure\":\"completion-kind-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"fe1c4274878a40f533e0f5365428c4e0cf8de74732123c532aa9ea72dfb51d54\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "snapshot-completion-for-change-cycle-blocks",
+      "tags": [
+        "completion-mismatch"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000015\",\"cycle_kind\":\"change-cycle\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"9fb1529c579dbde96502d64a2822eeb64b1c3726eca7634b18a7c2b73ff16828\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"e31e2a1c965d178ad647776614b522a34e57f6ebac6eeffb328f5be37d0a7b5f\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000015\",\"final_chain\":\"a73e05bbade8feaf96bc752c89a0ea2f397e173a80db34961a64bef80acf3b5a\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-kind-mismatch",
+            "response": {
+              "text": "{\"failure\":\"completion-kind-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"ccbb77ab1c3057c7f4fab74c7f466d7541dc18483f646b79f1a0d6905ce4177a\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "completion-count-mismatch-blocks",
+      "tags": [
+        "completion-mismatch"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"bfd57c91af925b466e7b2c2d6dea7753a09cc251940bb66844984ebb4d4e2bdb\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"350674f660009f5163a90bb6e47cde0554a66b8603bcaaf47e06e77530e943b8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"final_chain\":\"dc26484bb8ee2addc91717678e1668903d50790754f9cf691b1f72e055b16c5d\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":3,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-count-mismatch",
+            "response": {
+              "text": "{\"failure\":\"completion-count-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"fa2009201e80567578dbf66bb827d348a4fe826c6d5e2a1bd8ffd57351631f41\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "completion-page-count-mismatch-blocks",
+      "tags": [
+        "completion-mismatch"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"bfd57c91af925b466e7b2c2d6dea7753a09cc251940bb66844984ebb4d4e2bdb\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"350674f660009f5163a90bb6e47cde0554a66b8603bcaaf47e06e77530e943b8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"final_chain\":\"dc26484bb8ee2addc91717678e1668903d50790754f9cf691b1f72e055b16c5d\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":2,\"record_count\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-count-mismatch",
+            "response": {
+              "text": "{\"failure\":\"completion-count-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"3d6917cdd23b531a4db8921515b25d2782829b57058a3dab1f8588e588b68a8e\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "completion-chain-mismatch-blocks",
+      "tags": [
+        "completion-mismatch"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"bfd57c91af925b466e7b2c2d6dea7753a09cc251940bb66844984ebb4d4e2bdb\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"350674f660009f5163a90bb6e47cde0554a66b8603bcaaf47e06e77530e943b8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"final_chain\":\"bfd57c91af925b466e7b2c2d6dea7753a09cc251940bb66844984ebb4d4e2bdb\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-chain-mismatch",
+            "response": {
+              "text": "{\"failure\":\"completion-chain-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"12431b021143e3856e7a7cd58770afcce218014a11bd29d6bad62c5d0fdf07ca\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "gap-inside-claimed-chain-blocks-completion",
+      "tags": [
+        "completion-mismatch",
+        "gap"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"bfd57c91af925b466e7b2c2d6dea7753a09cc251940bb66844984ebb4d4e2bdb\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"350674f660009f5163a90bb6e47cde0554a66b8603bcaaf47e06e77530e943b8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":3,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"48fbab3e68a33f0f2ff7b7723926ca4c3b5754f6222a1ddf92dd0a8321c12ac2\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+            },
+            "gap_after": 1
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"final_chain\":\"dc26484bb8ee2addc91717678e1668903d50790754f9cf691b1f72e055b16c5d\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":4,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-sequence-gap",
+            "response": {
+              "text": "{\"failure\":\"completion-sequence-gap\",\"kind\":\"delivery-block\",\"message_sha256\":\"f026cb580f029a8f8e1c74877de3b4ca21477b1b4b3b8d78cc4316a476258fb1\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":4,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "completion-after-gap-blocks",
+      "tags": [
+        "completion-mismatch",
+        "gap"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"bfd57c91af925b466e7b2c2d6dea7753a09cc251940bb66844984ebb4d4e2bdb\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"350674f660009f5163a90bb6e47cde0554a66b8603bcaaf47e06e77530e943b8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000012\",\"final_chain\":\"dc26484bb8ee2addc91717678e1668903d50790754f9cf691b1f72e055b16c5d\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-sequence-gap",
+            "response": {
+              "text": "{\"failure\":\"completion-sequence-gap\",\"kind\":\"delivery-block\",\"message_sha256\":\"cf1e03e899abf1d20dd4b5705afaebaba46c52cd7063fccbd1f2b2d44a783b1c\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "empty-change-cycle-completes",
+      "tags": [
+        "empty-cycle"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000017\",\"final_chain\":\"d2f764faac3e8f36a4ddfa43d7e671f4f103dcb7c10e388f9439d5add6d63a4d\",\"fragment_count\":0,\"kind\":\"change-completion\",\"page_count\":0,\"record_count\":0,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"b1eee9bed6d89d6796de4ad982bfa5288c58bb304c5d3495a172ab8717f0442b\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "empty-cycle-with-wrong-chain-blocks",
+      "tags": [
+        "empty-cycle",
+        "completion-mismatch"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000017\",\"final_chain\":\"746f7aa3f96630730b7849ce0a09e4fd4f249bda81f86f27c1b862653cfaa717\",\"fragment_count\":0,\"kind\":\"change-completion\",\"page_count\":0,\"record_count\":0,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-chain-mismatch",
+            "response": {
+              "text": "{\"failure\":\"completion-chain-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"d2e024a059c3bc680854127df88759755ed04e0c1b929bfb0f60dc62d223a800\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown-cycle-with-nonzero-counts-blocks",
+      "tags": [
+        "empty-cycle",
+        "completion-mismatch"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000018\",\"final_chain\":\"746f7aa3f96630730b7849ce0a09e4fd4f249bda81f86f27c1b862653cfaa717\",\"fragment_count\":1,\"kind\":\"change-completion\",\"page_count\":1,\"record_count\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "completion-count-mismatch",
+            "response": {
+              "text": "{\"failure\":\"completion-count-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"2921d5dcf52e29017d0864cfe013b114d2009a92604dce9f816e837aa107a74c\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "change-cycle-with-retraction-completes",
+      "tags": [
+        "completion-accepted"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000013\",\"cycle_kind\":\"change-cycle\",\"fragment_index\":1,\"items\":[{\"kind\":\"retraction\",\"source_identity\":\"synthetic-1\"},{\"data\":\"eyJzeW50aGV0aWMiOiJoZWFydC1yYXRlLTEifQ==\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"98bb75c8628c350e00d401e6a07fd79357cc6ffc3994be1b83dbf01dad2fb8eb\",\"projection_schema_version\":1,\"record_type\":\"heart-rate\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"2815442e857e72398cbd3d3a0081ff2750e742191a20f29076b683e7391a4315\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000013\",\"final_chain\":\"771bcec7f7c0a0392d00494ec48d6da4a50f13aea8bc0e2a3ba2a1a8ed5802cc\",\"fragment_count\":1,\"kind\":\"change-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"heart-rate\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"c10447df5c2d9c47f8343fb16cf6c0218fad869fa8aa92da4a10e57e4d705cda\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "reconciliation-snapshot-completes",
+      "tags": [
+        "completion-accepted"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000014\",\"cycle_kind\":\"reconciliation-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"149250c4234a24da0c3f7f18fd6a5a9879764e638bd83c886c92289917213dd2\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"1be685606dca711cf6b7614153f7e27322549215871aca3e9606d34e7482d94a\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000014\",\"final_chain\":\"5b3e166d6c2addd1efe6210ce2d9e9a2fd14298b19aa669cf37389b90b2be7c5\",\"fragment_count\":1,\"kind\":\"snapshot-completion\",\"page_count\":1,\"record_count\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"snapshot_kind\":\"reconciliation\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"484d6a895009d3c3639cb8e4b74efa4d8f3242803d345f74cb70e264c8e16726\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "capability-acknowledgement-accepted",
+      "tags": [
+        "acknowledgement"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":2,\"kind\":\"capability-acknowledgement\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"a8fd4a47d555f2efd944b733239d043b65fce0f70da33a8942300abbb67308d8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            },
+            "latest_acknowledged_generation": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "acknowledgement-follows-sequence-rules",
+      "tags": [
+        "acknowledgement",
+        "sequence-content"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":2,\"kind\":\"capability-acknowledgement\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"a8fd4a47d555f2efd944b733239d043b65fce0f70da33a8942300abbb67308d8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            },
+            "latest_acknowledged_generation": 2
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"kind\":\"capability-acknowledgement\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "sequence-content-mismatch",
+            "response": {
+              "text": "{\"failure\":\"sequence-content-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"78819a40d2294b7f3380b749857d3b564d473d2f36f46e667e377c138ab3ea00\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "acknowledgement-of-unhonored-generation-blocks",
+      "tags": [
+        "acknowledgement",
+        "staging-generation"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":3,\"kind\":\"capability-acknowledgement\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "unsupported-wire-protocol",
+            "response": {
+              "text": "{\"failure\":\"unsupported-wire-protocol\",\"kind\":\"delivery-block\",\"message_sha256\":\"b2413a8752bfd007132e2cd665cc34e7884a9a0b83b9cbb2ddd89927c6e2dec6\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "limits-follow-staging-generation",
+      "tags": [
+        "staging-generation",
+        "queued-limits"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000010\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0zIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"67f5da4d7c7ce7ba5014c79c9be110820bd4e0b383305858c32850928331aaf3\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"491b0c3619b0abe0e33b8800113adde1e6b7eff2619975dac374b10010658bb0\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":2,\"cycle_id\":\"00000000-0000-4000-8000-100000000019\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"8420552ee5a0a7b2228723ea75d5e5f12d505899985d8c25e7d5a3170ffb84ad\",\"projection_schema_version\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "record-count-limit-exceeded",
+            "response": {
+              "text": "{\"failure\":\"record-count-limit-exceeded\",\"kind\":\"delivery-block\",\"message_sha256\":\"5ecb2448f7a6e7bcf83be7d9eeedf8808afe80c2a17d61f8d3fc69828fcad4c8\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "projection-schema-follows-staging-generation",
+      "tags": [
+        "staging-generation"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"capability_generation\":2,\"cycle_id\":\"00000000-0000-4000-8000-100000000019\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"8420552ee5a0a7b2228723ea75d5e5f12d505899985d8c25e7d5a3170ffb84ad\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "unsupported-source-projection-schema",
+            "response": {
+              "text": "{\"failure\":\"unsupported-source-projection-schema\",\"kind\":\"delivery-block\",\"message_sha256\":\"520270cba776c0807f3da15086f28c9ff27be4c81f632e4ac9e0ea9a9d55ed2f\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"capability_generation\":2,\"cycle_id\":\"00000000-0000-4000-8000-100000000019\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"8420552ee5a0a7b2228723ea75d5e5f12d505899985d8c25e7d5a3170ffb84ad\",\"projection_schema_version\":2,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"source_page_index\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"731bd7b77023386680e61cd3723804b09ba55bb0e1efe4e9c992dd4426e224ee\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "invalid-bytes-block-without-identity",
+      "tags": [
+        "decode"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "base64": "/w=="
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "malformed-message",
+            "response": {
+              "text": "{\"failure\":\"malformed-message\",\"kind\":\"delivery-block\",\"message_sha256\":\"a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89\",\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "noncanonical-message-blocks-with-identity",
+      "tags": [
+        "decode"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"background_scheduling\": \"restricted\", \"capability_generation\": 1, \"ended_at\": \"2030-01-01T00:01:30.250Z\", \"kind\": \"sync-checkpoint\", \"outbox_bytes_before_checkpoint\": 18432, \"outbox_messages_before_checkpoint\": 4, \"record_types\": [{\"outcome\": \"no-change\", \"record_type\": \"steps\", \"source_data_staged\": false}], \"run_sequence\": 1, \"sender_installation\": \"00000000-0000-4000-8000-000000000001\", \"sequence\": 1, \"started_at\": \"2030-01-01T00:00:00.000Z\", \"trigger\": \"foreground\", \"wire_version\": 1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "noncanonical-message",
+            "response": {
+              "text": "{\"failure\":\"noncanonical-message\",\"kind\":\"delivery-block\",\"message_sha256\":\"6b4bfd8d69110c7a01eea5c490aa5d244706be528690cfcc98e16ba6a6cb7b54\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unsupported-wire-version-blocks-without-identity",
+      "tags": [
+        "decode",
+        "versions"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":1,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":2}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "unsupported-wire-protocol",
+            "response": {
+              "text": "{\"failure\":\"unsupported-wire-protocol\",\"kind\":\"delivery-block\",\"message_sha256\":\"586944fa7ee0f9898b460ee56740ecc2002acd315f6ada91ce4450c5348d89b8\",\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "non-outbox-kind-blocks-without-identity",
+      "tags": [
+        "decode"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"76802c0421b6fe2526ce61d5ea152d90d7560a96c0d6d6f6830918c30c2beb15\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "block",
+            "failure": "malformed-message",
+            "response": {
+              "text": "{\"failure\":\"malformed-message\",\"kind\":\"delivery-block\",\"message_sha256\":\"785e6fc78e71003139476c5f04ec5ad13da404c1fec75469e0f77cd6469fd57c\",\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "checkpoint-accepted",
+      "tags": [
+        "checkpoint"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":1,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"41c5def57169591b8fca4cffdf508c2a4f0c4601a2cb973d2106375bb25f29f3\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "installations-have-separate-sequences",
+      "tags": [
+        "receipt-identity"
+      ],
+      "honored_generations": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "heart-rate",
+              "versions": [
+                1
+              ]
+            },
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 3,
+          "max_message_bytes": 4096
+        }
+      ],
+      "steps": [
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":1,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"41c5def57169591b8fca4cffdf508c2a4f0c4601a2cb973d2106375bb25f29f3\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        },
+        {
+          "message": {
+            "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":1,\"sender_installation\":\"00000000-0000-4000-8000-000000000002\",\"sequence\":1,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+          },
+          "expected": {
+            "outcome": "receipt",
+            "response": {
+              "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"c901b6d0e5209eb87eb3d9da7aa55b3572934b7f078e4cfe9a4e703a1418f573\",\"sender_installation\":\"00000000-0000-4000-8000-000000000002\",\"sequence\":1,\"wire_version\":1}"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

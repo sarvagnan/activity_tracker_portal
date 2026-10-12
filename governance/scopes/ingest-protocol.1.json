@@ -1,0 +1,118 @@
+{
+  "contract_schema": 1,
+  "scope": "ingest-protocol",
+  "version": "1",
+  "kind": "shared",
+  "purpose": "Define executable enrollment, fragmented delivery, synchronization completion, polling checkpoint, capability acknowledgement, rejection, compatibility, and receipt behavior shared by the TypeScript Sender and Python Portal.",
+  "inputs": [
+    {
+      "name": "message_bytes",
+      "mode": "pure",
+      "description": "Exact uncompressed RFC 8785 JSON bytes for one enrollment, capability advertisement, capability acknowledgement, Ingest Batch, Snapshot Completion, Change Completion, Sync Checkpoint, Delivery Receipt, retryable failure, or Delivery Block message."
+    },
+    {
+      "name": "supported_versions",
+      "mode": "pure",
+      "description": "The Wire Protocol Versions and per-record-type Source Projection schema versions accepted by the evaluating participant."
+    },
+    {
+      "name": "capability_state",
+      "mode": "pure",
+      "description": "The honored capability generations with their supported versions and record-count and uncompressed-byte limits, any proposed advertisement, and the latest generation whose capability acknowledgement has been accepted."
+    },
+    {
+      "name": "delivery_history",
+      "mode": "pure",
+      "description": "Accepted Sender Installation sequence identities, message hashes, per-cycle fragment-chain values, accepted completions, and any sequence gaps needed to evaluate a delivery."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "canonical_message",
+      "description": "Exact versioned RFC 8785 JSON bytes and lowercase SHA-256 identity for a valid message."
+    },
+    {
+      "name": "decoded_message",
+      "description": "One closed typed protocol value with no unknown interpretation."
+    },
+    {
+      "name": "delivery_receipt",
+      "description": "A durable-acceptance value echoing Sender Installation, monotonic sequence, and exact message SHA-256."
+    },
+    {
+      "name": "sequence_gap",
+      "description": "The last previously accepted sequence when an accepted message follows a gap, reported for the Portal to record without changing the receipt."
+    },
+    {
+      "name": "retryable_failure",
+      "description": "A named outcome with one closed reason, for a condition in which identical bytes may be attempted again."
+    },
+    {
+      "name": "delivery_block",
+      "description": "A named Operator-action-required outcome that preserves the original head message and prevents later delivery."
+    },
+    {
+      "name": "staging_refusal",
+      "description": "A named Sender-side refusal to stage a fragment, leaving nothing queued and the record type blocked."
+    },
+    {
+      "name": "compatibility_decision",
+      "description": "Exactly one of accept, capability-generation-regression, or capability-contraction-blocked for a proposed capability advertisement."
+    }
+  ],
+  "named_failures": [
+    { "name": "malformed-message", "outcome": "delivery-block" },
+    { "name": "noncanonical-message", "outcome": "delivery-block" },
+    { "name": "unsupported-wire-protocol", "outcome": "delivery-block" },
+    { "name": "unsupported-source-projection-schema", "outcome": "delivery-block" },
+    { "name": "record-count-limit-exceeded", "outcome": "delivery-block" },
+    { "name": "uncompressed-byte-limit-exceeded", "outcome": "delivery-block" },
+    { "name": "sequence-content-mismatch", "outcome": "delivery-block" },
+    { "name": "sequence-out-of-order", "outcome": "delivery-block" },
+    { "name": "fragment-order-mismatch", "outcome": "delivery-block" },
+    { "name": "completion-identity-mismatch", "outcome": "delivery-block" },
+    { "name": "completion-kind-mismatch", "outcome": "delivery-block" },
+    { "name": "completion-count-mismatch", "outcome": "delivery-block" },
+    { "name": "completion-chain-mismatch", "outcome": "delivery-block" },
+    { "name": "completion-sequence-gap", "outcome": "delivery-block" },
+    { "name": "storage-reserve-exhausted", "outcome": "retryable" },
+    { "name": "temporarily-unavailable", "outcome": "retryable" },
+    { "name": "receipt-mismatch", "outcome": "retryable" },
+    { "name": "indivisible-record-limit-exceeded", "outcome": "staging-refusal" },
+    { "name": "capability-generation-regression", "outcome": "compatibility-refusal" },
+    { "name": "capability-contraction-blocked", "outcome": "compatibility-refusal" }
+  ],
+  "observable_effects": [],
+  "authority": {
+    "owns": [
+      "wire message schemas and exact byte representation",
+      "message identity, fragment partitioning, and fragment-chain calculations",
+      "protocol-version and capability compatibility decisions",
+      "closed Sync Checkpoint and retryable-failure value lists",
+      "transport-independent receipt, retryable failure, and Delivery Block values"
+    ],
+    "does_not_own": [
+      "Health Connect reads or Source Projection bytes and semantics",
+      "Sender outbox persistence or encryption",
+      "when empty cycles or capability acknowledgements are staged",
+      "HTTP, Tailscale, Authorized Ingress establishment, or unknown transport outcomes",
+      "Portal archival transactions, retryable-failure issuance, or Sender Installation lifecycle",
+      "health interpretation, summary publication, export, backup, or deletion"
+    ]
+  },
+  "dependencies": [],
+  "acceptance_oracle": {
+    "specification": "packs/ingest-protocol-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_ingest_protocol_1.py",
+      "typescript": "sender/protocol/test/ingest-protocol-1.test.ts"
+    },
+    "runner": "tests/acceptance/run_ingest_protocol_1.sh",
+    "wire_reference": "protocol/v1/README.md",
+    "vectors": "protocol/v1/vectors/",
+    "languages": [
+      "typescript",
+      "python"
+    ]
+  }
+}

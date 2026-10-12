@@ -1,0 +1,256 @@
+{
+  "description": "How the Sender interprets a Portal response to the message it sent.",
+  "vectors": [
+    {
+      "name": "exact-receipt",
+      "tags": [
+        "exact-receipt"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+      },
+      "expected": {
+        "outcome": "accepted"
+      }
+    },
+    {
+      "name": "receipt-for-other-hash",
+      "tags": [
+        "receipt-mismatch"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"f8d248231ed8c9991d94395da235ffa72b279b4bae70149fa3e32b6aff60a637\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "receipt-mismatch"
+      }
+    },
+    {
+      "name": "receipt-for-other-sequence",
+      "tags": [
+        "receipt-mismatch"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "receipt-mismatch"
+      }
+    },
+    {
+      "name": "receipt-for-other-installation",
+      "tags": [
+        "receipt-mismatch"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"kind\":\"delivery-receipt\",\"message_sha256\":\"44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854\",\"sender_installation\":\"00000000-0000-4000-8000-000000000002\",\"sequence\":2,\"wire_version\":1}"
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "receipt-mismatch"
+      }
+    },
+    {
+      "name": "noncanonical-receipt",
+      "tags": [
+        "receipt-mismatch"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"kind\": \"delivery-receipt\", \"message_sha256\": \"44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854\", \"sender_installation\": \"00000000-0000-4000-8000-000000000001\", \"sequence\": 2, \"wire_version\": 1}"
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "receipt-mismatch"
+      }
+    },
+    {
+      "name": "retryable-storage-reserve-exhausted",
+      "tags": [
+        "retryable"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"kind\":\"retryable-failure\",\"reason\":\"storage-reserve-exhausted\",\"wire_version\":1}"
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "storage-reserve-exhausted"
+      }
+    },
+    {
+      "name": "retryable-temporarily-unavailable",
+      "tags": [
+        "retryable"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"kind\":\"retryable-failure\",\"reason\":\"temporarily-unavailable\",\"wire_version\":1}"
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "temporarily-unavailable"
+      }
+    },
+    {
+      "name": "block-for-sent-message",
+      "tags": [
+        "block"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+      },
+      "expected": {
+        "outcome": "block",
+        "failure": "fragment-order-mismatch"
+      }
+    },
+    {
+      "name": "block-by-hash-only",
+      "tags": [
+        "block"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"failure\":\"malformed-message\",\"kind\":\"delivery-block\",\"message_sha256\":\"44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854\",\"wire_version\":1}"
+      },
+      "expected": {
+        "outcome": "block",
+        "failure": "malformed-message"
+      }
+    },
+    {
+      "name": "block-for-other-hash",
+      "tags": [
+        "receipt-mismatch"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"f8d248231ed8c9991d94395da235ffa72b279b4bae70149fa3e32b6aff60a637\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"wire_version\":1}"
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "receipt-mismatch"
+      }
+    },
+    {
+      "name": "block-for-other-sequence",
+      "tags": [
+        "receipt-mismatch"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"failure\":\"fragment-order-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"wire_version\":1}"
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "receipt-mismatch"
+      }
+    },
+    {
+      "name": "html-error-page",
+      "tags": [
+        "receipt-mismatch"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "<html><body>502 Bad Gateway</body></html>"
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "receipt-mismatch"
+      }
+    },
+    {
+      "name": "empty-response",
+      "tags": [
+        "receipt-mismatch"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": ""
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "receipt-mismatch"
+      }
+    },
+    {
+      "name": "unexpected-kind",
+      "tags": [
+        "receipt-mismatch"
+      ],
+      "sent": {
+        "sender_installation": "00000000-0000-4000-8000-000000000001",
+        "sequence": 2,
+        "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854"
+      },
+      "response": {
+        "text": "{\"generation\":1,\"kind\":\"capability-advertisement\",\"max_message_bytes\":4096,\"max_record_count\":3,\"projection_schemas\":[{\"record_type\":\"heart-rate\",\"versions\":[1]},{\"record_type\":\"steps\",\"versions\":[1,2]}],\"wire_version\":1,\"wire_versions\":[1]}"
+      },
+      "expected": {
+        "outcome": "retryable",
+        "failure": "receipt-mismatch"
+      }
+    }
+  ]
+}

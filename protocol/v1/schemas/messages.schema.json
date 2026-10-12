@@ -1,0 +1,384 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://activity-tracker-portal.invalid/protocol/v1/schemas/messages.schema.json",
+  "title": "Wire Protocol Version 1 messages",
+  "description": "Structural schema for every Wire Protocol Version 1 message. Decoders additionally apply the lexical, ordering, calendar, and fingerprint rules in protocol/v1/README.md.",
+  "oneOf": [
+    { "$ref": "#/$defs/enrollment_offer" },
+    { "$ref": "#/$defs/enrollment_confirmation" },
+    { "$ref": "#/$defs/capability_advertisement" },
+    { "$ref": "#/$defs/capability_acknowledgement" },
+    { "$ref": "#/$defs/ingest_batch" },
+    { "$ref": "#/$defs/snapshot_completion" },
+    { "$ref": "#/$defs/change_completion" },
+    { "$ref": "#/$defs/sync_checkpoint" },
+    { "$ref": "#/$defs/delivery_receipt" },
+    { "$ref": "#/$defs/retryable_failure" },
+    { "$ref": "#/$defs/delivery_block" }
+  ],
+  "$defs": {
+    "wire_version": { "const": 1 },
+    "positive_integer": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$"
+    },
+    "record_type": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    },
+    "base64": {
+      "type": "string",
+      "minLength": 4,
+      "pattern": "^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
+    },
+    "source_identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f]+$"
+    },
+    "version_list": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/positive_integer" }
+    },
+    "delivery_block_failure": {
+      "enum": [
+        "malformed-message",
+        "noncanonical-message",
+        "unsupported-wire-protocol",
+        "unsupported-source-projection-schema",
+        "record-count-limit-exceeded",
+        "uncompressed-byte-limit-exceeded",
+        "sequence-content-mismatch",
+        "sequence-out-of-order",
+        "fragment-order-mismatch",
+        "completion-identity-mismatch",
+        "completion-kind-mismatch",
+        "completion-count-mismatch",
+        "completion-chain-mismatch",
+        "completion-sequence-gap"
+      ]
+    },
+    "enrollment_offer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wire_version", "kind", "enrollment_code", "portal_url", "expires_at"],
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "enrollment-offer" },
+        "enrollment_code": { "type": "string", "pattern": "^[A-Z2-7]{16}$" },
+        "portal_url": {
+          "type": "string",
+          "pattern": "^https?://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?$"
+        },
+        "expires_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "enrollment_confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wire_version", "kind", "enrollment_code", "sender_installation", "fingerprint"],
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "enrollment-confirmation" },
+        "enrollment_code": { "type": "string", "pattern": "^[A-Z2-7]{16}$" },
+        "sender_installation": { "$ref": "#/$defs/uuid" },
+        "fingerprint": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "capability_advertisement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wire_version",
+        "kind",
+        "generation",
+        "wire_versions",
+        "projection_schemas",
+        "max_record_count",
+        "max_message_bytes"
+      ],
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "capability-advertisement" },
+        "generation": { "$ref": "#/$defs/positive_integer" },
+        "wire_versions": { "$ref": "#/$defs/version_list" },
+        "projection_schemas": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["record_type", "versions"],
+            "properties": {
+              "record_type": { "$ref": "#/$defs/record_type" },
+              "versions": { "$ref": "#/$defs/version_list" }
+            }
+          }
+        },
+        "max_record_count": { "$ref": "#/$defs/positive_integer" },
+        "max_message_bytes": { "type": "integer", "minimum": 4096, "maximum": 9007199254740991 }
+      }
+    },
+    "capability_acknowledgement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wire_version", "kind", "sender_installation", "sequence", "capability_generation"],
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "capability-acknowledgement" },
+        "sender_installation": { "$ref": "#/$defs/uuid" },
+        "sequence": { "$ref": "#/$defs/positive_integer" },
+        "capability_generation": { "$ref": "#/$defs/positive_integer" }
+      }
+    },
+    "ingest_item": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "projection" },
+            "data": { "$ref": "#/$defs/base64" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "source_identity"],
+          "properties": {
+            "kind": { "const": "retraction" },
+            "source_identity": { "$ref": "#/$defs/source_identity" }
+          }
+        }
+      ]
+    },
+    "ingest_batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wire_version",
+        "kind",
+        "sender_installation",
+        "sequence",
+        "capability_generation",
+        "record_type",
+        "projection_schema_version",
+        "cycle_kind",
+        "cycle_id",
+        "source_page_index",
+        "fragment_index",
+        "previous_chain",
+        "items"
+      ],
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "ingest-batch" },
+        "sender_installation": { "$ref": "#/$defs/uuid" },
+        "sequence": { "$ref": "#/$defs/positive_integer" },
+        "capability_generation": { "$ref": "#/$defs/positive_integer" },
+        "record_type": { "$ref": "#/$defs/record_type" },
+        "projection_schema_version": { "$ref": "#/$defs/positive_integer" },
+        "cycle_kind": { "enum": ["initial-snapshot", "reconciliation-snapshot", "change-cycle"] },
+        "cycle_id": { "$ref": "#/$defs/uuid" },
+        "source_page_index": { "$ref": "#/$defs/positive_integer" },
+        "fragment_index": { "$ref": "#/$defs/positive_integer" },
+        "previous_chain": { "$ref": "#/$defs/sha256" },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/ingest_item" } }
+      }
+    },
+    "snapshot_completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wire_version",
+        "kind",
+        "sender_installation",
+        "sequence",
+        "capability_generation",
+        "snapshot_kind",
+        "record_type",
+        "cycle_id",
+        "page_count",
+        "fragment_count",
+        "record_count",
+        "final_chain"
+      ],
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "snapshot-completion" },
+        "sender_installation": { "$ref": "#/$defs/uuid" },
+        "sequence": { "$ref": "#/$defs/positive_integer" },
+        "capability_generation": { "$ref": "#/$defs/positive_integer" },
+        "snapshot_kind": { "enum": ["initial", "reconciliation"] },
+        "record_type": { "$ref": "#/$defs/record_type" },
+        "cycle_id": { "$ref": "#/$defs/uuid" },
+        "page_count": { "$ref": "#/$defs/count" },
+        "fragment_count": { "$ref": "#/$defs/count" },
+        "record_count": { "$ref": "#/$defs/count" },
+        "final_chain": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "change_completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wire_version",
+        "kind",
+        "sender_installation",
+        "sequence",
+        "capability_generation",
+        "record_type",
+        "cycle_id",
+        "page_count",
+        "fragment_count",
+        "record_count",
+        "final_chain"
+      ],
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "change-completion" },
+        "sender_installation": { "$ref": "#/$defs/uuid" },
+        "sequence": { "$ref": "#/$defs/positive_integer" },
+        "capability_generation": { "$ref": "#/$defs/positive_integer" },
+        "record_type": { "$ref": "#/$defs/record_type" },
+        "cycle_id": { "$ref": "#/$defs/uuid" },
+        "page_count": { "$ref": "#/$defs/count" },
+        "fragment_count": { "$ref": "#/$defs/count" },
+        "record_count": { "$ref": "#/$defs/count" },
+        "final_chain": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "checkpoint_record_type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_type", "outcome", "source_data_staged"],
+      "properties": {
+        "record_type": { "$ref": "#/$defs/record_type" },
+        "outcome": {
+          "enum": [
+            "not-due",
+            "no-change",
+            "progressed",
+            "completed",
+            "deferred",
+            "blocked",
+            "not-permitted",
+            "failed",
+            "interrupted"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "collection-disabled",
+            "projection-refusal",
+            "record-too-large",
+            "permission-missing",
+            "delivery-blocked",
+            "storage-pressure",
+            "screen-lock-removed",
+            "changes-token-expired",
+            "time-budget-reached",
+            "read-failed"
+          ]
+        },
+        "source_data_staged": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "outcome": { "enum": ["deferred", "blocked", "failed"] } } },
+          "then": { "required": ["reason"] }
+        },
+        {
+          "if": { "properties": { "outcome": { "enum": ["not-due", "no-change", "completed", "not-permitted"] } } },
+          "then": { "not": { "required": ["reason"] } }
+        }
+      ]
+    },
+    "sync_checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wire_version",
+        "kind",
+        "sender_installation",
+        "sequence",
+        "capability_generation",
+        "run_sequence",
+        "trigger",
+        "started_at",
+        "ended_at",
+        "background_scheduling",
+        "record_types",
+        "outbox_messages_before_checkpoint",
+        "outbox_bytes_before_checkpoint"
+      ],
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "sync-checkpoint" },
+        "sender_installation": { "$ref": "#/$defs/uuid" },
+        "sequence": { "$ref": "#/$defs/positive_integer" },
+        "capability_generation": { "$ref": "#/$defs/positive_integer" },
+        "run_sequence": { "$ref": "#/$defs/positive_integer" },
+        "trigger": { "enum": ["background", "foreground", "manual"] },
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "ended_at": { "$ref": "#/$defs/timestamp" },
+        "elapsed_ms": { "$ref": "#/$defs/count" },
+        "background_scheduling": { "enum": ["available", "restricted", "unregistered"] },
+        "record_types": { "type": "array", "items": { "$ref": "#/$defs/checkpoint_record_type" } },
+        "outbox_messages_before_checkpoint": { "$ref": "#/$defs/count" },
+        "outbox_bytes_before_checkpoint": { "$ref": "#/$defs/count" }
+      }
+    },
+    "delivery_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wire_version", "kind", "sender_installation", "sequence", "message_sha256"],
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "delivery-receipt" },
+        "sender_installation": { "$ref": "#/$defs/uuid" },
+        "sequence": { "$ref": "#/$defs/positive_integer" },
+        "message_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "retryable_failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wire_version", "kind", "reason"],
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "retryable-failure" },
+        "reason": { "enum": ["storage-reserve-exhausted", "temporarily-unavailable"] }
+      }
+    },
+    "delivery_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wire_version", "kind", "failure", "message_sha256"],
+      "dependentRequired": {
+        "sender_installation": ["sequence"],
+        "sequence": ["sender_installation"]
+      },
+      "properties": {
+        "wire_version": { "$ref": "#/$defs/wire_version" },
+        "kind": { "const": "delivery-block" },
+        "failure": { "$ref": "#/$defs/delivery_block_failure" },
+        "message_sha256": { "$ref": "#/$defs/sha256" },
+        "sender_installation": { "$ref": "#/$defs/uuid" },
+        "sequence": { "$ref": "#/$defs/positive_integer" }
+      }
+    }
+  }
+}

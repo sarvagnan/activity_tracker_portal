@@ -1,0 +1,800 @@
+{
+  "description": "Bytes every decoder must refuse, with the first failure in decoding order.",
+  "vectors": [
+    {
+      "name": "invalid-utf8",
+      "tags": [
+        "malformed",
+        "lexical"
+      ],
+      "bytes": {
+        "base64": "eyJiYWNrZ3JvdW5kX3NjaGVkdWxpbmciOiJyZXN0cmljdGVkIiwiY2FwYWJpbGl0eV9nZW5lcmF0aW9uIjoxLCJlbmRlZF9hdCI6IjIwMzAtMDEtMDFUMDA6MDE6MzAuMjUwWiIsImtpbmQiOiJzeW5jLWNoZWNrcG9pbnQiLCJvdXRib3hfYnl0ZXNfYmVmb3JlX2NoZWNrcG9pbnQiOjE4NDMyLCJvdXRib3hfbWVzc2FnZXNfYmVmb3JlX2NoZWNrcG9pbnQiOjQsInJlY29yZF90eXBlcyI6W3sib3V0Y29tZSI6Im5vLWNoYW5nZSIsInJlY29yZF90eXBlIjoic3RlcHMiLCJzb3VyY2VfZGF0YV9zdGFnZWQiOmZhbHNlfV0sInJ1bl9zZXF1ZW5jZSI6Niwic2VuZGVyX2luc3RhbGxhdGlvbiI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsInNlcXVlbmNlIjo2LCJzdGFydGVkX2F0IjoiMjAzMC0wMS0wMVQwMDowMDowMC4wMDBaIiwidHJpZ2dlciI6ImZvcmX/Z3JvdW5kIiwid2lyZV92ZXJzaW9uIjoxfQ=="
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "byte-order-mark",
+      "tags": [
+        "malformed",
+        "lexical"
+      ],
+      "bytes": {
+        "text": "﻿{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "trailing-value",
+      "tags": [
+        "malformed",
+        "lexical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}{}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "duplicate-key",
+      "tags": [
+        "malformed",
+        "lexical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "nan-literal",
+      "tags": [
+        "malformed",
+        "lexical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"available\",\"capability_generation\":1,\"elapsed_ms\":NaN,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"not-due\",\"record_type\":\"active-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"no-change\",\"record_type\":\"blood-pressure\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"time-budget-reached\",\"record_type\":\"body-fat\",\"source_data_staged\":true},{\"outcome\":\"progressed\",\"record_type\":\"distance\",\"source_data_staged\":true},{\"outcome\":\"completed\",\"record_type\":\"exercise-session\",\"source_data_staged\":true},{\"outcome\":\"deferred\",\"reason\":\"collection-disabled\",\"record_type\":\"heart-rate\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"storage-pressure\",\"record_type\":\"height\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"screen-lock-removed\",\"record_type\":\"hydration\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"projection-refusal\",\"record_type\":\"nutrition\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"record-too-large\",\"record_type\":\"oxygen-saturation\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"delivery-blocked\",\"record_type\":\"respiratory-rate\",\"source_data_staged\":false},{\"outcome\":\"not-permitted\",\"record_type\":\"resting-heart-rate\",\"source_data_staged\":false},{\"outcome\":\"failed\",\"reason\":\"read-failed\",\"record_type\":\"sleep-session\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"changes-token-expired\",\"record_type\":\"steps\",\"source_data_staged\":true},{\"outcome\":\"interrupted\",\"record_type\":\"total-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"interrupted\",\"reason\":\"permission-missing\",\"record_type\":\"weight\",\"source_data_staged\":false}],\"run_sequence\":5,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":5,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"background\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "infinity-literal",
+      "tags": [
+        "malformed",
+        "lexical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"available\",\"capability_generation\":1,\"elapsed_ms\":Infinity,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"not-due\",\"record_type\":\"active-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"no-change\",\"record_type\":\"blood-pressure\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"time-budget-reached\",\"record_type\":\"body-fat\",\"source_data_staged\":true},{\"outcome\":\"progressed\",\"record_type\":\"distance\",\"source_data_staged\":true},{\"outcome\":\"completed\",\"record_type\":\"exercise-session\",\"source_data_staged\":true},{\"outcome\":\"deferred\",\"reason\":\"collection-disabled\",\"record_type\":\"heart-rate\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"storage-pressure\",\"record_type\":\"height\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"screen-lock-removed\",\"record_type\":\"hydration\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"projection-refusal\",\"record_type\":\"nutrition\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"record-too-large\",\"record_type\":\"oxygen-saturation\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"delivery-blocked\",\"record_type\":\"respiratory-rate\",\"source_data_staged\":false},{\"outcome\":\"not-permitted\",\"record_type\":\"resting-heart-rate\",\"source_data_staged\":false},{\"outcome\":\"failed\",\"reason\":\"read-failed\",\"record_type\":\"sleep-session\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"changes-token-expired\",\"record_type\":\"steps\",\"source_data_staged\":true},{\"outcome\":\"interrupted\",\"record_type\":\"total-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"interrupted\",\"reason\":\"permission-missing\",\"record_type\":\"weight\",\"source_data_staged\":false}],\"run_sequence\":5,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":5,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"background\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "fraction-number",
+      "tags": [
+        "malformed",
+        "lexical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"available\",\"capability_generation\":1,\"elapsed_ms\":90250.0,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"not-due\",\"record_type\":\"active-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"no-change\",\"record_type\":\"blood-pressure\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"time-budget-reached\",\"record_type\":\"body-fat\",\"source_data_staged\":true},{\"outcome\":\"progressed\",\"record_type\":\"distance\",\"source_data_staged\":true},{\"outcome\":\"completed\",\"record_type\":\"exercise-session\",\"source_data_staged\":true},{\"outcome\":\"deferred\",\"reason\":\"collection-disabled\",\"record_type\":\"heart-rate\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"storage-pressure\",\"record_type\":\"height\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"screen-lock-removed\",\"record_type\":\"hydration\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"projection-refusal\",\"record_type\":\"nutrition\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"record-too-large\",\"record_type\":\"oxygen-saturation\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"delivery-blocked\",\"record_type\":\"respiratory-rate\",\"source_data_staged\":false},{\"outcome\":\"not-permitted\",\"record_type\":\"resting-heart-rate\",\"source_data_staged\":false},{\"outcome\":\"failed\",\"reason\":\"read-failed\",\"record_type\":\"sleep-session\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"changes-token-expired\",\"record_type\":\"steps\",\"source_data_staged\":true},{\"outcome\":\"interrupted\",\"record_type\":\"total-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"interrupted\",\"reason\":\"permission-missing\",\"record_type\":\"weight\",\"source_data_staged\":false}],\"run_sequence\":5,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":5,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"background\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "exponent-number",
+      "tags": [
+        "malformed",
+        "lexical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"available\",\"capability_generation\":1,\"elapsed_ms\":9.025e4,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"not-due\",\"record_type\":\"active-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"no-change\",\"record_type\":\"blood-pressure\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"time-budget-reached\",\"record_type\":\"body-fat\",\"source_data_staged\":true},{\"outcome\":\"progressed\",\"record_type\":\"distance\",\"source_data_staged\":true},{\"outcome\":\"completed\",\"record_type\":\"exercise-session\",\"source_data_staged\":true},{\"outcome\":\"deferred\",\"reason\":\"collection-disabled\",\"record_type\":\"heart-rate\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"storage-pressure\",\"record_type\":\"height\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"screen-lock-removed\",\"record_type\":\"hydration\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"projection-refusal\",\"record_type\":\"nutrition\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"record-too-large\",\"record_type\":\"oxygen-saturation\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"delivery-blocked\",\"record_type\":\"respiratory-rate\",\"source_data_staged\":false},{\"outcome\":\"not-permitted\",\"record_type\":\"resting-heart-rate\",\"source_data_staged\":false},{\"outcome\":\"failed\",\"reason\":\"read-failed\",\"record_type\":\"sleep-session\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"changes-token-expired\",\"record_type\":\"steps\",\"source_data_staged\":true},{\"outcome\":\"interrupted\",\"record_type\":\"total-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"interrupted\",\"reason\":\"permission-missing\",\"record_type\":\"weight\",\"source_data_staged\":false}],\"run_sequence\":5,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":5,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"background\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "negative-number",
+      "tags": [
+        "malformed",
+        "lexical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"available\",\"capability_generation\":1,\"elapsed_ms\":-1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"not-due\",\"record_type\":\"active-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"no-change\",\"record_type\":\"blood-pressure\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"time-budget-reached\",\"record_type\":\"body-fat\",\"source_data_staged\":true},{\"outcome\":\"progressed\",\"record_type\":\"distance\",\"source_data_staged\":true},{\"outcome\":\"completed\",\"record_type\":\"exercise-session\",\"source_data_staged\":true},{\"outcome\":\"deferred\",\"reason\":\"collection-disabled\",\"record_type\":\"heart-rate\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"storage-pressure\",\"record_type\":\"height\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"screen-lock-removed\",\"record_type\":\"hydration\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"projection-refusal\",\"record_type\":\"nutrition\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"record-too-large\",\"record_type\":\"oxygen-saturation\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"delivery-blocked\",\"record_type\":\"respiratory-rate\",\"source_data_staged\":false},{\"outcome\":\"not-permitted\",\"record_type\":\"resting-heart-rate\",\"source_data_staged\":false},{\"outcome\":\"failed\",\"reason\":\"read-failed\",\"record_type\":\"sleep-session\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"changes-token-expired\",\"record_type\":\"steps\",\"source_data_staged\":true},{\"outcome\":\"interrupted\",\"record_type\":\"total-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"interrupted\",\"reason\":\"permission-missing\",\"record_type\":\"weight\",\"source_data_staged\":false}],\"run_sequence\":5,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":5,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"background\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "integer-above-safe-range",
+      "tags": [
+        "malformed",
+        "lexical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"available\",\"capability_generation\":1,\"elapsed_ms\":9007199254740992,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"not-due\",\"record_type\":\"active-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"no-change\",\"record_type\":\"blood-pressure\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"time-budget-reached\",\"record_type\":\"body-fat\",\"source_data_staged\":true},{\"outcome\":\"progressed\",\"record_type\":\"distance\",\"source_data_staged\":true},{\"outcome\":\"completed\",\"record_type\":\"exercise-session\",\"source_data_staged\":true},{\"outcome\":\"deferred\",\"reason\":\"collection-disabled\",\"record_type\":\"heart-rate\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"storage-pressure\",\"record_type\":\"height\",\"source_data_staged\":false},{\"outcome\":\"deferred\",\"reason\":\"screen-lock-removed\",\"record_type\":\"hydration\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"projection-refusal\",\"record_type\":\"nutrition\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"record-too-large\",\"record_type\":\"oxygen-saturation\",\"source_data_staged\":false},{\"outcome\":\"blocked\",\"reason\":\"delivery-blocked\",\"record_type\":\"respiratory-rate\",\"source_data_staged\":false},{\"outcome\":\"not-permitted\",\"record_type\":\"resting-heart-rate\",\"source_data_staged\":false},{\"outcome\":\"failed\",\"reason\":\"read-failed\",\"record_type\":\"sleep-session\",\"source_data_staged\":false},{\"outcome\":\"progressed\",\"reason\":\"changes-token-expired\",\"record_type\":\"steps\",\"source_data_staged\":true},{\"outcome\":\"interrupted\",\"record_type\":\"total-calories-burned\",\"source_data_staged\":false},{\"outcome\":\"interrupted\",\"reason\":\"permission-missing\",\"record_type\":\"weight\",\"source_data_staged\":false}],\"run_sequence\":5,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":5,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"background\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "not-an-object",
+      "tags": [
+        "malformed",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "[1]"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "missing-wire-version",
+      "tags": [
+        "malformed",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\"}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "string-wire-version",
+      "tags": [
+        "malformed",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":\"1\"}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "unknown-kind",
+      "tags": [
+        "malformed",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoints\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "missing-required-field",
+      "tags": [
+        "malformed",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "undeclared-field",
+      "tags": [
+        "malformed",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"note\":\"synthetic\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "string-sequence",
+      "tags": [
+        "malformed",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":\"6\",\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "zero-sequence",
+      "tags": [
+        "malformed",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":0,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "boolean-sequence",
+      "tags": [
+        "malformed",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":true,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "timestamp-without-milliseconds",
+      "tags": [
+        "malformed",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "impossible-calendar-date",
+      "tags": [
+        "malformed",
+        "rule-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-02-30T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "wire-version-2",
+      "tags": [
+        "unsupported-wire"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":2}"
+      },
+      "failure": "unsupported-wire-protocol"
+    },
+    {
+      "name": "wire-version-2-unknown-shape",
+      "tags": [
+        "unsupported-wire"
+      ],
+      "bytes": {
+        "text": "{\"anything\":true,\"kind\":\"future-kind\",\"wire_version\":2}"
+      },
+      "failure": "unsupported-wire-protocol"
+    },
+    {
+      "name": "wire-version-0",
+      "tags": [
+        "unsupported-wire"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":0}"
+      },
+      "failure": "unsupported-wire-protocol"
+    },
+    {
+      "name": "whitespace-between-tokens",
+      "tags": [
+        "noncanonical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\": \"restricted\", \"capability_generation\": 1, \"ended_at\": \"2030-01-01T00:01:30.250Z\", \"kind\": \"sync-checkpoint\", \"outbox_bytes_before_checkpoint\": 18432, \"outbox_messages_before_checkpoint\": 4, \"record_types\": [{\"outcome\": \"no-change\", \"record_type\": \"steps\", \"source_data_staged\": false}], \"run_sequence\": 6, \"sender_installation\": \"00000000-0000-4000-8000-000000000001\", \"sequence\": 6, \"started_at\": \"2030-01-01T00:00:00.000Z\", \"trigger\": \"foreground\", \"wire_version\": 1}"
+      },
+      "failure": "noncanonical-message"
+    },
+    {
+      "name": "trailing-newline",
+      "tags": [
+        "noncanonical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}\n"
+      },
+      "failure": "noncanonical-message"
+    },
+    {
+      "name": "leading-space",
+      "tags": [
+        "noncanonical"
+      ],
+      "bytes": {
+        "text": " {\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "noncanonical-message"
+    },
+    {
+      "name": "unsorted-keys",
+      "tags": [
+        "noncanonical"
+      ],
+      "bytes": {
+        "text": "{\"wire_version\":1,\"kind\":\"sync-checkpoint\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"capability_generation\":1,\"run_sequence\":6,\"trigger\":\"foreground\",\"started_at\":\"2030-01-01T00:00:00.000Z\",\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"background_scheduling\":\"restricted\",\"record_types\":[{\"record_type\":\"steps\",\"outcome\":\"no-change\",\"source_data_staged\":false}],\"outbox_messages_before_checkpoint\":4,\"outbox_bytes_before_checkpoint\":18432}"
+      },
+      "failure": "noncanonical-message"
+    },
+    {
+      "name": "escaped-solidus",
+      "tags": [
+        "noncanonical"
+      ],
+      "bytes": {
+        "text": "{\"enrollment_code\":\"SYNTHETICCODE234\",\"expires_at\":\"2030-01-01T00:10:00.000Z\",\"kind\":\"enrollment-offer\",\"portal_url\":\"http:\\/\\/portal.synthetic.invalid:8000\",\"wire_version\":1}"
+      },
+      "failure": "noncanonical-message"
+    },
+    {
+      "name": "unnecessary-unicode-escape",
+      "tags": [
+        "noncanonical"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"\\u0066oreground\",\"wire_version\":1}"
+      },
+      "failure": "noncanonical-message"
+    },
+    {
+      "name": "escaped-non-ascii",
+      "tags": [
+        "noncanonical",
+        "escaping"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000002\",\"cycle_kind\":\"change-cycle\",\"fragment_index\":1,\"items\":[{\"kind\":\"retraction\",\"source_identity\":\"synthetic-\\\"quoted\\\"-\\\\-\\u00fc-雪\"},{\"data\":\"eyJzeW50aGV0aWMiOiJoZWFydC1yYXRlLTEifQ==\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"6d3bfb4fcfe9dee63c5f3f28b5d63632190759c36838c21dc042d29d75f872ae\",\"projection_schema_version\":1,\"record_type\":\"heart-rate\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":3,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "failure": "noncanonical-message"
+    },
+    {
+      "name": "offer-url-with-path",
+      "tags": [
+        "malformed",
+        "enrollment",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"enrollment_code\":\"SYNTHETICCODE234\",\"expires_at\":\"2030-01-01T00:10:00.000Z\",\"kind\":\"enrollment-offer\",\"portal_url\":\"http://portal.synthetic.invalid:8000/enroll\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "offer-short-code",
+      "tags": [
+        "malformed",
+        "enrollment",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"enrollment_code\":\"SYNTHETICCODE23\",\"expires_at\":\"2030-01-01T00:10:00.000Z\",\"kind\":\"enrollment-offer\",\"portal_url\":\"http://portal.synthetic.invalid:8000\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "confirmation-fingerprint-mismatch",
+      "tags": [
+        "malformed",
+        "enrollment",
+        "rule-invalid"
+      ],
+      "bytes": {
+        "text": "{\"enrollment_code\":\"SYNTHETICCODE234\",\"fingerprint\":\"e79acd97ac88086665d85a762f43d533a45195b6bac5961a993e6ed362471439\",\"kind\":\"enrollment-confirmation\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "confirmation-undeclared-field",
+      "tags": [
+        "malformed",
+        "enrollment",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"device_name\":\"synthetic phone\",\"enrollment_code\":\"SYNTHETICCODE234\",\"fingerprint\":\"11e594f481958c10e3015d0bf0447a22f068a8a647f475df15ce2c7ab4b8f3f1\",\"kind\":\"enrollment-confirmation\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "advertisement-unsorted-wire-versions",
+      "tags": [
+        "malformed",
+        "capability",
+        "rule-invalid"
+      ],
+      "bytes": {
+        "text": "{\"generation\":1,\"kind\":\"capability-advertisement\",\"max_message_bytes\":4096,\"max_record_count\":3,\"projection_schemas\":[{\"record_type\":\"heart-rate\",\"versions\":[1]},{\"record_type\":\"steps\",\"versions\":[1,2]}],\"wire_version\":1,\"wire_versions\":[2,1]}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "advertisement-unsorted-record-types",
+      "tags": [
+        "malformed",
+        "capability",
+        "rule-invalid"
+      ],
+      "bytes": {
+        "text": "{\"generation\":1,\"kind\":\"capability-advertisement\",\"max_message_bytes\":4096,\"max_record_count\":3,\"projection_schemas\":[{\"record_type\":\"steps\",\"versions\":[1,2]},{\"record_type\":\"heart-rate\",\"versions\":[1]}],\"wire_version\":1,\"wire_versions\":[1]}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "advertisement-byte-limit-below-floor",
+      "tags": [
+        "malformed",
+        "capability",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"generation\":1,\"kind\":\"capability-advertisement\",\"max_message_bytes\":4095,\"max_record_count\":3,\"projection_schemas\":[{\"record_type\":\"heart-rate\",\"versions\":[1]},{\"record_type\":\"steps\",\"versions\":[1,2]}],\"wire_version\":1,\"wire_versions\":[1]}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "acknowledgement-undeclared-field",
+      "tags": [
+        "malformed",
+        "acknowledgement",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"acknowledged_generation\":1,\"capability_generation\":1,\"kind\":\"capability-acknowledgement\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":1,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "item-unknown-kind",
+      "tags": [
+        "malformed",
+        "ingest-items",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"kind\":\"tombstone\",\"source_identity\":\"synthetic-1\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "item-both-shapes",
+      "tags": [
+        "malformed",
+        "ingest-items",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\",\"source_identity\":\"synthetic-1\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "item-base64-missing-padding",
+      "tags": [
+        "malformed",
+        "ingest-items",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "item-base64-nonzero-unused-bits",
+      "tags": [
+        "malformed",
+        "ingest-items",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"QR==\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "item-empty-projection",
+      "tags": [
+        "malformed",
+        "ingest-items",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "item-control-character-identity",
+      "tags": [
+        "malformed",
+        "ingest-items",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"kind\":\"retraction\",\"source_identity\":\"synthetic-\\u0007\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "item-identity-too-long",
+      "tags": [
+        "malformed",
+        "ingest-items",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"kind\":\"retraction\",\"source_identity\":\"synthetic-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "batch-zero-page-index",
+      "tags": [
+        "malformed",
+        "ingest-items",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7\",\"projection_schema_version\":1,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":0,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "batch-uppercase-record-type",
+      "tags": [
+        "malformed",
+        "ingest-items",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"cycle_kind\":\"initial-snapshot\",\"fragment_index\":1,\"items\":[{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0xIn0=\",\"kind\":\"projection\"},{\"data\":\"eyJzeW50aGV0aWMiOiJzdGVwcy0yIn0=\",\"kind\":\"projection\"}],\"kind\":\"ingest-batch\",\"previous_chain\":\"05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7\",\"projection_schema_version\":1,\"record_type\":\"Steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":2,\"source_page_index\":1,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "snapshot-completion-unknown-kind",
+      "tags": [
+        "malformed",
+        "completion-fields",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"final_chain\":\"9ab46e2687701573a7de40c52da3efa0dc8c81ed18f7664ee2399b3af23b9a8c\",\"fragment_count\":3,\"kind\":\"snapshot-completion\",\"page_count\":2,\"record_count\":6,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":9,\"snapshot_kind\":\"partial\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "completion-with-source-token",
+      "tags": [
+        "malformed",
+        "completion-fields",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000001\",\"final_chain\":\"9ab46e2687701573a7de40c52da3efa0dc8c81ed18f7664ee2399b3af23b9a8c\",\"fragment_count\":3,\"kind\":\"snapshot-completion\",\"page_count\":2,\"record_count\":6,\"record_type\":\"steps\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":9,\"snapshot_kind\":\"initial\",\"source_token\":\"synthetic-token\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "change-completion-with-snapshot-kind",
+      "tags": [
+        "malformed",
+        "completion-fields",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"capability_generation\":1,\"cycle_id\":\"00000000-0000-4000-8000-100000000002\",\"final_chain\":\"81c104bc0b3c45d828d9b8158a17d060f1285f2ac1ab3469be4862e7961c0b7e\",\"fragment_count\":1,\"kind\":\"change-completion\",\"page_count\":1,\"record_count\":2,\"record_type\":\"heart-rate\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":11,\"snapshot_kind\":\"initial\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "checkpoint-source-record-count",
+      "tags": [
+        "malformed",
+        "checkpoint-privacy",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_count\":12,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message",
+      "category": "source-record-count"
+    },
+    {
+      "name": "checkpoint-source-token",
+      "tags": [
+        "malformed",
+        "checkpoint-privacy",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"source_token\":\"synthetic-token\",\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message",
+      "category": "source-token"
+    },
+    {
+      "name": "checkpoint-source-identity",
+      "tags": [
+        "malformed",
+        "checkpoint-privacy",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false,\"source_identity\":\"synthetic-1\"}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message",
+      "category": "source-identity"
+    },
+    {
+      "name": "checkpoint-health-date",
+      "tags": [
+        "malformed",
+        "checkpoint-privacy",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"measured_on\":\"2030-01-01\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message",
+      "category": "health-date"
+    },
+    {
+      "name": "checkpoint-health-value",
+      "tags": [
+        "malformed",
+        "checkpoint-privacy",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false,\"value\":9000}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message",
+      "category": "health-value"
+    },
+    {
+      "name": "checkpoint-free-text-reason",
+      "tags": [
+        "malformed",
+        "checkpoint-privacy",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"failed\",\"reason\":\"read timed out after 500 records\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message",
+      "category": "free-text-failure"
+    },
+    {
+      "name": "checkpoint-free-text-field",
+      "tags": [
+        "malformed",
+        "checkpoint-privacy",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"error\":\"synthetic free text\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message",
+      "category": "free-text-failure"
+    },
+    {
+      "name": "checkpoint-unknown-outcome",
+      "tags": [
+        "malformed",
+        "checkpoint-values",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"skipped\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "checkpoint-unknown-trigger",
+      "tags": [
+        "malformed",
+        "checkpoint-values",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"push\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "checkpoint-unknown-scheduling-status",
+      "tags": [
+        "malformed",
+        "checkpoint-values",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"unknown\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "checkpoint-reason-required",
+      "tags": [
+        "malformed",
+        "checkpoint-values",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"blocked\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "checkpoint-reason-forbidden",
+      "tags": [
+        "malformed",
+        "checkpoint-values",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"completed\",\"reason\":\"read-failed\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "checkpoint-unsorted-record-types",
+      "tags": [
+        "malformed",
+        "checkpoint-values",
+        "rule-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false},{\"outcome\":\"no-change\",\"record_type\":\"heart-rate\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "checkpoint-duplicate-record-type",
+      "tags": [
+        "malformed",
+        "checkpoint-values",
+        "rule-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_bytes_before_checkpoint\":18432,\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false},{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "checkpoint-missing-preinsertion-count",
+      "tags": [
+        "malformed",
+        "checkpoint-counts",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"background_scheduling\":\"restricted\",\"capability_generation\":1,\"ended_at\":\"2030-01-01T00:01:30.250Z\",\"kind\":\"sync-checkpoint\",\"outbox_messages_before_checkpoint\":4,\"record_types\":[{\"outcome\":\"no-change\",\"record_type\":\"steps\",\"source_data_staged\":false}],\"run_sequence\":6,\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":6,\"started_at\":\"2030-01-01T00:00:00.000Z\",\"trigger\":\"foreground\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "retryable-sender-local-reason",
+      "tags": [
+        "malformed",
+        "retryable",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"kind\":\"retryable-failure\",\"reason\":\"receipt-mismatch\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "block-identity-half-present",
+      "tags": [
+        "malformed",
+        "block",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"failure\":\"completion-chain-mismatch\",\"kind\":\"delivery-block\",\"message_sha256\":\"3431e43c56c1d18c4bc1456c643c0b54eb321a3df0af13667731d5935dce07bc\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    },
+    {
+      "name": "block-retryable-failure-name",
+      "tags": [
+        "malformed",
+        "block",
+        "schema-invalid"
+      ],
+      "bytes": {
+        "text": "{\"failure\":\"storage-reserve-exhausted\",\"kind\":\"delivery-block\",\"message_sha256\":\"3431e43c56c1d18c4bc1456c643c0b54eb321a3df0af13667731d5935dce07bc\",\"sender_installation\":\"00000000-0000-4000-8000-000000000001\",\"sequence\":9,\"wire_version\":1}"
+      },
+      "failure": "malformed-message"
+    }
+  ]
+}

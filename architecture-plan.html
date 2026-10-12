@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:,">
+  <title>Activity Tracker Portal — Architecture Overview</title>
+  <style>
+    :root {
+      --ink: #18332f;
+      --muted: #5c6f6b;
+      --paper: #f5f1e8;
+      --panel: #fffdf7;
+      --line: #d8d3c6;
+      --green: #20715f;
+      --green-dark: #13493f;
+      --mint: #dceee7;
+      --orange: #d66f3d;
+      --yellow: #f2c85b;
+      --blue: #2e6874;
+      --shadow: 0 16px 45px rgba(24, 51, 47, .10);
+      --radius: 18px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 2%, rgba(242, 200, 91, .22), transparent 25rem),
+        radial-gradient(circle at 93% 22%, rgba(32, 113, 95, .13), transparent 30rem),
+        var(--paper);
+      font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: inherit; text-decoration-thickness: .08em; text-underline-offset: .18em; }
+    .shell { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid rgba(216, 211, 198, .85);
+      background: color-mix(in srgb, var(--paper) 90%, transparent);
+      backdrop-filter: blur(15px);
+    }
+    .topbar .shell { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .brand { display: inline-flex; align-items: center; gap: 11px; font-weight: 800; text-decoration: none; letter-spacing: -.02em; }
+    .mark { display: grid; place-items: center; width: 38px; aspect-ratio: 1; border-radius: 11px; color: white; background: var(--green); font-size: 13px; }
+    nav { display: flex; gap: 20px; color: var(--muted); font-size: 14px; font-weight: 700; }
+    nav a { text-decoration: none; }
+    nav a:hover { color: var(--green); }
+    .hero { display: grid; grid-template-columns: 1.55fr .8fr; gap: 34px; align-items: end; padding: 86px 0 52px; }
+    .eyebrow { margin: 0 0 12px; color: var(--green); font-size: 12px; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
+    h1, h2, h3 { margin-top: 0; line-height: 1.08; letter-spacing: -.035em; }
+    h1 { max-width: 820px; margin-bottom: 22px; font: 800 clamp(46px, 7vw, 86px)/.98 Georgia, serif; }
+    h2 { margin-bottom: 12px; font: 800 clamp(31px, 4vw, 49px)/1.04 Georgia, serif; }
+    h3 { margin-bottom: 9px; font-size: 20px; }
+    p { margin: 0 0 14px; }
+    .lede { max-width: 760px; color: var(--muted); font-size: clamp(18px, 2.2vw, 23px); }
+    .brief, .card, .flow, .artifact, .phase, .authority {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: color-mix(in srgb, var(--panel) 96%, transparent);
+      box-shadow: var(--shadow);
+    }
+    .brief { padding: 9px 24px; }
+    .brief div { display: flex; justify-content: space-between; gap: 20px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+    .brief div:last-child { border: 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; text-align: right; font-weight: 800; }
+    .authority { display: flex; gap: 18px; align-items: flex-start; padding: 21px 24px; border-left: 6px solid var(--orange); box-shadow: none; }
+    .authority strong { flex: 0 0 auto; color: var(--orange); }
+    .authority p { margin: 0; }
+    main section { padding: 76px 0 8px; scroll-margin-top: 58px; }
+    .section-head { display: grid; grid-template-columns: 1.25fr .75fr; gap: 32px; align-items: end; margin-bottom: 28px; }
+    .section-head > p { color: var(--muted); }
+    .grid-2, .grid-3, .grid-4 { display: grid; gap: 18px; }
+    .grid-2 { grid-template-columns: repeat(2, 1fr); }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+    .card { padding: 24px; }
+    .card p, .phase p, .artifact p { color: var(--muted); }
+    .tag { display: inline-block; margin-bottom: 18px; padding: 5px 10px; border-radius: 999px; color: var(--green-dark); background: var(--mint); font-size: 11px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+    .tag.orange { color: #763517; background: #f7dfd2; }
+    .tag.blue { color: #204d56; background: #d9e9ed; }
+    .tag.yellow { color: #684f0d; background: #faefc7; }
+    .flow { padding: 26px; overflow: hidden; }
+    .flow-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .layer { position: relative; min-height: 230px; padding: 23px; border-radius: 15px; color: white; background: var(--green-dark); }
+    .layer:nth-child(2) { background: var(--green); }
+    .layer:nth-child(3) { color: var(--ink); background: var(--yellow); }
+    .layer:nth-child(4) { background: var(--blue); }
+    .layer p { opacity: .84; }
+    .layer-no { display: inline-block; margin-bottom: 42px; font-size: 12px; font-weight: 900; letter-spacing: .12em; opacity: .76; }
+    .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 17px; }
+    .pill { padding: 4px 8px; border: 1px solid currentColor; border-radius: 999px; font-size: 11px; font-weight: 800; opacity: .88; }
+    .seam-note { margin-top: 16px; padding: 17px 19px; border-radius: 13px; background: var(--mint); }
+    .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--line); }
+    .fact { padding: 22px; background: var(--panel); }
+    .fact strong { display: block; margin-bottom: 5px; font-size: 18px; }
+    .fact span { color: var(--muted); font-size: 14px; }
+    .message-path { display: grid; grid-template-columns: repeat(5, 1fr); align-items: stretch; gap: 10px; }
+    .message-path > div { position: relative; padding: 21px 18px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); }
+    .message-path > div:not(:last-child)::after { content: "→"; position: absolute; right: -17px; top: 43%; z-index: 2; color: var(--orange); font-size: 23px; font-weight: 900; }
+    .message-path small { display: block; margin-top: 8px; color: var(--muted); }
+    .destinations { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 0; }
+    .destination { padding: 11px 15px; border-radius: 12px; color: white; background: var(--green-dark); font-weight: 800; }
+    .artifact { padding: 24px; border-top: 6px solid var(--green); }
+    .artifact:nth-child(2) { border-top-color: var(--blue); }
+    .artifact:nth-child(3) { border-top-color: var(--orange); }
+    .timeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .phase { padding: 23px; }
+    .phase-no { display: block; margin-bottom: 26px; color: var(--green); font-size: 12px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; }
+    ul { margin: 12px 0 0; padding-left: 19px; }
+    li + li { margin-top: 6px; }
+    .docs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .docs a { padding: 16px 18px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); font-weight: 800; text-decoration: none; }
+    .docs a:hover { border-color: var(--green); color: var(--green); }
+    footer { margin-top: 82px; padding: 28px 0 45px; border-top: 1px solid var(--line); color: var(--muted); }
+    .footer-inner { display: flex; justify-content: space-between; gap: 22px; }
+    @media (max-width: 900px) {
+      nav { display: none; }
+      .hero, .section-head { grid-template-columns: 1fr; }
+      .grid-4, .flow-grid, .timeline, .facts { grid-template-columns: repeat(2, 1fr); }
+      .grid-3 { grid-template-columns: 1fr; }
+      .message-path { grid-template-columns: 1fr; }
+      .message-path > div:not(:last-child)::after { content: "↓"; top: auto; right: 48%; bottom: -22px; }
+    }
+    @media (max-width: 600px) {
+      .shell { width: min(100% - 24px, 1180px); }
+      .hero { padding-top: 54px; }
+      .grid-2, .grid-4, .flow-grid, .timeline, .facts, .docs { grid-template-columns: 1fr; }
+      .authority, .footer-inner { display: block; }
+      .authority strong { display: block; margin-bottom: 8px; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #ecf5f1;
+        --muted: #b2c2bc;
+        --paper: #10201d;
+        --panel: #172a26;
+        --line: #36504a;
+        --mint: #1f493f;
+        --green: #75c6b1;
+        --green-dark: #245f51;
+        --yellow: #d5a83a;
+        --blue: #275f6b;
+        --shadow: 0 18px 45px rgba(0, 0, 0, .23);
+      }
+      .tag { color: #d8fff3; }
+      .tag.orange { color: #ffdccc; background: #66351f; }
+      .tag.blue { color: #d9f7ff; background: #244f58; }
+      .tag.yellow { color: #fff2bc; background: #604e1d; }
+      .layer:nth-child(3) { color: #17231f; }
+    }
+    @media print {
+      .topbar { position: static; }
+      body { background: white; color: #18332f; }
+      main section { break-inside: avoid; padding-top: 38px; }
+      .brief, .card, .flow, .artifact, .phase { box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell">
+      <a class="brand" href="#top"><span class="mark">AT</span>Activity Tracker Portal</a>
+      <nav aria-label="Overview sections">
+        <a href="#shape">Shape</a>
+        <a href="#delivery">Delivery</a>
+        <a href="#data">Data</a>
+        <a href="#portal">Portal</a>
+        <a href="#governance">Governance</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="shell" id="top">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Accepted architecture · September 2026</p>
+        <h1>Trustworthy personal health history, under one person’s control.</h1>
+        <p class="lede">A project-owned Sender observes Health Connect, delivers exact evidence over Tailscale, and a home-server Portal preserves, interprets, and presents it without pretending uncertainty is zero.</p>
+      </div>
+      <aside class="brief" aria-label="Architecture summary">
+        <dl>
+          <div><dt>Subject and Operator</dt><dd>Exactly one human</dd></div>
+          <div><dt>Server</dt><dd>Home server via Tailscale</dd></div>
+          <div><dt>Portal</dt><dd>FastAPI + server rendering</dd></div>
+          <div><dt>Operational store</dt><dd>SQLite behind one Interface</dd></div>
+          <div><dt>Sender</dt><dd>Expo shell + Kotlin adapter</dd></div>
+        </dl>
+      </aside>
+    </header>
+
+    <aside class="authority">
+      <strong>Overview, not specification</strong>
+      <p>This page explains the accepted shape. <a href="CONTEXT.md">CONTEXT.md</a> defines project language, <a href="docs/adr/">ADRs</a> record decisions, and the <a href="docs/governance/scope-map.md">Governed Scope Map</a> is the normative functional decomposition.</p>
+    </aside>
+
+    <main>
+      <section id="shape">
+        <div class="section-head">
+          <div><p class="eyebrow">System shape</p><h2>Four deep Modules, explicit seams.</h2></div>
+          <p>Behavior is grouped by what callers need to know. A seam exists where behavior genuinely varies; the SQLite and future DuckLake implementations are real storage Adapters, while transport stays outside domain ingestion.</p>
+        </div>
+        <div class="flow">
+          <div class="flow-grid">
+            <article class="layer"><span class="layer-no">01 · Observe</span><h3>Sender</h3><p>Reads every permitted stable Health Connect health-and-fitness type and projects complete source evidence.</p><div class="pills"><span class="pill">Expo</span><span class="pill">Kotlin</span><span class="pill">Android v1</span></div></article>
+            <article class="layer"><span class="layer-no">02 · Deliver</span><h3>Protocol</h3><p>Moves byte-stable batches, lifecycle completion, polling state, and durable receipts.</p><div class="pills"><span class="pill">Direct push</span><span class="pill">Versioned</span><span class="pill">Retry safe</span></div></article>
+            <article class="layer"><span class="layer-no">03 · Preserve</span><h3>Operational Store</h3><p>Archives immutable evidence and commits ingest, work, policy, publication, and deletion invariants.</p><div class="pills"><span class="pill">SQLite</span><span class="pill">Transactions</span><span class="pill">Leases</span></div></article>
+            <article class="layer"><span class="layer-no">04 · Interpret</span><h3>Portal</h3><p>Processes versioned interpretations and renders inspectable records, summaries, and operations.</p><div class="pills"><span class="pill">FastAPI</span><span class="pill">Jinja</span><span class="pill">Worker</span></div></article>
+          </div>
+          <p class="seam-note"><strong>Storage seam:</strong> callers use domain transactions and coherent reads. SQLite is the first Adapter; a future analytical projection may use DuckLake without changing operational truth.</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <div><p class="eyebrow">Fixed posture</p><h2>Local authority without an account system.</h2></div>
+          <p>Tailscale reachability establishes Authorized Ingress and browser trust in v1. That mechanism can later be augmented or replaced at the ingress seam without changing domain behavior.</p>
+        </div>
+        <div class="facts">
+          <div class="fact"><strong>One human</strong><span>The Subject and Operator are the same person; there are no profiles or accounts.</span></div>
+          <div class="fact"><strong>Reachability is trust</strong><span>Any device that can reach the Portal may read and mutate it in v1.</span></div>
+          <div class="fact"><strong>CSRF still applies</strong><span>Browser mutations resist hostile-site submission without claiming a login layer.</span></div>
+          <div class="fact"><strong>Deployment is separate</strong><span>Server hardening, availability, and tailnet configuration stay outside product scope.</span></div>
+        </div>
+      </section>
+
+      <section id="delivery">
+        <div class="section-head">
+          <div><p class="eyebrow">Receipt-bound synchronization</p><h2>Nothing leaves the phone on hope alone.</h2></div>
+          <p>The Sender stores each encrypted Outbox Message until the Portal durably acknowledges its exact identity. Unknown outcomes retry identical bytes; an actionable mismatch blocks the head rather than skipping data.</p>
+        </div>
+        <div class="message-path" aria-label="Sender delivery sequence">
+          <div><strong>Observe</strong><small>Read one bounded snapshot or change page.</small></div>
+          <div><strong>Project</strong><small>Produce complete, versioned Source Projections or refuse the page.</small></div>
+          <div><strong>Stage</strong><small>Atomically store encrypted numbered fragments and cursor state.</small></div>
+          <div><strong>Deliver</strong><small>Push the oldest byte-stable message through the shared protocol.</small></div>
+          <div><strong>Receipt</strong><small>Remove locally only after matching durable acknowledgement.</small></div>
+        </div>
+        <div class="grid-3" style="margin-top:18px">
+          <article class="card"><span class="tag">Complete history</span><h3>Race-closed snapshots</h3><p>A token is reserved before traversal. Snapshot Completion plus the catch-up Change Completion proves the accepted page chain.</p></article>
+          <article class="card"><span class="tag blue">Observable operation</span><h3>One checkpoint per run</h3><p>Every normally completed or recovered-interrupted Polling Run reports health-data-free per-type outcomes and scheduling state.</p></article>
+          <article class="card"><span class="tag orange">Honest recovery</span><h3>No continuity fiction</h3><p>An expired change token triggers a complete Reconciliation Snapshot; absence becomes evidence only under unchanged proven coverage.</p></article>
+        </div>
+      </section>
+
+      <section id="data">
+        <div class="section-head">
+          <div><p class="eyebrow">Evidence and interpretation</p><h2>Preserve first; interpret by version.</h2></div>
+          <p>Raw Records remain byte-for-byte immutable while retained. Canonical Revisions are record-type-specific interpretations, and publication changes only through coherent governed cutovers.</p>
+        </div>
+        <div class="grid-3">
+          <article class="card"><span class="tag">Archive broadly</span><h3>All stable SDK types</h3><p>Every permitted Health Connect health-and-fitness type is projected and archived. The experimental Medical Records/PHR subsystem is outside scope.</p></article>
+          <article class="card"><span class="tag yellow">Interpret carefully</span><h3>Four initial summaries</h3><p>Steps, Heart Rate, Sleep, and Weight receive conservative processors. Other understood types remain visibly Unmodeled.</p></article>
+          <article class="card"><span class="tag blue">Retain provenance</span><h3>No destructive merge</h3><p>Origins, observing Sender Installations, source changes, conflicts, retractions, Amendments, and prior interpretations remain inspectable.</p></article>
+          <article class="card"><h3>Missing is not zero</h3><p>Measured, partial, pending, failed, quarantined, policy-pending, and unresolved states remain distinct in every summary and range.</p></article>
+          <article class="card"><h3>Policy is explicit</h3><p>Overlapping origins need a Source Selection Policy; missing experienced offsets need a confirmed Fallback Timezone Policy.</p></article>
+          <article class="card"><h3>Publication is coherent</h3><p>Candidate Builds and immutable Cutover Targets prevent mixed processor versions or partially published synchronization cycles.</p></article>
+        </div>
+      </section>
+
+      <section id="portal">
+        <div class="section-head">
+          <div><p class="eyebrow">Product surface</p><h2>Inspection before interpretation.</h2></div>
+          <p>The first useful release archives every permitted type, exposes generic record evidence, derives four conservative views, and makes synchronization, export, and deletion operationally visible.</p>
+        </div>
+        <div class="destinations" aria-label="Stable Portal destinations">
+          <span class="destination">Overview</span>
+          <span class="destination">Records</span>
+          <span class="destination">Summaries</span>
+          <span class="destination">Sources</span>
+          <span class="destination">Operations</span>
+        </div>
+        <div class="grid-2" style="margin-top:18px">
+          <article class="card"><h3>Server-rendered views</h3><p>FastAPI remains a thin shell around governed Modules. Jinja views and focused interactions do not own health-state rules.</p></article>
+          <article class="card"><h3>Durable local work</h3><p>A separately supervised worker leases SQLite Processing, Summary Refresh, and Export Jobs. Celery waits for measured multi-machine need.</p></article>
+          <article class="card"><h3>Operational trust state</h3><p>Last Delivery, Polling Freshness, Sender backlog, scheduling status, conflicts, quarantine, storage, and reconciliation failures remain distinct.</p></article>
+          <article class="card"><h3>Conservative ranges</h3><p>Inclusive 7-, 30-, and 90-date windows and calendar-year/custom ranges preserve gaps and evidence conditions without medical advice.</p></article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <div><p class="eyebrow">Portability and recovery</p><h2>Three artifacts, three contracts.</h2></div>
+          <p>Synchronization, external portability, disaster recovery, and support evidence do not share one ambiguous “export” path.</p>
+        </div>
+        <div class="grid-3">
+          <article class="artifact"><h3>Portable Export</h3><p>A requested, database-independent ZIP/ZIP64 package with canonical JSON/NDJSON, schemas, manifest hashes, optional CSV, and a stable Package ID. It is not a v1 restore input.</p></article>
+          <article class="artifact"><h3>Operational Backup</h3><p>The encrypted, restorable SQLite state plus Deletion Ledger under a deployment-owned periodic retention workflow. This is the supported recovery path.</p></article>
+          <article class="artifact"><h3>Diagnostic Bundle</h3><p>A manually saved, health-data-free allowlist of versions, aggregate states, timings, aliases, and curated failure codes—never scraped logs.</p></article>
+        </div>
+      </section>
+
+      <section id="governance">
+        <div class="section-head">
+          <div><p class="eyebrow">Engineering governance</p><h2>Decide, bind, prove, publish.</h2></div>
+          <p>Beads tracks work and dependencies. Vouch carries the acceptance lifecycle for forward behavioral and architectural change at standard assurance with CI anchoring.</p>
+        </div>
+        <div class="timeline">
+          <article class="phase"><span class="phase-no">01 · Contract</span><h3>Ingest protocol</h3><p>Freeze canonical messages, schemas, vectors, compatibility, limits, named outcomes, and receipts.</p></article>
+          <article class="phase"><span class="phase-no">02 · Projection</span><h3>Source records</h3><p>Cover every pinned Health Connect type with exact positive and negative synthetic vectors.</p></article>
+          <article class="phase"><span class="phase-no">03 · Persistence</span><h3>Operational store</h3><p>Implement deep transactional operations, migrations, work leases, and coherent reads in SQLite.</p></article>
+          <article class="phase"><span class="phase-no">04 · Integration</span><h3>Receipt-bound delivery</h3><p>Prove the Sender-to-Portal durability meaning across the network and storage seams.</p></article>
+        </div>
+        <div class="grid-2" style="margin-top:18px">
+          <article class="card"><span class="tag">Hosted evidence</span><h3>Synthetic CI</h3><p>GitHub Actions runs project-owned conformance fixtures containing no personal health data, device identifiers, or credentials.</p></article>
+          <article class="card"><span class="tag orange">Release gate</span><h3>Physical-device qualification</h3><p>Representative Health Connect shapes, changes, retractions, background execution, interruption, and restart are qualified locally before native-adapter release.</p></article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <div><p class="eyebrow">Normative sources</p><h2>Follow the decision trail.</h2></div>
+          <p>The details intentionally live where they can be reviewed and byte-bound into Vouch acceptance packs.</p>
+        </div>
+        <div class="docs">
+          <a href="README.md">Project entry point</a>
+          <a href="CONTEXT.md">Domain language</a>
+          <a href="docs/adr/">Architecture decisions</a>
+          <a href="docs/governance/scope-map.md">Governed Scope Map</a>
+          <a href="docs/adr/0003-govern-forward-delivery-with-vouch.md">Vouch adoption decision</a>
+          <a href="docs/vouch-adoption-log.md">First-project friction log</a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="footer-inner"><span>Activity Tracker Portal · Architecture Overview</span><span>Accepted design · not medical advice</span></div>
+    </footer>
+  </div>
+</body>
+</html>

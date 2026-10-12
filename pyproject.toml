@@ -1,0 +1,22 @@
+[project]
+name = "activity-tracker-portal"
+version = "0.1.0"
+description = "A local-first, single-person portal for inspectable health and activity evidence"
+readme = "README.md"
+authors = [
+    { name = "sarvagnan", email = "github@sl.sarva.email" }
+]
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+activity-tracker-portal = "activity_tracker_portal:main"
+
+[build-system]
+requires = ["uv_build>=0.12.2,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "jsonschema==4.26.0",
+]

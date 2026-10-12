@@ -1,0 +1,40 @@
+{
+  "description": "Installation fingerprints and fragment-chain values.",
+  "fingerprints": [
+    {
+      "sender_installation": "00000000-0000-4000-8000-000000000001",
+      "fingerprint": "11e594f481958c10e3015d0bf0447a22f068a8a647f475df15ce2c7ab4b8f3f1"
+    },
+    {
+      "sender_installation": "00000000-0000-4000-8000-000000000002",
+      "fingerprint": "e79acd97ac88086665d85a762f43d533a45195b6bac5961a993e6ed362471439"
+    }
+  ],
+  "chains": [
+    {
+      "name": "empty-chain",
+      "cycle_id": "00000000-0000-4000-8000-100000000006",
+      "start": "7f404081c15a89085b85d5ab4cfc7bd7d4d53a8b664ec2c86b16bb34dcf3a0ca",
+      "steps": []
+    },
+    {
+      "name": "three-fragment-chain",
+      "cycle_id": "00000000-0000-4000-8000-100000000001",
+      "start": "05ebb772ea8639614cc71bf855eb609af514290b4e141c24430176bb643794a7",
+      "steps": [
+        {
+          "message_sha256": "44d572c6c68471fb00eff82839e1aaaa46e2974f72a3936d835080464c3eb854",
+          "chain": "8d5d56046a2f90e99349406ac0b31508f85b5770fafadca3ef13fecc512b624f"
+        },
+        {
+          "message_sha256": "f8d248231ed8c9991d94395da235ffa72b279b4bae70149fa3e32b6aff60a637",
+          "chain": "b17a6d86b15c905bde126501753a0e03631523abaec6440200a4dcdd401bd8e5"
+        },
+        {
+          "message_sha256": "7567c08b533584074e9c5fc24b3ea6db44c6f39013cf78f468efbeb35a4bbfbf",
+          "chain": "57c5dfa4fe806bfe1976ad2d19575bfddc93d69a6b45ba31168ee05b419f0b34"
+        }
+      ]
+    }
+  ]
+}

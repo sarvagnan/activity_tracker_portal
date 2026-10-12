@@ -1,0 +1,837 @@
+{
+  "description": "Portal compatibility decisions for proposed honored capability generations.",
+  "vectors": [
+    {
+      "name": "first-generation",
+      "tags": [
+        "expansion"
+      ],
+      "current": [],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        }
+      ],
+      "latest_acknowledged_generation": null,
+      "expected": "accept"
+    },
+    {
+      "name": "add-generation",
+      "tags": [
+        "expansion"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "latest_acknowledged_generation": null,
+      "expected": "accept"
+    },
+    {
+      "name": "unchanged",
+      "tags": [
+        "expansion"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "latest_acknowledged_generation": 1,
+      "expected": "accept"
+    },
+    {
+      "name": "new-generation-not-greater",
+      "tags": [
+        "regression"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 3,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 3,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "latest_acknowledged_generation": null,
+      "expected": "capability-generation-regression"
+    },
+    {
+      "name": "generation-contents-changed",
+      "tags": [
+        "regression"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 400,
+          "max_message_bytes": 65536
+        }
+      ],
+      "latest_acknowledged_generation": null,
+      "expected": "capability-generation-regression"
+    },
+    {
+      "name": "regression-precedes-contraction",
+      "tags": [
+        "regression"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 3,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "latest_acknowledged_generation": null,
+      "expected": "capability-generation-regression"
+    },
+    {
+      "name": "retire-after-later-acknowledgement",
+      "tags": [
+        "retirement"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "latest_acknowledged_generation": 2,
+      "expected": "accept"
+    },
+    {
+      "name": "retire-without-acknowledgement",
+      "tags": [
+        "retirement"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "latest_acknowledged_generation": null,
+      "expected": "capability-contraction-blocked"
+    },
+    {
+      "name": "retire-with-same-generation-acknowledged",
+      "tags": [
+        "retirement"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "latest_acknowledged_generation": 1,
+      "expected": "capability-contraction-blocked"
+    },
+    {
+      "name": "lower-limit-retiring-old-generation-too-early",
+      "tags": [
+        "retirement"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 100,
+          "max_message_bytes": 65536
+        }
+      ],
+      "latest_acknowledged_generation": 1,
+      "expected": "capability-contraction-blocked"
+    },
+    {
+      "name": "lower-limit-after-acknowledgement",
+      "tags": [
+        "retirement"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 100,
+          "max_message_bytes": 65536
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 100,
+          "max_message_bytes": 65536
+        }
+      ],
+      "latest_acknowledged_generation": 2,
+      "expected": "accept"
+    },
+    {
+      "name": "retire-every-generation",
+      "tags": [
+        "retirement"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        }
+      ],
+      "proposed": [],
+      "latest_acknowledged_generation": 1,
+      "expected": "capability-contraction-blocked"
+    },
+    {
+      "name": "remove-version-by-retiring-generations",
+      "tags": [
+        "retirement"
+      ],
+      "current": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 1,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "max_record_count": 500,
+          "max_message_bytes": 65536
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 2,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                1,
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        },
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 3,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "proposed": [
+        {
+          "wire_version": 1,
+          "kind": "capability-advertisement",
+          "generation": 3,
+          "wire_versions": [
+            1
+          ],
+          "projection_schemas": [
+            {
+              "record_type": "steps",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "max_record_count": 1000,
+          "max_message_bytes": 131072
+        }
+      ],
+      "latest_acknowledged_generation": 3,
+      "expected": "accept"
+    }
+  ]
+}

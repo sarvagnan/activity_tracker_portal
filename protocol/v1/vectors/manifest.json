@@ -1,0 +1,58 @@
+{
+  "wire_version": 1,
+  "generator": "protocol/v1/tools/build_vectors.py",
+  "files": [
+    {
+      "path": "messages.json",
+      "sha256": "7a399c6a9e29d783d4b6ff0f87c51d4dddef373c5f49df65697fcaf42432fec4",
+      "languages": [
+        "python",
+        "typescript"
+      ]
+    },
+    {
+      "path": "refusals.json",
+      "sha256": "d85aef2d7337b8c8bec03d87027f2db11b9086b46895f9a19440a1a0f9a05bc7",
+      "languages": [
+        "python",
+        "typescript"
+      ]
+    },
+    {
+      "path": "identities.json",
+      "sha256": "aebc97ab36af63ce75c5244b6ea1e28ba26d0081ecbe44195b62816daacaae5e",
+      "languages": [
+        "python",
+        "typescript"
+      ]
+    },
+    {
+      "path": "partition.json",
+      "sha256": "293d0a7fe2adf727989368f06775e21e63ce309d9bdfdad7b63b5c9b6ccad1eb",
+      "languages": [
+        "typescript"
+      ]
+    },
+    {
+      "path": "responses.json",
+      "sha256": "532770e17e220d5568e3d16cd4a7d73eeda6c30f12f9f6be5edc2a7ee4e861ad",
+      "languages": [
+        "typescript"
+      ]
+    },
+    {
+      "path": "delivery.json",
+      "sha256": "ec99cb880b5d45387eea5586b0cf39b5e8a5c501d09fd255337683978a4f11fc",
+      "languages": [
+        "python"
+      ]
+    },
+    {
+      "path": "compatibility.json",
+      "sha256": "9d08b4eedf367890e332a38b84b5755b61a4d3c7531d6bf5c2c491b4e89f077d",
+      "languages": [
+        "python"
+      ]
+    }
+  ]
+}

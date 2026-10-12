@@ -15,3 +15,6 @@ wheels/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Vouch runtime lock; the rest of .vouch is governed project state.
+.vouch/.lock

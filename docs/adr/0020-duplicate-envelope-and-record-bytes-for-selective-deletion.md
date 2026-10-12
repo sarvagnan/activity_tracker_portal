@@ -1,0 +1,3 @@
+# Duplicate envelope and record bytes for selective deletion
+
+SQLite will store both each accepted envelope as an exact BLOB and every contained Source Projection as its own exact BLOB. Explicitly deleting one record erases the containing envelope because it also contains that record, while unrelated per-record Raw Records remain available and only health-data-free batch identity, checksum, receipt, and deletion evidence survive. This deliberately duplicates bytes to combine archive-before-receipt evidence with correct record-level deletion; offset slicing or external files remain measured future optimizations.

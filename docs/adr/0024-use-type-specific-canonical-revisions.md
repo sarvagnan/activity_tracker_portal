@@ -1,0 +1,3 @@
+# Use type-specific canonical revisions
+
+Each Canonical Revision will contain a small shared header for Portal identity, Source Identity, provenance, temporal shape, and processor version, followed by a versioned body specific to the Health Connect record type. Sleep stages, exercise routes and segments, paired measurements, dense series, nutrition fields, and specialized categorical values will not be flattened into generic Observation, Session, BodyMeasure, or Meal tables. Narrow cross-type facts may be derived for analysis, but they do not replace the type-specific canonical interpretation. This creates more processor and schema definitions in exchange for retaining the meaning required to inspect, reprocess, and analyze every supported health-and-fitness type.

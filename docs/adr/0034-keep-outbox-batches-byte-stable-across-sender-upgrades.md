@@ -1,0 +1,3 @@
+# Keep Outbox Messages byte-stable across Sender upgrades
+
+A Sender upgrade will not rewrite an existing Outbox Message into a newer schema or encryption format. Local database migrations are transactional and preferentially additive; queued data and control envelopes remain self-describing and byte-identical until their Delivery Receipts allow removal. A migration failure freezes new collection and delivery for inspection rather than resetting, discarding, or silently regenerating the outbox. This constrains future local-schema cleanup and may require old readers longer in exchange for preserving the only undelivered copy and its stable receipt identity.

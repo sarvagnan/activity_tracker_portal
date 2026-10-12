@@ -1,5 +1,9 @@
 # Agent Instructions
 
+## Vouch Governance
+
+Forward behavioral or architectural change: read `.vouch/vouch-context.md`, `docs/governance/scope-map.md`, and the matching contract under `governance/scopes/` before planning. The Operator approves its acceptance pack before freeze; implementation begins only against that frozen pack.
+
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
 > **Architecture in one line:** Issues live in a local Dolt database

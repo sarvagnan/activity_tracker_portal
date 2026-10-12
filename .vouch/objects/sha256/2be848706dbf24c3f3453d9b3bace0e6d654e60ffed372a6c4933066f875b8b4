@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_ingest_protocol_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"7f3f9fafbf057cb0891001583434d160ff84c6cfdbd28e4a4f9945ce53a11061","parent":"GENESIS","recorded_at":"2026-10-12T10:45:29+00:00","sequence":1,"unit":{"name":"ingest-protocol","version":"1"}}

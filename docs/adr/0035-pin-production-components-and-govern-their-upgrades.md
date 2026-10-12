@@ -1,0 +1,3 @@
+# Pin production components and govern their upgrades
+
+Production builds will pin the Python and JavaScript dependency graphs, Gradle artifacts, Expo and React Native versions, the stable Health Connect SDK, the patched SQLite runtime, the Vouch artifact, and any future DuckDB or DuckLake components. Installations do not automatically consume dependency, SDK, extension, or application updates. Each upgrade is an explicit governed unit with compatibility, migration, red, and green evidence appropriate to the changed boundary. This accepts slower uptake of fixes and features in exchange for reproducible home-server and private-APK releases whose behavior can be tied to reviewed evidence.
