@@ -121,6 +121,34 @@ class OperationalStoreHardeningTests(unittest.TestCase):
                 if linked is not None:
                     pending.append(linked)
 
+    def test_non_sqlite_file_is_refused_without_changes(self) -> None:
+        path = self.directory / "non-sqlite.sqlite3"
+        before = b"synthetic-non-sqlite-content" * 8
+        path.write_bytes(before)
+        with self.assertRaises(StoreRefusal) as caught:
+            open_store(path, reserve_bytes=1_000_000, free_bytes=self.free)
+        self.assertEqual(caught.exception.failure, "store-schema-unsupported")
+        self.assertEqual(str(caught.exception), "store-schema-unsupported")
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_corrupted_store_header_is_refused_without_changes(self) -> None:
+        path = self.directory / "corrupted.sqlite3"
+        with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free):
+            pass
+        original = path.read_bytes()
+        self.assertEqual(original[:16], b"SQLite format 3\x00")
+        before = b"synthetic-header" + original[16:]
+        path.write_bytes(before)
+        with self.assertRaises(StoreRefusal) as caught:
+            open_store(path, reserve_bytes=1_000_000, free_bytes=self.free)
+        self.assertEqual(caught.exception.failure, "store-schema-unsupported")
+        self.assertEqual(str(caught.exception), "store-schema-unsupported")
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        self.assertEqual(path.read_bytes(), before)
+
     def test_trigger_error_does_not_expose_archived_health_data(self) -> None:
         store = self.ready()
         connection = sqlite3.connect(self.path, isolation_level=None)

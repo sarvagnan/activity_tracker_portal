@@ -313,8 +313,14 @@ def _migration_checksums() -> tuple[tuple[int, str], ...]:
 
 def _validate_schema(connection: sqlite3.Connection) -> bool:
     """Return whether a schema exists, without changing persistent settings."""
-    objects = _execute(connection, "SELECT name FROM sqlite_schema").fetchall()
-    user_version = _execute(connection, "PRAGMA user_version").fetchone()[0]
+    schema_error = False
+    try:
+        objects = _execute(connection, "SELECT name FROM sqlite_schema").fetchall()
+        user_version = _execute(connection, "PRAGMA user_version").fetchone()[0]
+    except sqlite3.DatabaseError:
+        schema_error = True
+    if schema_error:
+        raise StoreRefusal("store-schema-unsupported") from None
     if not objects and user_version == 0:
         return False
     if not any(row[0] == "store_migrations" for row in objects):
