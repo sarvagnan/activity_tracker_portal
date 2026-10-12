@@ -18,3 +18,13 @@ wheels/
 
 # Vouch runtime lock; the rest of .vouch is governed project state.
 .vouch/.lock
+
+# Sender dependencies, generated native project and local toolchains
+node_modules/
+.expo/
+.gradle/
+.kotlin/
+sender/.cache/
+sender/app/android/
+*.keystore
+*.jks
