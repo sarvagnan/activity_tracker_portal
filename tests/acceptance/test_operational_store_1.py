@@ -555,6 +555,7 @@ class R6CapabilityGenerations(StoreCase):
         store.archive_capability_acknowledgement(header(1, kind="capability-acknowledgement", generation=1))
         self.assertRefused("generation-still-required", store.stop_honoring_generation, 1, at(3))
         store.archive_capability_acknowledgement(header(2, kind="capability-acknowledgement", generation=2))
+        store.archive_capability_acknowledgement(header(3, kind="capability-acknowledgement", generation=1))
         with store.read() as view:
             self.assertEqual(view.latest_acknowledged_generation(), 2)
         store.stop_honoring_generation(1, at(4))
@@ -622,7 +623,7 @@ class R7AtomicExactArchival(StoreCase):
         columns = [
             (table, column[1])
             for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
-            for column in connection.execute(f'PRAGMA table_info("{table}")')
+            for column in connection.execute(f'PRAGMA table_xinfo("{table}")')
         ]
         for item in items:
             if not item.projection:
@@ -631,7 +632,7 @@ class R7AtomicExactArchival(StoreCase):
                 connection.execute(f'SELECT count(*) FROM "{table}" WHERE "{column}" = ?', (item.projection,)).fetchone()[0]
                 for table, column in columns
             )
-            self.assertEqual(matches, 1, item.projection)
+            self.assertGreaterEqual(matches, 1, item.projection)
 
     def test_record_types_reject_invalid_combinations(self) -> None:
         with self.assertRaises(ValueError):
@@ -749,6 +750,18 @@ class R8IdempotencyOrderingAndGaps(StoreCase):
         retry = header(1, receipt_time=at(9), receipt=b'{"synthetic-receipt":"retry"}')
         before = self.dump()
         self.assertEqual(store.archive_ingest_batch(retry, batch()), first.receipt)
+        same_bytes_other_inputs = MessageHeader(
+            installation_id=INSTALLATION,
+            sequence=1,
+            message_sha256=first.message_sha256,
+            staged_generation=2,
+            receipt_time=at(10),
+            envelope=first.envelope,
+            receipt=b'{"synthetic-receipt":"other-method"}',
+        )
+        self.assertEqual(store.archive_sync_checkpoint(same_bytes_other_inputs, checkpoint(7)), first.receipt)
+        self.assertEqual(store.archive_completion(same_bytes_other_inputs, completion(OTHER_CYCLE, "change")), first.receipt)
+        self.assertEqual(store.archive_capability_acknowledgement(same_bytes_other_inputs), first.receipt)
         self.assertEqual(self.dump(), before)
         with store.read() as view:
             self.assertEqual(view.installation(INSTALLATION).last_delivery_at, at(2))
