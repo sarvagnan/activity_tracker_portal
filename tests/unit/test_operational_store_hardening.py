@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,8 @@ import hashlib
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -226,6 +229,111 @@ class OperationalStoreHardeningTests(unittest.TestCase):
         finally:
             connection.close()
         self.assertEqual(path.read_bytes(), committed[0])
+
+    def test_concurrent_creation_retries_wal_until_writer_releases_within_timeout(self) -> None:
+        path = self.directory / "wal-creation-race.sqlite3"
+        empty_validated = threading.Event()
+        baseline_committed = threading.Event()
+        writer_locked = threading.Event()
+        wal_attempted = threading.Event()
+        writer_released = threading.Event()
+        role = threading.local()
+        execute = store_module._execute
+        validate = store_module._validate_schema
+        wal_attempts: list[float] = []
+
+        def execute_hook(
+            connection: sqlite3.Connection, sql: str, parameters: tuple[object, ...] = (),
+        ) -> sqlite3.Cursor:
+            if role.name == "B" and sql == "BEGIN IMMEDIATE":
+                self.assertTrue(baseline_committed.wait(5))
+            if role.name == "A" and sql == "PRAGMA journal_mode = WAL":
+                wal_attempts.append(time.monotonic())
+                try:
+                    return execute(connection, sql, parameters)
+                finally:
+                    # B holds a real writer lock through A's first WAL attempt.
+                    wal_attempted.set()
+                    self.assertTrue(writer_released.wait(5))
+            result = execute(connection, sql, parameters)
+            if role.name == "A" and sql == "COMMIT":
+                baseline_committed.set()
+                self.assertTrue(writer_locked.wait(5))
+            if role.name == "B" and sql == "BEGIN IMMEDIATE":
+                writer_locked.set()
+                self.assertTrue(wal_attempted.wait(5))
+            if role.name == "B" and sql == "COMMIT":
+                writer_released.set()
+            return result
+
+        def validate_hook(connection: sqlite3.Connection, database_path: Path) -> bool:
+            existing = validate(connection, database_path)
+            if role.name == "B" and not empty_validated.is_set():
+                self.assertFalse(existing)
+                empty_validated.set()
+            return existing
+
+        def opener(name: str) -> store_module.StoreSettings:
+            role.name = name
+            with open_store(path, reserve_bytes=0, busy_timeout_ms=500) as store:
+                return store.settings()
+
+        with patch.object(store_module, "_execute", execute_hook), patch.object(
+            store_module, "_validate_schema", validate_hook,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                try:
+                    second = pool.submit(opener, "B")
+                    self.assertTrue(empty_validated.wait(5))
+                    first = pool.submit(opener, "A")
+                    settings = (first.result(timeout=5), second.result(timeout=5))
+                finally:
+                    # Release scheduling barriers even if an assertion fails.
+                    baseline_committed.set()
+                    writer_locked.set()
+                    wal_attempted.set()
+                    writer_released.set()
+        self.assertGreaterEqual(len(wal_attempts), 2)
+        for opened in settings:
+            self.assertEqual(opened.journal_mode, "wal")
+            self.assertEqual(opened.synchronous, 2)
+            self.assertTrue(opened.foreign_keys)
+            self.assertEqual(opened.busy_timeout_ms, 500)
+
+    def test_wal_switch_waits_for_timeout_without_exception_chain(self) -> None:
+        path = self.directory / "wal-timeout.sqlite3"
+        with open_store(path, reserve_bytes=0):
+            pass
+        blocker = sqlite3.connect(path, isolation_level=None)
+        self.addCleanup(blocker.close)
+        self.assertEqual(blocker.execute("PRAGMA journal_mode = DELETE").fetchone()[0], "delete")
+        blocker.execute("BEGIN IMMEDIATE")
+        busy_timeout_ms = 50
+        execute = store_module._execute
+        wal_attempts: list[float] = []
+
+        def execute_hook(
+            connection: sqlite3.Connection, sql: str, parameters: tuple[object, ...] = (),
+        ) -> sqlite3.Cursor:
+            if sql == "PRAGMA journal_mode = WAL":
+                wal_attempts.append(time.monotonic())
+            return execute(connection, sql, parameters)
+
+        try:
+            with patch.object(store_module, "_execute", execute_hook):
+                with self.assertRaises(StoreRetryable) as caught:
+                    with open_store(path, reserve_bytes=0, busy_timeout_ms=busy_timeout_ms):
+                        pass
+            elapsed = time.monotonic() - wal_attempts[0]
+            self.assertGreaterEqual(elapsed, busy_timeout_ms / 1000)
+            self.assertLess(elapsed, 1)
+            self.assertGreaterEqual(len(wal_attempts), 2)
+            self.assertEqual(caught.exception.failure, "store-busy")
+            self.assertEqual(str(caught.exception), "store-busy")
+            self.assertIsNone(caught.exception.__cause__)
+            self.assertIsNone(caught.exception.__context__)
+        finally:
+            blocker.rollback()
 
     def test_trigger_error_does_not_expose_archived_health_data(self) -> None:
         store = self.ready()

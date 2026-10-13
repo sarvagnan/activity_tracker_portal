@@ -17,6 +17,7 @@ import os
 from os import PathLike
 import shutil
 import sqlite3
+import time
 from typing import Literal, cast
 
 from ._operational_store_sql import _BASELINE_SQL
@@ -304,6 +305,21 @@ def _configure(connection: sqlite3.Connection, busy_timeout_ms: int) -> None:
     _execute(connection, f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
     _execute(connection, "PRAGMA synchronous = FULL")
     _execute(connection, "PRAGMA foreign_keys = ON")
+
+
+def _enable_wal(connection: sqlite3.Connection, busy_timeout_ms: int) -> None:
+    # Journal-mode changes can bypass SQLite's busy handler or return the old mode.
+    deadline = time.monotonic() + busy_timeout_ms / 1000
+    while True:
+        try:
+            if _execute(connection, "PRAGMA journal_mode = WAL").fetchone()[0] == "wal":
+                return
+        except StoreRetryable:
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise StoreRetryable("store-busy") from None
+        time.sleep(min(0.01, remaining))
 
 
 def _migration_checksums() -> tuple[tuple[int, str], ...]:
@@ -945,7 +961,7 @@ def open_store(
                         )
                         _execute(connection, f"PRAGMA user_version = {version}")
         # No schema refusal can occur after changing the persistent journal mode.
-        _execute(connection, "PRAGMA journal_mode = WAL")
+        _enable_wal(connection, busy_timeout_ms)
         store = OperationalStore()
         store._connection = connection
         store._path = path
