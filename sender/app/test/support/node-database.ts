@@ -9,8 +9,12 @@ const bindings = (parameters: readonly DatabaseValue[]) =>
   parameters.map((value) => typeof value === "number" ? BigInt(value) : value);
 
 /** Real file-backed SQLite; :memory: cannot provide the required DELETE journal and is rejected on open. */
-export async function openNodeDatabase(path: string): Promise<SenderDatabase> {
+export async function openNodeDatabase(
+  path: string,
+  configure?: (database: DatabaseSync) => void,
+): Promise<SenderDatabase> {
   const database = new DatabaseSync(path);
+  configure?.(database);
   return configuredDatabase({
     async execute(sql, parameters) { database.prepare(sql).run(...bindings(parameters)); },
     async query(sql, parameters) {

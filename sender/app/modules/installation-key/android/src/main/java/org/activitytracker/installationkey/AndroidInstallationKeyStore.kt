@@ -5,38 +5,40 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.security.KeyStore
-import java.security.UnrecoverableKeyException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 
 /** Android-only, non-exportable AES key. No collection or screen-lock policy. */
-class AndroidInstallationKeyStore : InstallationKeyStore {
-    private fun store(): KeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+class AndroidInstallationKeyStore internal constructor(
+    private val store: () -> KeyStore,
+    private val generate: (String) -> KeyCreation,
+) : InstallationKeyStore {
+    constructor() : this(
+        { KeyStore.getInstance("AndroidKeyStore").apply { load(null) } },
+        ::generateInstallationKey,
+    )
+
+    // API 34 AOSP: keystore/java/android/security/keystore2/AndroidKeyStoreSpi.java,
+    // https://android.googlesource.com/platform/frameworks/base/+/android-14.0.0_r1/keystore/java/android/security/keystore2/AndroidKeyStoreSpi.java
+    // engineGetKey, delegates to AndroidKeyStoreProvider.loadAndroidKeyStoreKeyFromKeystore.
+    // For key entries, only KEY_NOT_FOUND returns null; other backend errors propagate
+    // (usually wrapped in UnrecoverableKeyException). Never use engineContainsAlias:
+    // its getKeyMetadata catches backend errors and returns null on uncertainty.
+    // https://android.googlesource.com/platform/frameworks/base/+/android-14.0.0_r1/keystore/java/android/security/keystore2/AndroidKeyStoreProvider.java
+    // getKey also returns null for certificate-only entries, which this key primitive
+    // does not create. This lookup is for installation key entries, not certificates.
+    private fun lookup(store: KeyStore, alias: String) = store.getKey(alias, null)
 
     private fun key(alias: String): SecretKey? {
-        val store = store()
-        if (!store.containsAlias(alias)) return null
-        val key = store.getKey(alias, null)
-        if (key !is SecretKey || key.algorithm != "AES") throw UnrecoverableKeyException()
-        return key
+        val key = lookup(store(), alias) ?: return null
+        return requireInstallationKey(key)
     }
 
     @Synchronized
     override fun create(alias: String): KeyResult<KeyCreation> = keyOperation {
-        if (store().containsAlias(alias)) return@keyOperation KeyResult.Failure(KeyFailure.KEY_EXISTS)
-        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-        generator.init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-            .setKeySize(256)
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setRandomizedEncryptionRequired(true)
-            .setUserAuthenticationRequired(false)
-            .setUnlockedDeviceRequired(false)
-            .setIsStrongBoxBacked(false)
-            .build())
-        generator.generateKey()
-        KeyResult.Success(KeyCreation(strongBox = false))
+        if (lookup(store(), alias) != null) return@keyOperation KeyResult.Failure(KeyFailure.KEY_EXISTS)
+        KeyResult.Success(generate(alias))
     }
 
     @Synchronized
@@ -75,7 +77,7 @@ class AndroidInstallationKeyStore : InstallationKeyStore {
     @Synchronized
     override fun delete(alias: String): KeyResult<Unit> = keyOperation {
         val store = store()
-        if (!store.containsAlias(alias)) return@keyOperation KeyResult.Failure(KeyFailure.MISSING_KEY)
+        if (lookup(store, alias) == null) return@keyOperation KeyResult.Failure(KeyFailure.MISSING_KEY)
         store.deleteEntry(alias)
         KeyResult.Success(Unit)
     }
@@ -83,3 +85,18 @@ class AndroidInstallationKeyStore : InstallationKeyStore {
 
 fun isDeviceSecure(context: Context): Boolean =
     context.getSystemService(KeyguardManager::class.java).isDeviceSecure
+
+private fun generateInstallationKey(alias: String): KeyCreation {
+    val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+    generator.init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+        .setKeySize(256)
+        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+        .setRandomizedEncryptionRequired(true)
+        .setUserAuthenticationRequired(false)
+        .setUnlockedDeviceRequired(false)
+        .setIsStrongBoxBacked(false)
+        .build())
+    generator.generateKey()
+    return KeyCreation(strongBox = false)
+}

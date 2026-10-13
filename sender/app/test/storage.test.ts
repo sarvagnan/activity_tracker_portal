@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { constants } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import type { TestContext } from "node:test";
 import { configuredDatabase } from "../src/storage/connection.ts";
 import type { SenderDatabase } from "../src/storage/database.ts";
@@ -10,10 +12,10 @@ import { migrate, senderMigrations } from "../src/storage/migrations.ts";
 import type { Migration } from "../src/storage/migrations.ts";
 import { openNodeDatabase } from "./support/node-database.ts";
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, configure?: (database: DatabaseSync) => void) {
   const directory = mkdtempSync(join(tmpdir(), "sender-synthetic-"));
   const path = join(directory, "synthetic.sqlite");
-  let database = await openNodeDatabase(path);
+  let database = await openNodeDatabase(path, configure);
   t.after(async () => { await database.close(); rmSync(directory, { recursive: true, force: true }); });
   return {
     get database() { return database; },
@@ -64,7 +66,7 @@ for (const setting of ["journal_mode", "synchronous", "foreign_keys"]) {
 }
 
 for (const failureAt of ["callback", "commit"]) {
-  test(`failed rollback preserves the original ${failureAt} error and releases the handle`, async () => {
+  test(`failed rollback preserves the original ${failureAt} error and poisons the handle`, async () => {
     const original = new Error("synthetic original failure");
     const statements: string[] = [];
     const required: Record<string, string | number> = { journal_mode: "delete", synchronous: 2, foreign_keys: 1 };
@@ -87,9 +89,58 @@ for (const failureAt of ["callback", "commit"]) {
     }), (error) => error === original);
     assert.equal(statements.at(-1), "ROLLBACK");
     await assert.rejects(expired!.query("SELECT 1"), /Transaction has ended/);
-    // A failing driver cannot prove SQL rollback, but the wrapper must release its guard.
-    await database.execute("SELECT 1");
+    await assertPoisoned(database);
     await database.close();
+  });
+}
+
+async function assertPoisoned(database: SenderDatabase) {
+  const unusable = /Database connection is unusable after a failed rollback; close it/;
+  await assert.rejects(database.execute("INSERT INTO retained VALUES ('synthetic-later')"), unusable);
+  await assert.rejects(database.query("SELECT 1"), unusable);
+  let called = false;
+  await assert.rejects(database.transaction(() => { called = true; }), unusable);
+  assert.equal(called, false);
+}
+
+for (const failureAt of ["callback", "migration"]) {
+  test(`real SQLite denied ROLLBACK poisons the handle after ${failureAt} failure until close`, async (t) => {
+    let deniedRollbacks = 0;
+    let raw!: DatabaseSync;
+    const f = await fixture(t, (database) => {
+      raw = database;
+      database.setAuthorizer((action, arg1) => {
+        if (action === constants.SQLITE_TRANSACTION && arg1 === "ROLLBACK") {
+          deniedRollbacks++;
+          return constants.SQLITE_DENY;
+        }
+        return constants.SQLITE_OK;
+      });
+    });
+    await f.database.execute("CREATE TABLE retained (value TEXT)");
+    await f.database.execute("INSERT INTO retained VALUES (?)", ["synthetic-committed"]);
+    const original = new Error("synthetic original callback failure");
+    const fail = async (tx: SenderDatabase) => {
+      await tx.execute("INSERT INTO retained VALUES (?)", ["synthetic-abandoned"]);
+      await tx.execute("CREATE TABLE abandoned (value INTEGER)");
+      throw original;
+    };
+    if (failureAt === "migration") {
+      assert.deepEqual(await migrate(f.database, [{ version: 1, apply: fail }]), {
+        status: "frozen", version: 0, reason: "migration-failed",
+      });
+    } else {
+      await assert.rejects(f.database.transaction(fail), (error) => error === original);
+    }
+    assert.equal(deniedRollbacks, 1);
+    assert.equal(raw.isTransaction, true);
+    await assertPoisoned(f.database);
+    // Reopen closes the poisoned connection; SQLite discards the abandoned work.
+    const reopened = await f.reopen();
+    assert.equal(raw.isOpen, false);
+    assert.deepEqual(await reopened.query("SELECT * FROM retained"), [{ value: "synthetic-committed" }]);
+    assert.deepEqual(await reopened.query("SELECT name FROM sqlite_schema WHERE name='abandoned'"), []);
+    assert.deepEqual(await reopened.query("PRAGMA user_version"), [{ user_version: 0 }]);
   });
 }
 

@@ -1,10 +1,12 @@
 package org.activitytracker.installationkey
 
+import android.security.KeyStoreException
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import java.io.IOException
 import java.security.GeneralSecurityException
+import java.security.InvalidKeyException
+import java.security.Key
 import java.security.ProviderException
-import java.security.UnrecoverableKeyException
 import javax.crypto.AEADBadTagException
 import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
@@ -42,12 +44,43 @@ internal object SealedBoxV1 {
     }
 }
 
-/** Shared classification; transient provider failures never imply key retirement. */
-internal fun classifyKeyFailure(error: Exception): KeyFailure? = when (error) {
-    is AEADBadTagException, is BadPaddingException -> KeyFailure.AUTHENTICATION_FAILED
-    is KeyPermanentlyInvalidatedException, is UnrecoverableKeyException -> KeyFailure.UNUSABLE_KEY
-    is GeneralSecurityException, is ProviderException, is IOException -> KeyFailure.KEYSTORE_UNAVAILABLE
-    else -> null
+/** An observed entry of the wrong type is definite, unlike failed retrieval. */
+internal class InvalidInstallationKeyException : InvalidKeyException()
+
+internal fun requireInstallationKey(key: Key): SecretKey {
+    if (key !is SecretKey || key.algorithm != "AES") throw InvalidInstallationKeyException()
+    return key
+}
+
+// API 34 AOSP: keystore/java/android/security/KeyStoreException.java,
+// ERROR_KEY_CORRUPTED (7): the key is corrupted and could not be recovered.
+// getNumericErrorCode() exposes public codes; getErrorCode() is hidden/internal.
+// No other public code definitively establishes corruption of an existing key.
+// https://android.googlesource.com/platform/frameworks/base/+/android-14.0.0_r1/keystore/java/android/security/KeyStoreException.java
+internal fun isPermanentKeyStoreCode(code: Int): Boolean = code == KeyStoreException.ERROR_KEY_CORRUPTED
+
+/** Shared classification; ambiguous failures never imply key retirement. */
+internal fun classifyKeyFailure(
+    error: Exception,
+    numericCode: (Throwable) -> Int? = { (it as? KeyStoreException)?.numericErrorCode },
+): KeyFailure? {
+    val causes = mutableSetOf<Throwable>()
+    var cause: Throwable? = error
+    while (cause != null && causes.add(cause)) {
+        if (cause is KeyPermanentlyInvalidatedException || cause is InvalidInstallationKeyException ||
+            numericCode(cause)?.let(::isPermanentKeyStoreCode) == true) {
+            return KeyFailure.UNUSABLE_KEY
+        }
+        cause = cause.cause
+    }
+    if (causes.any { it is AEADBadTagException || it is BadPaddingException }) {
+        return KeyFailure.AUTHENTICATION_FAILED
+    }
+    if (causes.any { it is GeneralSecurityException || it is KeyStoreException ||
+            it is ProviderException || it is IOException }) {
+        return KeyFailure.KEYSTORE_UNAVAILABLE
+    }
+    return null
 }
 
 /** Expected provider/key failures stay typed and never expose exception text. */

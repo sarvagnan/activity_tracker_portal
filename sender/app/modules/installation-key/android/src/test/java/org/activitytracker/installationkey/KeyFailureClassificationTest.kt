@@ -11,6 +11,7 @@ import java.security.ProviderException
 import java.security.UnrecoverableKeyException
 import javax.crypto.AEADBadTagException
 import javax.crypto.BadPaddingException
+import javax.crypto.spec.SecretKeySpec
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -21,7 +22,7 @@ class KeyFailureClassificationTest {
     }
 
     @Test fun permanentlyInvalidatedKeyIsUnusable() = classified(KeyPermanentlyInvalidatedException(), KeyFailure.UNUSABLE_KEY)
-    @Test fun unrecoverableKeyIsUnusable() = classified(UnrecoverableKeyException(), KeyFailure.UNUSABLE_KEY)
+    @Test fun causeLessUnrecoverableKeyIsUnavailable() = classified(UnrecoverableKeyException(), KeyFailure.KEYSTORE_UNAVAILABLE)
     @Test fun genericSecurityFailureIsUnavailable() = classified(GeneralSecurityException(), KeyFailure.KEYSTORE_UNAVAILABLE)
     @Test fun keyStoreFailureIsUnavailable() = classified(KeyStoreException(), KeyFailure.KEYSTORE_UNAVAILABLE)
     @Test fun invalidKeyIsUnavailableUnlessPermanentlyInvalidated() = classified(InvalidKeyException(), KeyFailure.KEYSTORE_UNAVAILABLE)
@@ -31,6 +32,59 @@ class KeyFailureClassificationTest {
     @Test fun ioFailureIsUnavailable() = classified(IOException(), KeyFailure.KEYSTORE_UNAVAILABLE)
     @Test fun badTagIsAuthenticationFailed() = classified(AEADBadTagException(), KeyFailure.AUTHENTICATION_FAILED)
     @Test fun badPaddingIsAuthenticationFailed() = classified(BadPaddingException(), KeyFailure.AUTHENTICATION_FAILED)
+
+    @Test
+    fun wrappedTransientBackendFailureIsUnavailable() {
+        val backend = GeneralSecurityException("synthetic backend error")
+        val error = UnrecoverableKeyException().apply { initCause(backend) }
+        classified(error, KeyFailure.KEYSTORE_UNAVAILABLE)
+        // Android SDK hides KeyStoreException constructors. Inject its extracted
+        // public numeric code at the same cause-chain node used in production.
+        assertEquals(KeyFailure.KEYSTORE_UNAVAILABLE, classifyKeyFailure(error) {
+            if (it === backend) android.security.KeyStoreException.ERROR_INTERNAL_SYSTEM_ERROR else null
+        })
+    }
+
+    @Test
+    fun wrappedCorruptedBackendKeyIsUnusable() {
+        val backend = GeneralSecurityException("synthetic corrupted key")
+        val error = UnrecoverableKeyException().apply { initCause(backend) }
+        assertEquals(KeyFailure.UNUSABLE_KEY, classifyKeyFailure(error) {
+            if (it === backend) android.security.KeyStoreException.ERROR_KEY_CORRUPTED else null
+        })
+    }
+
+    @Test
+    fun onlyTheDocumentedCorruptedPublicCodeIsPermanent() {
+        for (code in -1..18) assertEquals(code == 7, isPermanentKeyStoreCode(code))
+    }
+
+    @Test
+    fun nestedPermanentlyInvalidatedKeyIsUnusable() {
+        val error = UnrecoverableKeyException().apply {
+            initCause(ProviderException(InvalidKeyException(KeyPermanentlyInvalidatedException())))
+        }
+        classified(error, KeyFailure.UNUSABLE_KEY)
+    }
+
+    @Test
+    fun cyclicAmbiguousCausesTerminateAndStayUnavailable() {
+        val first = UnrecoverableKeyException()
+        val second = ProviderException()
+        first.initCause(second)
+        second.initCause(first)
+        classified(first, KeyFailure.KEYSTORE_UNAVAILABLE)
+    }
+
+    @Test
+    fun anObservedNonAesEntryIsUnusable() {
+        val error = try {
+            requireInstallationKey(SecretKeySpec(ByteArray(32), "HmacSHA256"))
+            fail("Expected a wrong-key failure")
+            return
+        } catch (error: InvalidInstallationKeyException) { error }
+        classified(error, KeyFailure.UNUSABLE_KEY)
+    }
 
     @Test
     fun programmingErrorsPropagateWithoutClassification() {

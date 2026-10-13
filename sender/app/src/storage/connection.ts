@@ -26,8 +26,12 @@ export async function configuredDatabase(driver: DatabaseDriver): Promise<Sender
 
   let busy = false;
   let closed = false;
-  function acquire() {
+  let poisoned = false;
+  function acquire(allowPoisoned = false) {
     if (closed) throw new Error("Database is closed");
+    if (poisoned && !allowPoisoned) {
+      throw new Error("Database connection is unusable after a failed rollback; close it");
+    }
     if (busy) throw new Error("Database operation already active; transactions cannot nest");
     busy = true;
   }
@@ -70,14 +74,16 @@ export async function configuredDatabase(driver: DatabaseDriver): Promise<Sender
         } catch (error) {
           live = false;
           try { await execute("ROLLBACK"); } catch {
-            // Preserve the callback/commit failure, without disclosing driver details.
+            // The driver may still be inside the abandoned transaction. Only close
+            // is safe; preserve the original callback/commit error for the caller.
+            poisoned = true;
           }
           throw error;
         }
       } finally { live = false; busy = false; }
     },
     async close() {
-      acquire();
+      acquire(true);
       try { await driver.close(); closed = true; } finally { busy = false; }
     },
   };

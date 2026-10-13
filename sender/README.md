@@ -114,7 +114,11 @@ use of an expired callback handle throw as programming errors. The connection
 owns transaction control; callers must not issue BEGIN/COMMIT/ROLLBACK themselves
 or launch unawaited statements. The wrapper attempts to roll back DDL and data
 when the callback throws/rejects or COMMIT fails. If ROLLBACK also fails, the
-original callback or COMMIT error propagates and the operation guard is released.
+original callback or COMMIT error propagates and the handle becomes unusable.
+Every later execute, query, or transaction throws a programming error directing
+the caller to close it. Close remains available and SQLite rolls back the open
+transaction on close. A migration encountering this returns frozen
+`migration-failed`; its poisoned handle also requires close.
 Coordination and scheduling stay with the governed consumers.
 
 `migrations.ts` exposes an ordered, contiguous migration runner. Each migration
@@ -159,13 +163,30 @@ provider-generated 12-byte IV. Both user authentication and unlocked-device
 requirements are explicitly false. StrongBox is explicitly disabled, and create
 reports `strongBox: false`; hardware-backed storage is not promised. Key status
 probes encryption initialization as well as retrieval so an invalidated key can
-be reported unusable. Only permanently invalidated/unrecoverable keys or entries
-that are not AES SecretKeys report `unusable-key` / `unusable`. Other security,
+be reported unusable. Only definite permanent invalidation in the cause chain, API 34
+`android.security.KeyStoreException.ERROR_KEY_CORRUPTED` (public numeric code 7),
+or observed entries that are not AES SecretKeys report `unusable-key` / `unusable`.
+Wrapped backend failures are inspected through their causes. An
+`UnrecoverableKeyException` without a definite permanent cause stays unavailable.
+Other security,
 provider, and I/O failures report `keystore-unavailable` / `unavailable` through
 a shared, JVM-tested exception classifier, preserving the distinction between
 transient outages and ADR 0014's retirement condition. Authentication/tag failures
-remain `authentication-failed`. No software-key fallback is available in
-production.
+remain `authentication-failed`. A key that stays unavailable is surfaced and
+retried rather than frozen; any escalation policy belongs to the governed units.
+Lookup uses `KeyStore.getKey`, preserving backend errors instead of relying on
+`containsAlias`, which API 34 suppresses. Only a null key lookup permits creation;
+uncertain lookup failures refuse generation. This seam creates key entries only;
+Android's null lookup can also denote a certificate-only entry, so it is not a
+certificate-store interface. No software-key fallback is available in production.
+
+JVM regression tests inject the extracted public numeric error code into the
+shared classifier while retaining Java `UnrecoverableKeyException` cause chains.
+The Android SDK hides `android.security.KeyStoreException` constructors, so plain
+JVM tests cannot construct real instances. Production reads `getNumericErrorCode()`
+from the actual Android exception. The tests cover transient, corrupted, and
+cause-less wrapped failures, and real nested `KeyPermanentlyInvalidatedException`
+instances without enabling stubbed default return values.
 
 Sealed box version 1 is `0x01 || 12-byte IV || ciphertext || 16-byte tag`.
 AAD is never stored. Empty plaintext is valid. Unknown version bytes return
