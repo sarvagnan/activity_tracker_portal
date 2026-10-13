@@ -1,0 +1,114 @@
+{
+  "contract_schema": 1,
+  "scope": "read-snapshot-page",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Read one bounded, complete, ordered page of one record type's full-history Initial Snapshot or Reconciliation Snapshot from Health Connect, projected through project-source-record, with a tentative project-owned next position and exhaustion state; or a page-level projection refusal, a missing permission, a read failure, or an invalid position, none of which advances the position. The reader claims no durable progress.",
+  "inputs": [
+    {
+      "name": "record_type",
+      "mode": "pure",
+      "description": "One record type name from project-source-record's PROJECTION_SCHEMA_VERSIONS, such as steps."
+    },
+    {
+      "name": "snapshot_identity",
+      "mode": "pure",
+      "description": "The lowercase UUID of the Initial or Reconciliation Snapshot attempt, issued by begin-initial-snapshot or begin-reconciliation-snapshot and used as the Wire Protocol cycle_id."
+    },
+    {
+      "name": "snapshot_page_position",
+      "mode": "pure",
+      "description": "None for the snapshot's first page, or the exact position bytes a previous page of the same record type and snapshot returned."
+    },
+    {
+      "name": "projection_context",
+      "mode": "pure",
+      "description": "The project-source-record ProjectionContext for the Polling Run: the projection-implementation version and the Health Connect provider version, supplied by the caller."
+    },
+    {
+      "name": "permission_state",
+      "mode": "volatile",
+      "description": "The Health Connect permissions granted to the Sender, read through the access seam immediately before and immediately after the page read."
+    },
+    {
+      "name": "health_connect_records",
+      "mode": "volatile",
+      "description": "The records of the type that Health Connect returns for the page read, from every data origin."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "snapshot_page",
+      "description": "The record type, snapshot identity, and projection-schema version; the exact Source Projection bytes of every record on the page in Health Connect's order; the tentative next position as canonical bytes; and whether the snapshot is exhausted."
+    },
+    {
+      "name": "page_projection_refusal",
+      "description": "The first project-source-record refusal on the page, carrying only its failure name, record type, and JSON path, so the caller can block the type with reason projection-refusal at the unchanged position."
+    },
+    {
+      "name": "not_permitted",
+      "description": "Which required permission was missing, read or history, with no page and no position change."
+    },
+    {
+      "name": "read_failure",
+      "description": "One named read failure with no exception text, page, or position change, which the caller reports as failed with reason read-failed and retries on a later run."
+    },
+    {
+      "name": "invalid_position",
+      "description": "A named reason the supplied position cannot be used, so the caller abandons the attempt and begins a new snapshot."
+    }
+  ],
+  "named_failures": [
+    { "name": "page-projection-refused", "outcome": "projection-refusal" },
+    { "name": "read-permission-missing", "outcome": "not-permitted" },
+    { "name": "history-permission-missing", "outcome": "not-permitted" },
+    { "name": "read-denied", "outcome": "not-permitted" },
+    { "name": "health-connect-unavailable", "outcome": "read-failure" },
+    { "name": "health-connect-io-failure", "outcome": "read-failure" },
+    { "name": "health-connect-request-rejected", "outcome": "read-failure" },
+    { "name": "unexpected-read-failure", "outcome": "read-failure" },
+    { "name": "source-order-violation", "outcome": "read-failure" },
+    { "name": "boundary-group-too-large", "outcome": "read-failure" },
+    { "name": "malformed-position", "outcome": "invalid-position" },
+    { "name": "foreign-position", "outcome": "invalid-position" }
+  ],
+  "observable_effects": [
+    {
+      "name": "health-connect-read",
+      "description": "Reads granted permissions twice and records of one type once from Health Connect; never writes, updates, or deletes Health Connect data, and never requests a permission or route consent."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the Health Connect read request for a snapshot page: record type, time range, every data origin, ascending order, and record limit",
+      "the project-owned snapshot page position, its canonical bytes, and the guarantee that a record present and unchanged throughout a traversal appears on exactly one page",
+      "page completeness: every record on a page is projected, or the whole page is refused",
+      "the full-history and read permission requirements for a snapshot page read",
+      "classification of Health Connect read errors into the named failures"
+    ],
+    "does_not_own": [
+      "snapshot identity, changes-token issuance, snapshot kind, and snapshot completion, which belong to begin-initial-snapshot, begin-reconciliation-snapshot, and stage-sync-completion",
+      "persisting positions, staging Outbox Messages, encryption, and fragmentation, which belong to stage-outbox-batch",
+      "scheduling, retry, Projection Refusal identity and blocking, permission-gap pauses, and invalid-position escalation, which belong to coordinate-sender-sync",
+      "change pages, changes tokens, and Source Retractions, which belong to read-change-page",
+      "the projection of each record, which belongs to project-source-record",
+      "requesting permissions, background-read eligibility, and feature availability",
+      "exposing the reader to the TypeScript shell through the Expo module"
+    ]
+  },
+  "dependencies": [
+    { "scope": "project-source-record", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/read-snapshot-page-1.spec.md",
+    "executable_tests": {
+      "kotlin": "sender/app/modules/health-connect/android/src/test/java/org/activitytracker/healthconnect/snapshot/ReadSnapshotPage1Test.kt",
+      "python": "tests/acceptance/test_read_snapshot_page_1.py"
+    },
+    "runner": "tests/acceptance/run_read_snapshot_page_1.sh",
+    "languages": [
+      "kotlin",
+      "python"
+    ]
+  }
+}

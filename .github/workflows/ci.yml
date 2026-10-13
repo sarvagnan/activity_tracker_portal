@@ -54,6 +54,8 @@ jobs:
           prune-cache: true
       - name: Run project-source-record@1 acceptance
         run: tests/acceptance/run_project_source_record_1.sh
+      - name: Run read-snapshot-page@1 acceptance
+        run: tests/acceptance/run_read_snapshot_page_1.sh
 
   vouch:
     needs: [test, sender]
