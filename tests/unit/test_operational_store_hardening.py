@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,8 @@ import hashlib
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -120,6 +123,217 @@ class OperationalStoreHardeningTests(unittest.TestCase):
             for linked in (current.__cause__, current.__context__):
                 if linked is not None:
                     pending.append(linked)
+
+    def test_non_sqlite_file_is_refused_without_changes(self) -> None:
+        path = self.directory / "non-sqlite.sqlite3"
+        before = b"synthetic-non-sqlite-content" * 8
+        path.write_bytes(before)
+        with self.assertRaises(StoreRefusal) as caught:
+            open_store(path, reserve_bytes=1_000_000, free_bytes=self.free)
+        self.assertEqual(caught.exception.failure, "store-schema-unsupported")
+        self.assertEqual(str(caught.exception), "store-schema-unsupported")
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_corrupted_store_header_is_refused_without_changes(self) -> None:
+        path = self.directory / "corrupted.sqlite3"
+        with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free):
+            pass
+        original = path.read_bytes()
+        self.assertEqual(original[:16], b"SQLite format 3\x00")
+        before = b"synthetic-header" + original[16:]
+        path.write_bytes(before)
+        with self.assertRaises(StoreRefusal) as caught:
+            open_store(path, reserve_bytes=1_000_000, free_bytes=self.free)
+        self.assertEqual(caught.exception.failure, "store-schema-unsupported")
+        self.assertEqual(str(caught.exception), "store-schema-unsupported")
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_one_byte_file_is_refused_without_changes(self) -> None:
+        path = self.directory / "one-byte.sqlite3"
+        before = b"x"
+        path.write_bytes(before)
+        with self.assertRaises(StoreRefusal) as caught:
+            with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free):
+                pass
+        self.assertEqual(caught.exception.failure, "store-schema-unsupported")
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_store_truncated_before_complete_header_is_refused_without_changes(self) -> None:
+        baseline = self.directory / "baseline.sqlite3"
+        with open_store(baseline, reserve_bytes=1_000_000, free_bytes=self.free):
+            pass
+        original = baseline.read_bytes()
+        self.assertEqual(original[:16], b"SQLite format 3\x00")
+        for length in (1, 15):
+            with self.subTest(length=length):
+                path = self.directory / f"truncated-{length}.sqlite3"
+                before = original[:length]
+                path.write_bytes(before)
+                with self.assertRaises(StoreRefusal) as caught:
+                    with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free):
+                        pass
+                self.assertEqual(caught.exception.failure, "store-schema-unsupported")
+                self.assertIsNone(caught.exception.__cause__)
+                self.assertIsNone(caught.exception.__context__)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_zero_length_file_is_created_at_baseline(self) -> None:
+        path = self.directory / "empty.sqlite3"
+        path.touch()
+        with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free) as store:
+            self.assertEqual(store.settings().schema_migrations, ((
+                1, hashlib.sha256(store_module.MIGRATIONS[0][1].encode("utf-8")).hexdigest(),
+            ),))
+        connection = sqlite3.connect(path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+        finally:
+            connection.close()
+
+    def test_competing_foreign_schema_is_refused_before_journal_mode_changes(self) -> None:
+        path = self.directory / "foreign-race.sqlite3"
+        path.touch()
+        configure = store_module._configure
+        committed: list[bytes] = []
+
+        def competing_commit(connection: sqlite3.Connection, busy_timeout_ms: int) -> None:
+            # The first validation's read transaction has ended, but creation has not begun.
+            other = sqlite3.connect(path, isolation_level=None)
+            try:
+                self.assertEqual(other.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+                other.execute("BEGIN IMMEDIATE")
+                other.execute("CREATE TABLE foreign_data(value TEXT)")
+                other.execute("INSERT INTO foreign_data VALUES ('synthetic')")
+                other.commit()
+            finally:
+                other.close()
+            committed.append(path.read_bytes())
+            configure(connection, busy_timeout_ms)
+
+        with patch.object(store_module, "_configure", competing_commit):
+            with self.assertRaises(StoreRefusal) as caught:
+                with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free):
+                    pass
+        self.assertEqual(caught.exception.failure, "store-schema-unsupported")
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        connection = sqlite3.connect(path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+        finally:
+            connection.close()
+        self.assertEqual(path.read_bytes(), committed[0])
+
+    def test_concurrent_creation_retries_wal_until_writer_releases_within_timeout(self) -> None:
+        path = self.directory / "wal-creation-race.sqlite3"
+        empty_validated = threading.Event()
+        baseline_committed = threading.Event()
+        writer_locked = threading.Event()
+        wal_attempted = threading.Event()
+        writer_released = threading.Event()
+        role = threading.local()
+        execute = store_module._execute
+        validate = store_module._validate_schema
+        wal_attempts: list[float] = []
+
+        def execute_hook(
+            connection: sqlite3.Connection, sql: str, parameters: tuple[object, ...] = (),
+        ) -> sqlite3.Cursor:
+            if role.name == "B" and sql == "BEGIN IMMEDIATE":
+                self.assertTrue(baseline_committed.wait(5))
+            if role.name == "A" and sql == "PRAGMA journal_mode = WAL":
+                wal_attempts.append(time.monotonic())
+                try:
+                    return execute(connection, sql, parameters)
+                finally:
+                    # B holds a real writer lock through A's first WAL attempt.
+                    wal_attempted.set()
+                    self.assertTrue(writer_released.wait(5))
+            result = execute(connection, sql, parameters)
+            if role.name == "A" and sql == "COMMIT":
+                baseline_committed.set()
+                self.assertTrue(writer_locked.wait(5))
+            if role.name == "B" and sql == "BEGIN IMMEDIATE":
+                writer_locked.set()
+                self.assertTrue(wal_attempted.wait(5))
+            if role.name == "B" and sql == "COMMIT":
+                writer_released.set()
+            return result
+
+        def validate_hook(connection: sqlite3.Connection, database_path: Path) -> bool:
+            existing = validate(connection, database_path)
+            if role.name == "B" and not empty_validated.is_set():
+                self.assertFalse(existing)
+                empty_validated.set()
+            return existing
+
+        def opener(name: str) -> store_module.StoreSettings:
+            role.name = name
+            with open_store(path, reserve_bytes=0, busy_timeout_ms=500) as store:
+                return store.settings()
+
+        with patch.object(store_module, "_execute", execute_hook), patch.object(
+            store_module, "_validate_schema", validate_hook,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                try:
+                    second = pool.submit(opener, "B")
+                    self.assertTrue(empty_validated.wait(5))
+                    first = pool.submit(opener, "A")
+                    settings = (first.result(timeout=5), second.result(timeout=5))
+                finally:
+                    # Release scheduling barriers even if an assertion fails.
+                    baseline_committed.set()
+                    writer_locked.set()
+                    wal_attempted.set()
+                    writer_released.set()
+        self.assertGreaterEqual(len(wal_attempts), 2)
+        for opened in settings:
+            self.assertEqual(opened.journal_mode, "wal")
+            self.assertEqual(opened.synchronous, 2)
+            self.assertTrue(opened.foreign_keys)
+            self.assertEqual(opened.busy_timeout_ms, 500)
+
+    def test_wal_switch_waits_for_timeout_without_exception_chain(self) -> None:
+        path = self.directory / "wal-timeout.sqlite3"
+        with open_store(path, reserve_bytes=0):
+            pass
+        blocker = sqlite3.connect(path, isolation_level=None)
+        self.addCleanup(blocker.close)
+        self.assertEqual(blocker.execute("PRAGMA journal_mode = DELETE").fetchone()[0], "delete")
+        blocker.execute("BEGIN IMMEDIATE")
+        busy_timeout_ms = 50
+        execute = store_module._execute
+        wal_attempts: list[float] = []
+
+        def execute_hook(
+            connection: sqlite3.Connection, sql: str, parameters: tuple[object, ...] = (),
+        ) -> sqlite3.Cursor:
+            if sql == "PRAGMA journal_mode = WAL":
+                wal_attempts.append(time.monotonic())
+            return execute(connection, sql, parameters)
+
+        try:
+            with patch.object(store_module, "_execute", execute_hook):
+                with self.assertRaises(StoreRetryable) as caught:
+                    with open_store(path, reserve_bytes=0, busy_timeout_ms=busy_timeout_ms):
+                        pass
+            elapsed = time.monotonic() - wal_attempts[0]
+            self.assertGreaterEqual(elapsed, busy_timeout_ms / 1000)
+            self.assertLess(elapsed, 1)
+            self.assertGreaterEqual(len(wal_attempts), 2)
+            self.assertEqual(caught.exception.failure, "store-busy")
+            self.assertEqual(str(caught.exception), "store-busy")
+            self.assertIsNone(caught.exception.__cause__)
+            self.assertIsNone(caught.exception.__context__)
+        finally:
+            blocker.rollback()
 
     def test_trigger_error_does_not_expose_archived_health_data(self) -> None:
         store = self.ready()
