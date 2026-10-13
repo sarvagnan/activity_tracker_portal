@@ -4829,6 +4829,49 @@
    },
    "bytes": "{\"metadata\":{\"client_record_id\":\"synthetic-client-97\",\"client_record_version\":\"9007199254740993\",\"data_origin\":{\"package_name\":\"org.example.synthetic.source\"},\"device\":{\"manufacturer\":\"Synthetic Devices\",\"model\":\"SD-1\",\"type\":1},\"id\":\"00000000-0000-4000-8000-000000000097\",\"last_modified_time\":\"2026-01-15T09:00:00Z\",\"recording_method\":2},\"projection_implementation_version\":\"9.9.9-other\",\"projection_schema_version\":1,\"provider_version\":\"other-provider-7\",\"record\":{\"time\":\"2026-01-15T07:30:00.250Z\",\"weight_grams\":72500.5,\"zone_offset\":\"+05:30\"},\"record_type\":\"weight\",\"sdk_version\":\"androidx.health.connect:connect-client:1.1.0\"}",
    "sha256": "7fa067d7c4038a424b4cafb76164d61e80c3c7d6c76d7a2d39ed323f03c992df"
+  },
+  {
+   "name": "steps-leap-days",
+   "record_type": "steps",
+   "tags": [
+    "calendar",
+    "precision"
+   ],
+   "context": {
+    "implementation_version": "0.1.0-synthetic",
+    "provider_version": "synthetic-provider-1"
+   },
+   "projection": {
+    "record_type": "steps",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000098",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2028-02-29T07:30:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-98",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2000-02-29T23:45:00Z",
+     "end_time": "2000-03-01T00:15:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30",
+     "count": 4321
+    }
+   },
+   "bytes": "{\"metadata\":{\"client_record_id\":\"synthetic-client-98\",\"client_record_version\":\"9007199254740993\",\"data_origin\":{\"package_name\":\"org.example.synthetic.source\"},\"device\":{\"manufacturer\":\"Synthetic Devices\",\"model\":\"SD-1\",\"type\":1},\"id\":\"00000000-0000-4000-8000-000000000098\",\"last_modified_time\":\"2028-02-29T07:30:00Z\",\"recording_method\":2},\"projection_implementation_version\":\"0.1.0-synthetic\",\"projection_schema_version\":1,\"provider_version\":\"synthetic-provider-1\",\"record\":{\"count\":4321,\"end_time\":\"2000-03-01T00:15:00Z\",\"end_zone_offset\":\"+05:30\",\"start_time\":\"2000-02-29T23:45:00Z\",\"start_zone_offset\":\"+05:30\"},\"record_type\":\"steps\",\"sdk_version\":\"androidx.health.connect:connect-client:1.1.0\"}",
+   "sha256": "f2d1b6958fb001e2f8f1d4570b8179d5e34753919a381d0c53d3966e72ccbe92"
   }
  ]
 }

@@ -541,6 +541,143 @@
      "count": "4321"
     }
    }
+  },
+  {
+   "name": "instant-february-30",
+   "record_type": "weight",
+   "projection": {
+    "record_type": "weight",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000078",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-78",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "time": "2026-02-30T07:30:00Z",
+     "zone_offset": "+05:30",
+     "weight_grams": 72500.5
+    }
+   }
+  },
+  {
+   "name": "instant-april-31",
+   "record_type": "steps",
+   "projection": {
+    "record_type": "steps",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000072",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-72",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-04-31T07:30:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30",
+     "count": 4321
+    }
+   }
+  },
+  {
+   "name": "instant-non-leap-february-29",
+   "record_type": "weight",
+   "projection": {
+    "record_type": "weight",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000078",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2025-02-29T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-78",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "time": "2026-01-15T07:30:00.250Z",
+     "zone_offset": "+05:30",
+     "weight_grams": 72500.5
+    }
+   }
+  },
+  {
+   "name": "instant-century-february-29",
+   "record_type": "heart-rate",
+   "projection": {
+    "record_type": "heart-rate",
+    "projection_schema_version": 1,
+    "projection_implementation_version": "0.1.0-synthetic",
+    "sdk_version": "androidx.health.connect:connect-client:1.1.0",
+    "provider_version": "synthetic-provider-1",
+    "metadata": {
+     "id": "00000000-0000-4000-8000-000000000032",
+     "data_origin": {
+      "package_name": "org.example.synthetic.source"
+     },
+     "last_modified_time": "2026-01-15T09:00:00Z",
+     "client_record_version": "9007199254740993",
+     "recording_method": 2,
+     "client_record_id": "synthetic-client-32",
+     "device": {
+      "type": 1,
+      "manufacturer": "Synthetic Devices",
+      "model": "SD-1"
+     }
+    },
+    "record": {
+     "start_time": "2026-01-15T07:30:00Z",
+     "end_time": "2026-01-15T08:00:00Z",
+     "start_zone_offset": "+05:30",
+     "end_zone_offset": "+05:30",
+     "samples": [
+      {
+       "time": "1900-02-29T07:35:00Z",
+       "beats_per_minute": 72
+      },
+      {
+       "time": "2026-01-15T07:40:00Z",
+       "beats_per_minute": 75
+      }
+     ]
+    }
+   }
   }
  ]
 }
