@@ -144,3 +144,17 @@ This log records friction encountered while adopting Vouch mk2 in its first exte
 **Friction**: Unanchored evidence was reported as anchored, and the anchor job sat idle without failing, so nothing signalled the gap before Gate C.
 
 **Decision**: The Operator chose to anchor now and fix Vouch in parallel. A local `advance-anchor` on `main` (`f3a7c5f`) let CI run 38357179289 claim the anchor at refactor #6 (`fb28913`). The delivery flow now runs `advance-anchor` after every `record-evidence`. The upstream fix, in which the check reports a head ahead of its anchor and the workflow advances it, is `vouch_mk2-bd4.4.4`.
+
+## 2026-10-13 — A pack amendment carried GREEN past vectors it never ran
+
+**Context**: Gate C preparation for `project-source-record@1`. Codex review r4256831674 on PR #8 found that the frozen instant pattern accepts impossible dates such as `2026-02-31`, and the Operator chose to amend the pack before publication (DEV-psr-01).
+
+**Evidence**:
+
+- The amendment changed only files bound with `--pack-file`: the generator, the 41 schemas, and the positive and schema-negative vectors. The four `--pack-test-file` entries were unchanged, so the test-set digest stayed `95be5bd3…`.
+- Rehearsed on a throwaway clone: after `open-deviation`, `adjudicate-amend`, `close-deviation`, `respecify` and a re-freeze of `project-source-record-pack/2`, `mark-done` succeeded with the pack/1 GREEN, and `check --ci` passed, with no run against the amended vectors. D-17 keys evidence on the test-set digest, and the bound tests execute these vectors although they are bound as spec.
+- Binding the vectors as test files would change the digest, and Vouch then requires a RED for the new digest. That RED cannot honestly be recorded, because the schema fix and the new negatives freeze together.
+
+**Friction**: Nothing failed, and the amended vectors could have been accepted unexecuted.
+
+**Decision**: Record a fresh GREEN on the bound runner after every re-freeze, even when Vouch carries evidence forward. The upstream question is `vouch_mk2-bd4.4.5`. The RED for the amendment is shown outside Vouch: against pack/1's schemas, all four new negatives are accepted and `test_schema_negatives_are_rejected` fails.
