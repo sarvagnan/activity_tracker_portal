@@ -15,34 +15,36 @@ The pinned SDK is `androidx.health.connect:connect-client:1.1.0` on Android 14 o
 Kotlin, package `org.activitytracker.healthconnect.snapshot` in the project-owned Health Connect module, depending only on the access seam and `org.activitytracker.healthconnect.projection`:
 
 - The existing `HealthConnectAccess` seam gains `suspend fun getGrantedPermissions(): Set<String>`, matching the SDK's `PermissionController`, and the reader calls nothing else on it besides `readRecords`.
-- `SnapshotPageRequest(recordType: String, snapshotId: String, position: ByteArray?, context: ProjectionContext)`. Construction throws `IllegalArgumentException` when `recordType` is not a key of `PROJECTION_SCHEMA_VERSIONS` or `snapshotId` is not a lowercase UUID, because those are caller errors rather than outcomes. A `null` position means the snapshot's first page.
+- `SnapshotPageRequest(recordType: String, snapshotId: String, position: ByteArray?, context: ProjectionContext)`. Construction throws `IllegalArgumentException` when `recordType` is not a key of `PROJECTION_SCHEMA_VERSIONS` or `snapshotId` does not match the Wire Protocol `uuid` pattern `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, because those are caller errors rather than outcomes. A `null` position means the snapshot's first page.
 - `suspend fun readSnapshotPage(access: HealthConnectAccess, request: SnapshotPageRequest): SnapshotPageResult`, where `SnapshotPageResult` is one of:
-  - `Page(recordType: String, snapshotId: String, projectionSchemaVersion: Int, projections: List<ByteArray>, nextPosition: ByteArray, exhausted: Boolean)`
-  - `ProjectionRefused(refusal: ProjectionResult.Refused)`
-  - `NotPermitted(failure: String)`
-  - `ReadFailed(failure: String)`
-  - `InvalidPosition(failure: String)`
+  - `SnapshotPageResult.Page(recordType: String, snapshotId: String, projectionSchemaVersion: Int, projections: List<ByteArray>, nextPosition: ByteArray, exhausted: Boolean)`
+  - `SnapshotPageResult.ProjectionRefused(refusal: ProjectionResult.Refused)`
+  - `SnapshotPageResult.NotPermitted(failure: String)`
+  - `SnapshotPageResult.ReadFailed(failure: String)`
+  - `SnapshotPageResult.InvalidPosition(failure: String)`
 - `SNAPSHOT_PAGE_RECORD_LIMIT = 1000` and `HEALTH_CONNECT_READ_LIMIT = 5000`.
+
+The pinned SDK keeps its `InstantaneousRecord` and `IntervalRecord` interfaces internal, so the reader reads each type's public `time` or `startTime`. The read may run on any dispatcher; the tests wait for it on any thread.
 
 ## Requirements
 
-Each requirement must be bound to named executable tests before freeze. Kotlin JVM tests drive the reader through a synthetic Health Connect fake, and a Python suite checks the contract. No fixture contains real health data, Device identifiers, or credentials.
+Each requirement is bound to named executable tests. Kotlin JVM tests in `ReadSnapshotPage1Test` drive the reader through the synthetic fake `SnapshotHealthConnect`, and the Python suite `tests/acceptance/test_read_snapshot_page_1.py` checks the contract. The runner `tests/acceptance/run_read_snapshot_page_1.sh` runs both. No fixture contains real health data, Device identifiers, or credentials.
 
 ### R1 — Governed Scope contract
 
 The contract names the scope, version, kind, purpose, inputs with their modes, outputs, every named failure with one of the outcome classes `projection-refusal`, `not-permitted`, `read-failure`, or `invalid-position`, the Health Connect read effect, authority, the `project-source-record@1` dependency, and the acceptance oracle. It does not contradict the `read-snapshot-page` scope-map row.
 
-Proposed tests: `test_governed_scope_contract_has_required_shape`, `test_scope_map_row_does_not_contradict_contract` (Python).
+Tests: `test_governed_scope_contract_has_required_shape`, `test_scope_map_row_does_not_contradict_contract` (Python).
 
 ### R2 — Request validation
 
 A request names a record type from `PROJECTION_SCHEMA_VERSIONS` and a lowercase UUID snapshot identity; anything else throws `IllegalArgumentException` before any Health Connect call.
 
-Proposed tests: `unknown_record_type_is_a_caller_error`, `malformed_snapshot_identity_is_a_caller_error`.
+Tests: `unknown_record_type_is_a_caller_error`, `malformed_snapshot_identity_is_a_caller_error`.
 
 ### R3 — Full-history permission, checked around the read
 
-Immediately before and immediately after the record read, the reader reads the granted permissions. Both reads must include the type's read permission (`HealthPermission.getReadPermission`) and `PERMISSION_READ_HEALTH_DATA_HISTORY`:
+Immediately before and immediately after the record read, the reader reads the granted permissions, so a successful read calls the seam exactly three times: permissions, records, permissions. Both reads must include the type's read permission (`HealthPermission.getReadPermission`) and `PERMISSION_READ_HEALTH_DATA_HISTORY`:
 
 - The read permission missing is `read-permission-missing`.
 - Otherwise, the history permission missing is `history-permission-missing`.
@@ -52,7 +54,7 @@ Immediately before and immediately after the record read, the reader reads the g
 
 In every case the outcome is `NotPermitted` with no page and no position.
 
-Proposed tests: `missing_read_permission_reads_no_records`, `missing_history_permission_reads_no_records`, `permission_lost_during_the_read_discards_the_page`, `security_exception_is_read_denied`.
+Tests: `missing_read_permission_reads_no_records`, `missing_history_permission_reads_no_records`, `permissions_are_read_before_and_after_the_records`, `permission_lost_during_the_read_discards_the_page`, `security_exception_is_read_denied`.
 
 ### R4 — The read request
 
@@ -64,13 +66,13 @@ Every page is one `readRecords` call with these fields:
 
 The first page reads the time range from `Instant.ofEpochMilli(Long.MIN_VALUE)` to `Instant.ofEpochMilli(Long.MAX_VALUE)`, which is every start time Health Connect can store, and requests `SNAPSHOT_PAGE_RECORD_LIMIT` records. A later page starts its range at the position's boundary start time and requests `SNAPSHOT_PAGE_RECORD_LIMIT` plus the number of boundary identifiers, capped at `HEALTH_CONNECT_READ_LIMIT`. A record's start time is `time` for an instantaneous record and `startTime` for an interval or series record.
 
-Proposed tests: `first_page_reads_every_origin_over_the_full_range`, `later_pages_resume_at_the_boundary_start_time`, `no_request_carries_a_page_token`, `record_limit_grows_with_the_boundary_group`.
+Tests: `first_page_reads_every_origin_over_the_full_range`, `later_pages_resume_at_the_boundary_start_time`, `no_request_carries_a_page_token`, `record_limit_grows_with_the_boundary_group`.
 
 ### R5 — Complete pages
 
 The page is the response's records in Health Connect's order, excluding records at the boundary start time whose identifiers the position lists, up to `SNAPSHOT_PAGE_RECORD_LIMIT` records. Each page record is projected with the request's `ProjectionContext`. If any refuses, the result is `ProjectionRefused` with the first refusal in page order, and no position is returned. Otherwise `projections` holds exactly the bytes `projectSourceRecord` returns, in page order, and `projectionSchemaVersion` is the type's entry in `PROJECTION_SCHEMA_VERSIONS`. Records beyond the page are not projected. A record whose start year falls outside 0000 to 9999 therefore refuses its page through `project-source-record` rather than being skipped.
 
-Proposed tests: `page_bytes_equal_the_shared_projection`, `page_keeps_health_connect_order`, `one_unprojectable_record_refuses_the_whole_page`, `refusal_is_the_first_in_page_order`, `records_beyond_the_page_are_not_projected`.
+Tests: `page_bytes_equal_the_shared_projection`, `page_keeps_health_connect_order`, `one_unprojectable_record_refuses_the_whole_page`, `refusal_is_the_first_in_page_order`, `records_beyond_the_page_are_not_projected`.
 
 ### R6 — Project-owned position
 
@@ -85,29 +87,31 @@ Once a page has returned records, it also carries:
 
 A `null` request position equals the start form without boundary keys. The next position comes from the last record on the page. Its identifiers include the previous position's when the boundary start time is unchanged. An empty page returns the request's position in canonical form.
 
-The reader returns `InvalidPosition` and reads nothing in either of these cases:
+Position checks come first. The reader returns `InvalidPosition` without calling Health Connect at all, not even for permissions, in either of these cases:
 - `malformed-position`: bytes that are not canonical, a missing, extra, or wrongly typed key, an unknown version, an empty or unsorted identifier list, or a boundary start without identifiers.
 - `foreign-position`: a position naming another record type or snapshot identity.
 
-Proposed tests: `positions_are_canonical_json`, `null_position_equals_the_start_form`, `next_position_names_the_last_start_time_and_its_identifiers`, `boundary_identifiers_accumulate_within_one_start_time`, `malformed_positions_are_rejected_before_reading`, `foreign_positions_are_rejected_before_reading`.
+A position may list up to 5,000 identifiers, so it must parse without recursion that grows with its length.
+
+Tests: `positions_are_canonical_json`, `null_position_equals_the_start_form`, `next_position_names_the_last_start_time_and_its_identifiers`, `boundary_identifiers_accumulate_within_one_start_time`, `malformed_positions_are_rejected_before_reading`, `foreign_positions_are_rejected_before_reading`.
 
 ### R7 — Exhaustion and no durable progress
 
 The snapshot is exhausted when Health Connect returns no page token and every non-excluded record of the response is on the page. Reading again from an exhausted page's next position returns an empty exhausted page with the same position. The reader persists nothing. Against unchanged Health Connect data, the same request returns byte-identical results, so an interrupted caller can re-read a page without changing its bytes.
 
-Proposed tests: `exhaustion_requires_no_token_and_no_untaken_records`, `exhausted_position_rereads_as_an_empty_exhausted_page`, `rereading_a_position_is_byte_identical`, `empty_type_is_one_empty_exhausted_page`.
+Tests: `exhaustion_requires_no_token_and_no_untaken_records`, `exhausted_position_rereads_as_an_empty_exhausted_page`, `rereading_a_position_is_byte_identical`, `empty_type_is_one_empty_exhausted_page`.
 
 ### R8 — Exactly once for unchanged records
 
 Concatenate the pages of a traversal from the first page to exhaustion, while records are inserted, deleted, updated in place, or moved to another start time between and during reads. The result contains, exactly once and in non-decreasing start-time order, every record that was present and unchanged from the first read until exhaustion. Records changed during the traversal may appear zero or more times. The catch-up Change Cycle from the pre-read token reports them (ADR 0047), and Source Identity reconciliation makes repetition safe.
 
-Proposed tests: `unchanged_records_appear_exactly_once_under_concurrent_change`, `deleting_a_returned_boundary_record_skips_nothing`, `moving_a_returned_boundary_record_skips_nothing`.
+Tests: `unchanged_records_appear_exactly_once_under_concurrent_change`, `deleting_a_returned_boundary_record_skips_nothing`, `moving_a_returned_boundary_record_skips_nothing`.
 
 ### R9 — Large equal-time groups
 
-Records sharing one start time may span any number of pages. When the position already lists `HEALTH_CONNECT_READ_LIMIT` boundary identifiers, the reader cannot request past them. In that case it returns `ReadFailed("boundary-group-too-large")` without reading.
+Records sharing one start time may span any number of pages. When the position already lists `HEALTH_CONNECT_READ_LIMIT` boundary identifiers, the reader cannot request past them. In that case it returns `ReadFailed("boundary-group-too-large")` without calling Health Connect.
 
-Proposed tests: `an_equal_time_group_larger_than_a_page_spans_pages`, `an_unreadable_boundary_group_fails_without_reading`.
+Tests: `an_equal_time_group_larger_than_a_page_spans_pages`, `an_unreadable_boundary_group_fails_without_reading`.
 
 ### R10 — Response validation
 
@@ -115,13 +119,14 @@ The keyset position is correct only if Health Connect honors the request. A resp
 - it holds more records than requested;
 - it holds a record starting before the requested start;
 - it holds records out of non-decreasing start order;
-- two of its records share an identifier.
+- two of its records share an identifier;
+- it holds a record of another type.
 
-Proposed tests: `oversized_responses_are_violations`, `records_before_the_requested_start_are_violations`, `unordered_responses_are_violations`, `duplicate_identifiers_are_violations`.
+Tests: `oversized_responses_are_violations`, `records_before_the_requested_start_are_violations`, `unordered_responses_are_violations`, `duplicate_identifiers_are_violations`, `records_of_another_type_are_violations`.
 
 ### R11 — Failure classification
 
-An exception from any seam call maps to exactly one outcome:
+An exception from either the permission read or the record read maps to exactly one outcome:
 
 | Exception | Outcome |
 |---|---|
@@ -131,15 +136,17 @@ An exception from any seam call maps to exactly one outcome:
 | `IllegalArgumentException` | `ReadFailed("health-connect-request-rejected")` |
 | any other `Exception` | `ReadFailed("unexpected-read-failure")` |
 
-The SDK reports rate limiting, an internal provider error, and data sync in progress as `IllegalStateException`. A `CancellationException` always propagates unchanged, and so does a `Throwable` that is not an `Exception`.
+The SDK reports rate limiting, an internal provider error, and data sync in progress as `IllegalStateException`. A `CancellationException` always propagates unchanged, and so does a `Throwable` that is not an `Exception`. Because `java.util.concurrent.CancellationException` is an `IllegalStateException`, it must be recognized first.
 
-Proposed tests: `each_exception_class_maps_to_one_named_failure`, `cancellation_propagates`.
+Tests: `each_exception_class_maps_to_one_named_failure`, `cancellation_propagates`.
 
 ### R12 — Health-data-free outcomes
 
 `ProjectionRefused`, `NotPermitted`, `ReadFailed`, and `InvalidPosition` carry only the named failure and, for a refusal, `project-source-record`'s health-data-free refusal. They carry no exception text, record identifiers, times, values, or position bytes, so the caller can persist and report them.
 
-Proposed tests: `non_page_outcomes_carry_only_named_failures`.
+Every named failure in the contract is reachable, and the reader returns no failure the contract does not name.
+
+Tests: `non_page_outcomes_carry_only_named_failures`, `every_named_failure_is_reachable_and_in_the_contract`.
 
 ## Decisions for the Operator
 
@@ -158,7 +165,7 @@ Proposed tests: `non_page_outcomes_carry_only_named_failures`.
 
 ## Ground rules
 
-- Kotlin JVM tests construct SDK records through the SDK's constructors with synthetic values and identifiers, and run with no Android device, emulator, or Context. The module enables `unitTests.returnDefaultValues` if the tests need an `android.os.RemoteException`.
+- Kotlin JVM tests construct SDK records through the SDK's constructors with synthetic values and identifiers, and run with no Android device, emulator, or Context. The SDK keeps `Metadata`'s full constructor internal, so the tests reach it through Kotlin reflection, as the `project-source-record@1` vectors do. `android.os.RemoteException` constructs on the JVM without stub defaults.
 - The synthetic fake reproduces the AOSP read semantics this pack relies on:
   - records ordered by start time, then insertion order;
   - a time range inclusive of its start and exclusive of its end;
@@ -172,10 +179,14 @@ Proposed tests: `non_page_outcomes_carry_only_named_failures`.
 
 ## Freeze prerequisites
 
-The Operator approves this draft. The executable pack then adds:
+The Operator approved the draft. The executable pack adds:
 - the Kotlin acceptance suite and its synthetic fake;
 - the Python contract suite;
-- the runner `tests/acceptance/run_read_snapshot_page_1.sh`;
-- the Interface stubs, including the seam's permission read and the existing fake's implementation of it.
+- the runner;
+- the Interface stub `snapshot/SnapshotPage.kt`, plus the seam's permission read and the existing `SyntheticHealthConnect`'s implementation of it.
 
-It also obtains the implementer's read-only implementability review, shows genuine RED, and presents the binding for the approver's freeze decision.
+Against the stub, all 40 Kotlin tests fail: 37 with the stub's `NotImplementedError`, two because the stub does not validate requests, and one because cancellation meets the stub's error. The two Python tests pass, because they check the contract. The pack then obtains the implementer's read-only implementability review and presents the binding for the approver's freeze decision.
+
+The binding is:
+- spec files: the contract and this pack;
+- test files: `ReadSnapshotPage1Test.kt`, `SnapshotHealthConnect.kt`, `test_read_snapshot_page_1.py`, and the runner.

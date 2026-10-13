@@ -11,6 +11,12 @@ class SyntheticHealthConnect : HealthConnectAccess {
     val pageRequests = mutableListOf<ReadRecordsRequest<*>>()
     var nextPageToken: String? = null
     var failure: Exception? = null
+    var granted: Set<String> = emptySet()
+
+    override suspend fun getGrantedPermissions(): Set<String> {
+        failure?.let { throw it }
+        return granted
+    }
 
     override suspend fun getChangesToken(request: ChangesTokenRequest): String {
         failure?.let { throw it }
