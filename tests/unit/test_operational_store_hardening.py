@@ -149,6 +149,84 @@ class OperationalStoreHardeningTests(unittest.TestCase):
         self.assertIsNone(caught.exception.__context__)
         self.assertEqual(path.read_bytes(), before)
 
+    def test_one_byte_file_is_refused_without_changes(self) -> None:
+        path = self.directory / "one-byte.sqlite3"
+        before = b"x"
+        path.write_bytes(before)
+        with self.assertRaises(StoreRefusal) as caught:
+            with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free):
+                pass
+        self.assertEqual(caught.exception.failure, "store-schema-unsupported")
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_store_truncated_before_complete_header_is_refused_without_changes(self) -> None:
+        baseline = self.directory / "baseline.sqlite3"
+        with open_store(baseline, reserve_bytes=1_000_000, free_bytes=self.free):
+            pass
+        original = baseline.read_bytes()
+        self.assertEqual(original[:16], b"SQLite format 3\x00")
+        for length in (1, 15):
+            with self.subTest(length=length):
+                path = self.directory / f"truncated-{length}.sqlite3"
+                before = original[:length]
+                path.write_bytes(before)
+                with self.assertRaises(StoreRefusal) as caught:
+                    with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free):
+                        pass
+                self.assertEqual(caught.exception.failure, "store-schema-unsupported")
+                self.assertIsNone(caught.exception.__cause__)
+                self.assertIsNone(caught.exception.__context__)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_zero_length_file_is_created_at_baseline(self) -> None:
+        path = self.directory / "empty.sqlite3"
+        path.touch()
+        with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free) as store:
+            self.assertEqual(store.settings().schema_migrations, ((
+                1, hashlib.sha256(store_module.MIGRATIONS[0][1].encode("utf-8")).hexdigest(),
+            ),))
+        connection = sqlite3.connect(path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+        finally:
+            connection.close()
+
+    def test_competing_foreign_schema_is_refused_before_journal_mode_changes(self) -> None:
+        path = self.directory / "foreign-race.sqlite3"
+        path.touch()
+        configure = store_module._configure
+        committed: list[bytes] = []
+
+        def competing_commit(connection: sqlite3.Connection, busy_timeout_ms: int) -> None:
+            # The first validation's read transaction has ended, but creation has not begun.
+            other = sqlite3.connect(path, isolation_level=None)
+            try:
+                self.assertEqual(other.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+                other.execute("BEGIN IMMEDIATE")
+                other.execute("CREATE TABLE foreign_data(value TEXT)")
+                other.execute("INSERT INTO foreign_data VALUES ('synthetic')")
+                other.commit()
+            finally:
+                other.close()
+            committed.append(path.read_bytes())
+            configure(connection, busy_timeout_ms)
+
+        with patch.object(store_module, "_configure", competing_commit):
+            with self.assertRaises(StoreRefusal) as caught:
+                with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free):
+                    pass
+        self.assertEqual(caught.exception.failure, "store-schema-unsupported")
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        connection = sqlite3.connect(path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+        finally:
+            connection.close()
+        self.assertEqual(path.read_bytes(), committed[0])
+
     def test_trigger_error_does_not_expose_archived_health_data(self) -> None:
         store = self.ready()
         connection = sqlite3.connect(self.path, isolation_level=None)

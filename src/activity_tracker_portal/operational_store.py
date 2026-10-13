@@ -302,7 +302,6 @@ def _connect(path: str | PathLike[str], busy_timeout_ms: int) -> sqlite3.Connect
 
 def _configure(connection: sqlite3.Connection, busy_timeout_ms: int) -> None:
     _execute(connection, f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
-    _execute(connection, "PRAGMA journal_mode = WAL")
     _execute(connection, "PRAGMA synchronous = FULL")
     _execute(connection, "PRAGMA foreign_keys = ON")
 
@@ -311,7 +310,7 @@ def _migration_checksums() -> tuple[tuple[int, str], ...]:
     return tuple((version, hashlib.sha256(sql.encode("utf-8")).hexdigest()) for version, sql in MIGRATIONS)
 
 
-def _validate_schema(connection: sqlite3.Connection) -> bool:
+def _validate_schema(connection: sqlite3.Connection, path: str | PathLike[str]) -> bool:
     """Return whether a schema exists, without changing persistent settings."""
     schema_error = False
     try:
@@ -322,6 +321,11 @@ def _validate_schema(connection: sqlite3.Connection) -> bool:
     if schema_error:
         raise StoreRefusal("store-schema-unsupported") from None
     if not objects and user_version == 0:
+        # SQLite can report short foreign files as empty databases.
+        with open(path, "rb") as database:
+            header = database.read(16)
+        if header and header != b"SQLite format 3\x00":
+            raise StoreRefusal("store-schema-unsupported")
         return False
     if not any(row[0] == "store_migrations" for row in objects):
         raise StoreRefusal("store-schema-unsupported")
@@ -923,14 +927,14 @@ def open_store(
         # Validate before WAL can change the persistent journal mode.
         _execute(connection, "BEGIN")
         try:
-            existing = _validate_schema(connection)
+            existing = _validate_schema(connection, path)
         finally:
             connection.rollback()
         _configure(connection, busy_timeout_ms)
         if not existing:
             with _transaction(connection):
                 # A concurrent opener may have created the baseline while we waited.
-                if not _validate_schema(connection):
+                if not _validate_schema(connection, path):
                     for version, sql in MIGRATIONS:
                         for statement in sql.split(";"):
                             if statement.strip():
@@ -940,6 +944,8 @@ def open_store(
                             (version, hashlib.sha256(sql.encode("utf-8")).hexdigest(), _timestamp(datetime.now(timezone.utc))),
                         )
                         _execute(connection, f"PRAGMA user_version = {version}")
+        # No schema refusal can occur after changing the persistent journal mode.
+        _execute(connection, "PRAGMA journal_mode = WAL")
         store = OperationalStore()
         store._connection = connection
         store._path = path
