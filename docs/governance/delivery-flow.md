@@ -47,7 +47,7 @@ Every unit follows the same eight steps. Claude implemented the worked example, 
 
 Every `record-evidence`, including refactor evidence recorded for review fixes, is followed by `python3 vouch.lock advance-anchor --root .vouch --unit-name <scope>` before `generate`. The local advance moves the anchor to the new head without a run claim, so the next CI run on `main` claims it. The pinned Vouch's anchor plan advances only heads without a run claim, and `check.evidence-anchors` passes a claimed anchor that lags the head, so skipping this step leaves later evidence unanchored without any failing check (vouch_mk2-bd4.4.4).
 
-A mismatch discovered after freeze becomes an `open-deviation` for the Operator, never an edit to a bound file. Enabling tasks skip the Vouch steps but follow the same implement, approver review, and merge sequence.
+A mismatch discovered after freeze becomes an `open-deviation` for the Operator, never an edit to a bound file. If the Operator amends the pack, Claude records `adjudicate-amend`, `close-deviation` and `respecify` before any bound file changes, and the approver re-freezes the amended pack. GREEN is then recorded again on the bound runner, even when Vouch carries the earlier evidence forward because the bound test files are unchanged (vouch_mk2-bd4.4.5). Enabling tasks skip the Vouch steps but follow the same implement, approver review, and merge sequence.
 
 ## Sequencing rules
 
