@@ -1,0 +1,451 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "urn:activity-tracker-portal:source-projection:exercise-session:1",
+ "title": "Source Projection for exercise-session, schema version 1",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "metadata",
+  "projection_implementation_version",
+  "projection_schema_version",
+  "provider_version",
+  "record",
+  "record_type",
+  "sdk_version"
+ ],
+ "properties": {
+  "record_type": {
+   "const": "exercise-session"
+  },
+  "projection_schema_version": {
+   "const": 1
+  },
+  "projection_implementation_version": {
+   "type": "string",
+   "minLength": 1
+  },
+  "sdk_version": {
+   "const": "androidx.health.connect:connect-client:1.1.0"
+  },
+  "provider_version": {
+   "type": "string",
+   "minLength": 1
+  },
+  "metadata": {
+   "$ref": "#/$defs/Metadata"
+  },
+  "record": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "end_time",
+    "exercise_route_result",
+    "exercise_type",
+    "laps",
+    "segments",
+    "start_time"
+   ],
+   "properties": {
+    "start_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "start_zone_offset": {
+     "type": "string",
+     "pattern": "^[+-](0[0-9]|1[0-7]):[0-5][0-9]$|^[+-]18:00$"
+    },
+    "end_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "end_zone_offset": {
+     "type": "string",
+     "pattern": "^[+-](0[0-9]|1[0-7]):[0-5][0-9]$|^[+-]18:00$"
+    },
+    "exercise_type": {
+     "type": "integer",
+     "enum": [
+      0,
+      2,
+      4,
+      5,
+      8,
+      9,
+      10,
+      11,
+      13,
+      14,
+      16,
+      25,
+      26,
+      27,
+      28,
+      29,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      44,
+      46,
+      47,
+      48,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      78,
+      79,
+      80,
+      81,
+      82,
+      83
+     ]
+    },
+    "title": {
+     "type": "string"
+    },
+    "notes": {
+     "type": "string"
+    },
+    "segments": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/ExerciseSegment"
+     }
+    },
+    "laps": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/ExerciseLap"
+     }
+    },
+    "exercise_route_result": {
+     "$ref": "#/$defs/ExerciseRouteResult"
+    },
+    "planned_exercise_session_id": {
+     "type": "string"
+    }
+   }
+  }
+ },
+ "$defs": {
+  "DataOrigin": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "package_name"
+   ],
+   "properties": {
+    "package_name": {
+     "type": "string"
+    }
+   }
+  },
+  "Device": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "type"
+   ],
+   "properties": {
+    "type": {
+     "type": "integer",
+     "enum": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+     ]
+    },
+    "manufacturer": {
+     "type": "string"
+    },
+    "model": {
+     "type": "string"
+    }
+   }
+  },
+  "ExerciseLap": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "end_time",
+    "start_time"
+   ],
+   "properties": {
+    "start_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "end_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "length_meters": {
+     "type": "number"
+    }
+   }
+  },
+  "ExerciseRoute": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "route"
+   ],
+   "properties": {
+    "route": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/ExerciseRoute_Location"
+     }
+    }
+   }
+  },
+  "ExerciseRouteResult": {
+   "oneOf": [
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "exercise_route",
+      "kind"
+     ],
+     "properties": {
+      "kind": {
+       "const": "data"
+      },
+      "exercise_route": {
+       "$ref": "#/$defs/ExerciseRoute"
+      }
+     }
+    },
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "kind"
+     ],
+     "properties": {
+      "kind": {
+       "const": "no-data"
+      }
+     }
+    },
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "kind"
+     ],
+     "properties": {
+      "kind": {
+       "const": "consent-required"
+      }
+     }
+    }
+   ]
+  },
+  "ExerciseRoute_Location": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "latitude",
+    "longitude",
+    "time"
+   ],
+   "properties": {
+    "time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "latitude": {
+     "type": "number"
+    },
+    "longitude": {
+     "type": "number"
+    },
+    "horizontal_accuracy_meters": {
+     "type": "number"
+    },
+    "vertical_accuracy_meters": {
+     "type": "number"
+    },
+    "altitude_meters": {
+     "type": "number"
+    }
+   }
+  },
+  "ExerciseSegment": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "end_time",
+    "repetitions",
+    "segment_type",
+    "start_time"
+   ],
+   "properties": {
+    "start_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "end_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "segment_type": {
+     "type": "integer",
+     "enum": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67
+     ]
+    },
+    "repetitions": {
+     "type": "integer",
+     "minimum": -2147483648,
+     "maximum": 2147483647
+    }
+   }
+  },
+  "Metadata": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "client_record_version",
+    "data_origin",
+    "id",
+    "last_modified_time",
+    "recording_method"
+   ],
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "data_origin": {
+     "$ref": "#/$defs/DataOrigin"
+    },
+    "last_modified_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "client_record_id": {
+     "type": "string"
+    },
+    "client_record_version": {
+     "type": "string",
+     "pattern": "^(0|-?[1-9][0-9]*)$"
+    },
+    "recording_method": {
+     "type": "integer",
+     "enum": [
+      0,
+      1,
+      2,
+      3
+     ]
+    },
+    "device": {
+     "$ref": "#/$defs/Device"
+    }
+   }
+  }
+ }
+}

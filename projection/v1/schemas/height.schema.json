@@ -1,0 +1,144 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "urn:activity-tracker-portal:source-projection:height:1",
+ "title": "Source Projection for height, schema version 1",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "metadata",
+  "projection_implementation_version",
+  "projection_schema_version",
+  "provider_version",
+  "record",
+  "record_type",
+  "sdk_version"
+ ],
+ "properties": {
+  "record_type": {
+   "const": "height"
+  },
+  "projection_schema_version": {
+   "const": 1
+  },
+  "projection_implementation_version": {
+   "type": "string",
+   "minLength": 1
+  },
+  "sdk_version": {
+   "const": "androidx.health.connect:connect-client:1.1.0"
+  },
+  "provider_version": {
+   "type": "string",
+   "minLength": 1
+  },
+  "metadata": {
+   "$ref": "#/$defs/Metadata"
+  },
+  "record": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "height_meters",
+    "time"
+   ],
+   "properties": {
+    "time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "zone_offset": {
+     "type": "string",
+     "pattern": "^[+-](0[0-9]|1[0-7]):[0-5][0-9]$|^[+-]18:00$"
+    },
+    "height_meters": {
+     "type": "number"
+    }
+   }
+  }
+ },
+ "$defs": {
+  "DataOrigin": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "package_name"
+   ],
+   "properties": {
+    "package_name": {
+     "type": "string"
+    }
+   }
+  },
+  "Device": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "type"
+   ],
+   "properties": {
+    "type": {
+     "type": "integer",
+     "enum": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+     ]
+    },
+    "manufacturer": {
+     "type": "string"
+    },
+    "model": {
+     "type": "string"
+    }
+   }
+  },
+  "Metadata": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "client_record_version",
+    "data_origin",
+    "id",
+    "last_modified_time",
+    "recording_method"
+   ],
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "data_origin": {
+     "$ref": "#/$defs/DataOrigin"
+    },
+    "last_modified_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "client_record_id": {
+     "type": "string"
+    },
+    "client_record_version": {
+     "type": "string",
+     "pattern": "^(0|-?[1-9][0-9]*)$"
+    },
+    "recording_method": {
+     "type": "integer",
+     "enum": [
+      0,
+      1,
+      2,
+      3
+     ]
+    },
+    "device": {
+     "$ref": "#/$defs/Device"
+    }
+   }
+  }
+ }
+}

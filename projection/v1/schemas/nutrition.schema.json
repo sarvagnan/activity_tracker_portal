@@ -1,0 +1,289 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "urn:activity-tracker-portal:source-projection:nutrition:1",
+ "title": "Source Projection for nutrition, schema version 1",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "metadata",
+  "projection_implementation_version",
+  "projection_schema_version",
+  "provider_version",
+  "record",
+  "record_type",
+  "sdk_version"
+ ],
+ "properties": {
+  "record_type": {
+   "const": "nutrition"
+  },
+  "projection_schema_version": {
+   "const": 1
+  },
+  "projection_implementation_version": {
+   "type": "string",
+   "minLength": 1
+  },
+  "sdk_version": {
+   "const": "androidx.health.connect:connect-client:1.1.0"
+  },
+  "provider_version": {
+   "type": "string",
+   "minLength": 1
+  },
+  "metadata": {
+   "$ref": "#/$defs/Metadata"
+  },
+  "record": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "end_time",
+    "meal_type",
+    "start_time"
+   ],
+   "properties": {
+    "start_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "start_zone_offset": {
+     "type": "string",
+     "pattern": "^[+-](0[0-9]|1[0-7]):[0-5][0-9]$|^[+-]18:00$"
+    },
+    "end_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "end_zone_offset": {
+     "type": "string",
+     "pattern": "^[+-](0[0-9]|1[0-7]):[0-5][0-9]$|^[+-]18:00$"
+    },
+    "energy_calories": {
+     "type": "number"
+    },
+    "energy_from_fat_calories": {
+     "type": "number"
+    },
+    "biotin_grams": {
+     "type": "number"
+    },
+    "caffeine_grams": {
+     "type": "number"
+    },
+    "calcium_grams": {
+     "type": "number"
+    },
+    "chloride_grams": {
+     "type": "number"
+    },
+    "cholesterol_grams": {
+     "type": "number"
+    },
+    "chromium_grams": {
+     "type": "number"
+    },
+    "copper_grams": {
+     "type": "number"
+    },
+    "dietary_fiber_grams": {
+     "type": "number"
+    },
+    "folate_grams": {
+     "type": "number"
+    },
+    "folic_acid_grams": {
+     "type": "number"
+    },
+    "iodine_grams": {
+     "type": "number"
+    },
+    "iron_grams": {
+     "type": "number"
+    },
+    "magnesium_grams": {
+     "type": "number"
+    },
+    "manganese_grams": {
+     "type": "number"
+    },
+    "molybdenum_grams": {
+     "type": "number"
+    },
+    "monounsaturated_fat_grams": {
+     "type": "number"
+    },
+    "niacin_grams": {
+     "type": "number"
+    },
+    "pantothenic_acid_grams": {
+     "type": "number"
+    },
+    "phosphorus_grams": {
+     "type": "number"
+    },
+    "polyunsaturated_fat_grams": {
+     "type": "number"
+    },
+    "potassium_grams": {
+     "type": "number"
+    },
+    "protein_grams": {
+     "type": "number"
+    },
+    "riboflavin_grams": {
+     "type": "number"
+    },
+    "saturated_fat_grams": {
+     "type": "number"
+    },
+    "selenium_grams": {
+     "type": "number"
+    },
+    "sodium_grams": {
+     "type": "number"
+    },
+    "sugar_grams": {
+     "type": "number"
+    },
+    "thiamin_grams": {
+     "type": "number"
+    },
+    "total_carbohydrate_grams": {
+     "type": "number"
+    },
+    "total_fat_grams": {
+     "type": "number"
+    },
+    "trans_fat_grams": {
+     "type": "number"
+    },
+    "unsaturated_fat_grams": {
+     "type": "number"
+    },
+    "vitamin_a_grams": {
+     "type": "number"
+    },
+    "vitamin_b12_grams": {
+     "type": "number"
+    },
+    "vitamin_b6_grams": {
+     "type": "number"
+    },
+    "vitamin_c_grams": {
+     "type": "number"
+    },
+    "vitamin_d_grams": {
+     "type": "number"
+    },
+    "vitamin_e_grams": {
+     "type": "number"
+    },
+    "vitamin_k_grams": {
+     "type": "number"
+    },
+    "zinc_grams": {
+     "type": "number"
+    },
+    "name": {
+     "type": "string"
+    },
+    "meal_type": {
+     "type": "integer",
+     "enum": [
+      0,
+      1,
+      2,
+      3,
+      4
+     ]
+    }
+   }
+  }
+ },
+ "$defs": {
+  "DataOrigin": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "package_name"
+   ],
+   "properties": {
+    "package_name": {
+     "type": "string"
+    }
+   }
+  },
+  "Device": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "type"
+   ],
+   "properties": {
+    "type": {
+     "type": "integer",
+     "enum": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+     ]
+    },
+    "manufacturer": {
+     "type": "string"
+    },
+    "model": {
+     "type": "string"
+    }
+   }
+  },
+  "Metadata": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "client_record_version",
+    "data_origin",
+    "id",
+    "last_modified_time",
+    "recording_method"
+   ],
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "data_origin": {
+     "$ref": "#/$defs/DataOrigin"
+    },
+    "last_modified_time": {
+     "type": "string",
+     "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+    },
+    "client_record_id": {
+     "type": "string"
+    },
+    "client_record_version": {
+     "type": "string",
+     "pattern": "^(0|-?[1-9][0-9]*)$"
+    },
+    "recording_method": {
+     "type": "integer",
+     "enum": [
+      0,
+      1,
+      2,
+      3
+     ]
+    },
+    "device": {
+     "$ref": "#/$defs/Device"
+    }
+   }
+  }
+ }
+}
