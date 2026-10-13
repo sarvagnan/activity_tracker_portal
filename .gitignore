@@ -28,3 +28,6 @@ sender/.cache/
 sender/app/android/
 *.keystore
 *.jks
+
+# macOS Finder metadata
+.DS_Store

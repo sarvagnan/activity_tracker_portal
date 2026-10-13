@@ -102,3 +102,45 @@ This log records friction encountered while adopting Vouch mk2 in its first exte
 **Friction**: Binding shared runner configuration makes every later dependency change look like moved goalposts for this unit, while leaving it unbound is exactly the residual Vouch warns about. Vouch offers no way to bind part of a file or to scope a binding to the dependencies one unit uses.
 
 **Decision**: Proposed for the Operator's freeze approval: bind only unit-owned runner configuration, namely `tests/acceptance/run_ingest_protocol_1.sh`, which fixes the exact commands and runs `uv run --frozen`, and `sender/protocol/package.json`. Leave `pyproject.toml`, `uv.lock`, and `.node-version` unbound, and record that residual in the freeze proposal.
+
+## 2026-10-12 — Strict-CI exceptions apply only after freeze
+
+**Context**: Opening `operational-store@1`, the second unit, under the delivery flow that recorded its strict-CI exception at specification.
+
+**Evidence**:
+
+- `mark-open-in-ci` on a unit that is only `specified` fails with `ci-policy.exception-not-open: unit 'operational-store@1' is not post-specified and nonterminal`.
+- `check --ci` passes with that unit specified and no exception: `CI policy strict enforced; all post-specified units are terminal or excepted`.
+
+**Friction**: The rule is sound, since a specified unit has nothing frozen to keep open, but neither the command help nor the generated context says that exceptions begin at freeze, so the first written procedure placed the exception one step too early.
+
+**Decision**: Record the exception at Gate B immediately after `freeze`, and update `docs/governance/delivery-flow.md` accordingly.
+
+## 2026-10-13 — Semantic merge refused every incoming strict-CI exception
+
+**Context**: Merging `main` into `project-source-record-1` for PR #8. The two branches had each frozen a unit and recorded its strict-CI exception, so their `.vouch` histories diverged.
+
+**Evidence**:
+
+- `merge-git-stages` failed with `event OpenInCiMarked name='operational-store@1' from revision 15 was refused by decide(): unit.unknown`.
+- `OpenInCiMarked` and `OpenInCiCleared` record an exact `NAME@VERSION`, but semantic merge recovered their commands by passing that label as the bare unit name. Both `merge --other` and `merge-git-stages` were affected.
+- The pinned tool offered no way through. Any divergent merge in which the incoming branch had frozen a unit under strict CI was refused.
+
+**Friction**: Strict CI requires an exception for every frozen unit, and parallel branches each freeze units, so the first ordinary parallel merge hit the defect.
+
+**Decision**: The Operator chose to fix Vouch first. vouch_mk2 delivered `merge-open-in-ci-replay@1` (D-25), its first unit found by this pilot. Replay resolves the unit by name and is accepted only when the result carries exactly the recorded reference; otherwise it is refused as `merge.conflict`, so an exception never moves to another version. Re-pinning `vouch.lock` is an enabling task (`activity_tracker_portal-ojm`), following the Operator's 2026-10-13 ruling that Vouch artifact upgrades follow ADR 0003's trust-root procedure. PR #8 merges with the fixed tool, keeping its history.
+
+## 2026-10-13 — Evidence recorded after a unit's first anchor was never anchored
+
+**Context**: Gate C for `operational-store@1` after PR #9 added refactor evidence #4–#6 for the approver's startup-refusal findings.
+
+**Evidence**:
+
+- CI on `main` after merging PR #9 pushed no anchor commit. Its anchor plan reported `changed=false`.
+- The store's operational-store head was refactor #6, but its anchor was still refactor #3, claimed by run 38297556382 after PR #5.
+- The generated anchor plan advances only evidence heads with no run claim. `check.evidence-anchors` reported PASS, because it requires only that a claimed anchor is in the chain, not that it reaches the head.
+- Vouch's own repository avoids this by running `advance-anchor` locally after every evidence record, a step its generated workflow and documentation never ask adopters to take.
+
+**Friction**: Unanchored evidence was reported as anchored, and the anchor job sat idle without failing, so nothing signalled the gap before Gate C.
+
+**Decision**: The Operator chose to anchor now and fix Vouch in parallel. A local `advance-anchor` on `main` (`f3a7c5f`) let CI run 38357179289 claim the anchor at refactor #6 (`fb28913`). The delivery flow now runs `advance-anchor` after every `record-evidence`. The upstream fix, in which the check reports a head ahead of its anchor and the workflow advances it, is `vouch_mk2-bd4.4.4`.
