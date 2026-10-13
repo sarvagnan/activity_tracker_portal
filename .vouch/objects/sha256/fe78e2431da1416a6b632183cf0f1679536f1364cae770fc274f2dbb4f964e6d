@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_read_snapshot_page_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"c92cbfdc485023517d5a866d628b0861a4f913e716adf7a91a7d504fb9327def","parent":"GENESIS","recorded_at":"2026-10-13T17:27:46+00:00","sequence":1,"unit":{"name":"read-snapshot-page","version":"1"}}
