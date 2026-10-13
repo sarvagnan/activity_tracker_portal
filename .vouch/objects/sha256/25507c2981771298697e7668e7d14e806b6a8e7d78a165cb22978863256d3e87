@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"DeviationOpened","pack_digest":"","payload":{"deviation_id":"DEV-psr-01","deviation_type":"pack-defect","unit":{"name":"project-source-record","version":"1"}},"prev":"541806e85416405e79609800bfe0ae8451539d81123a3b2b6594e073a95c9df7","recorded_at":"2026-10-13T11:11:16+00:00","revision":41,"run_id":""}

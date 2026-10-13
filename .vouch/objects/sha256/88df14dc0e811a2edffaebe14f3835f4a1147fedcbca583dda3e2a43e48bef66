@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"UnitRespecified","pack_digest":"","payload":{"gate":{"checks":[{"obligation_id":"gate.unblock.no-blocking-deviations","verdict":"pass"}],"transition":"invalidated->specified"},"name":"project-source-record"},"prev":"65c7c1f00279f7b68c53d17fc847717c6f39e22c9884ce00a33cea95bbdae53d","recorded_at":"2026-10-13T11:11:17+00:00","revision":46,"run_id":""}

@@ -580,7 +580,15 @@ def canonical_bytes(value) -> bytes:
 
 # --- JSON Schema -----------------------------------------------------------
 
-INSTANT_PATTERN = r"^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+# Instants are real proleptic Gregorian dates, as java.time.Instant prints them:
+# each month keeps its length, and February 29 exists only in years divisible
+# by 4 but not by 100, or by 400 (so 0000 and 2000, not 1900 or 2100).
+COMMON_DATE = r"[0-9]{4}-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)"
+LEAP_DAY = r"([0-9]{2}(0[48]|[2468][048]|[13579][26])|([02468][048]|[13579][26])00)-02-29"
+INSTANT_PATTERN = (
+    rf"^({COMMON_DATE}|{LEAP_DAY})"
+    r"T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.([0-9]{3}|[0-9]{6}|[0-9]{9}))?Z$"
+)
 OFFSET_PATTERN = r"^[+-](0[0-9]|1[0-7]):[0-5][0-9]$|^[+-]18:00$"
 DECIMAL_PATTERN = r"^(0|-?[1-9][0-9]*)$"
 
@@ -1002,6 +1010,12 @@ def positives() -> list[dict]:
     other = {"implementation_version": "9.9.9-other", "provider_version": "other-provider-7"}
     record = times("weight", True) | record_body("weight", True)
     vectors.append(positive("weight-other-context", "weight", envelope("weight", serial, record, metadata(serial, True), other), ["context"], other))
+
+    serial += 1
+    record = times("steps", True) | record_body("steps", True)
+    record |= {"start_time": "2000-02-29T23:45:00Z", "end_time": "2000-03-01T00:15:00Z"}
+    meta = metadata(serial, True) | {"last_modified_time": "2028-02-29T07:30:00Z"}
+    vectors.append(positive("steps-leap-days", "steps", envelope("steps", serial, record, meta), ["calendar", "precision"]))
     return vectors
 
 
@@ -1062,6 +1076,10 @@ def schema_negatives(vectors: list[dict]) -> list[dict]:
     add("unknown-variant-kind", "exercise-session-maximal", lambda p: p["record"].__setitem__("exercise_route_result", {"kind": "partial"}))
     add("variant-extra-field", "exercise-session-route-no-data", lambda p: p["record"]["exercise_route_result"].__setitem__("route", []))
     add("integer-as-string", "steps-maximal", lambda p: p["record"].__setitem__("count", "4321"))
+    add("instant-february-30", "weight-maximal", lambda p: p["record"].__setitem__("time", "2026-02-30T07:30:00Z"))
+    add("instant-april-31", "steps-maximal", lambda p: p["record"].__setitem__("end_time", "2026-04-31T07:30:00Z"))
+    add("instant-non-leap-february-29", "weight-maximal", lambda p: p["metadata"].__setitem__("last_modified_time", "2025-02-29T09:00:00Z"))
+    add("instant-century-february-29", "heart-rate-maximal", lambda p: p["record"]["samples"][0].__setitem__("time", "1900-02-29T07:35:00Z"))
     return out
 
 
