@@ -38,11 +38,14 @@ Every unit follows the same eight steps. Claude implemented the worked example, 
    python3 vouch.lock mark-ready --root .vouch --name <scope>
    python3 vouch.lock start --root .vouch --name <scope>
    python3 vouch.lock record-evidence --root .vouch --unit <scope>@<version> --kind red -- tests/acceptance/<runner>
+   python3 vouch.lock advance-anchor --root .vouch --unit-name <scope>
    ```
 
-6. **Implement.** Delegate the frozen pack to the implementer with the pack, its Interface, and the rule that only unbound implementation files may change. Claude confirms `check.pack-files-match` still passes, records GREEN through the same runner, marks the unit done, and adds the runner to the project CI `test` job in the same branch. Before committing the implementation separately, `generate`, `check --ci --project . --pending-anchor-ok`, and `formal` must pass. The approver then reviews the implementation against the frozen pack; requested changes go back to the implementer as a new round.
+6. **Implement.** Delegate the frozen pack to the implementer with the pack, its Interface, and the rule that only unbound implementation files may change. Claude confirms `check.pack-files-match` still passes, records GREEN through the same runner and advances the anchor, marks the unit done, and adds the runner to the project CI `test` job in the same branch. Before committing the implementation separately, `generate`, `check --ci --project . --pending-anchor-ok`, and `formal` must pass. The approver then reviews the implementation against the frozen pack; requested changes go back to the implementer as a new round.
 7. **Merge (approver).** Push the branch and open a pull request. After CI passes and the approver approves the pull request, Claude merges it with a merge commit, never rebase-merge, so the frozen-baseline commit keeps its hash. CI on `main` advances the evidence anchor and pushes a `vouch: advance evidence anchors` commit.
 8. **Gate C: acceptance (approver).** Once the anchor commit has landed and CI on `main` passed, the approver accepts the unit. Pull the anchor commit, then `publish --actor approver:gpt-6-astra`, which also removes the strict-CI exception, `generate`, and `check --ci --project .`. Commit and push `Publish <scope>@<version>`, close the unit feature and its children, and push Beads with `bd dolt push`.
+
+Every `record-evidence`, including refactor evidence recorded for review fixes, is followed by `python3 vouch.lock advance-anchor --root .vouch --unit-name <scope>` before `generate`. The local advance moves the anchor to the new head without a run claim, so the next CI run on `main` claims it. The pinned Vouch's anchor plan advances only heads without a run claim, and `check.evidence-anchors` passes a claimed anchor that lags the head, so skipping this step leaves later evidence unanchored without any failing check (vouch_mk2-bd4.4.4).
 
 A mismatch discovered after freeze becomes an `open-deviation` for the Operator, never an edit to a bound file. Enabling tasks skip the Vouch steps but follow the same implement, approver review, and merge sequence.
 
