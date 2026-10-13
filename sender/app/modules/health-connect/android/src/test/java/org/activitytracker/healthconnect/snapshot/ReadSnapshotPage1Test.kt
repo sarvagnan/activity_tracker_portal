@@ -248,10 +248,15 @@ class ReadSnapshotPage1Test {
 
     @Test
     fun records_beyond_the_page_are_not_projected() {
-        val bad = steps("bad", T0 + minutes(1000), clientRecordId = "\uD800")
-        val hc = connect(*distinctSteps(1000).toTypedArray(), bad)
-        val first = read(hc).page()
-        assertEquals((0 until 1000).map(::id), first.ids())
+        val good = (1..1000).map { steps(id(it), T0 + minutes(it)) }
+        val bad = steps("bad", T0 + minutes(1001), clientRecordId = "\uD800")
+        val hc = connect(*good.toTypedArray(), bad)
+        val answered = mutableListOf<List<String>>()
+        hc.respond = { _, records, token -> answered += records.map { it.metadata.id }; records to token }
+        // The position's boundary record was deleted, so the enlarged read reaches one record past the page.
+        val first = read(hc, boundaryPosition(T0, listOf("deleted"))).page()
+        assertTrue("the response holds the record beyond the page", "bad" in answered.single())
+        assertEquals(good.map { it.metadata.id }, first.ids())
         assertFalse(first.exhausted)
         assertEquals(ProjectionRefused(refused(bad)), read(hc, first.nextPosition))
     }
