@@ -1,0 +1,127 @@
+{
+  "contract_schema": 1,
+  "scope": "read-change-page",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Read one Health Connect page of one record type's Change Cycle from a held changes token, with its upserted records projected through project-source-record, as ordered Source Retractions and Source Projections with a tentative next token, the instant that keeps the token's continuity provable, and whether more pages remain; or an expired token, a page-level projection refusal, a missing permission, or a read failure, none of which advances the token. The reader claims no durable progress.",
+  "inputs": [
+    {
+      "name": "record_type",
+      "mode": "pure",
+      "description": "One record type name from project-source-record's PROJECTION_SCHEMA_VERSIONS, such as steps."
+    },
+    {
+      "name": "change_cycle_identity",
+      "mode": "pure",
+      "description": "The lowercase UUID of the Change Cycle the page belongs to, used as the Wire Protocol cycle_id."
+    },
+    {
+      "name": "changes_token",
+      "mode": "pure",
+      "description": "The record type's changes token: the pre-read token issued when its Initial or Reconciliation Snapshot began, or the next token a previous change page returned."
+    },
+    {
+      "name": "unread_since",
+      "mode": "pure",
+      "description": "An instant no later than the logging of any change the token has not yet returned: the time read before the pre-read token was requested, or the next unread-since instant a previous change page returned."
+    },
+    {
+      "name": "projection_context",
+      "mode": "pure",
+      "description": "The project-source-record ProjectionContext for the Polling Run: the projection-implementation version and the Health Connect provider version, supplied by the caller."
+    },
+    {
+      "name": "current_time",
+      "mode": "volatile",
+      "description": "The time read once from the supplied clock before any Health Connect call."
+    },
+    {
+      "name": "permission_state",
+      "mode": "volatile",
+      "description": "The Health Connect permissions granted to the Sender, read through the access seam immediately before and immediately after the change read."
+    },
+    {
+      "name": "health_connect_changes",
+      "mode": "volatile",
+      "description": "The upsertions, deletions, next token, and continuation flag that Health Connect returns for the token, covering every data origin."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "change_page",
+      "description": "The record type, Change Cycle identity, and projection-schema version; the page's items in order, every Source Retraction identity before every Source Projection's exact bytes; the tentative next token and its unread-since instant; and whether Health Connect reports more pages."
+    },
+    {
+      "name": "token_expired",
+      "description": "A named reason the token can no longer prove continuity with the change stream, so the caller abandons the attempt or begins a Reconciliation Snapshot."
+    },
+    {
+      "name": "page_projection_refusal",
+      "description": "The first project-source-record refusal on the page, carrying only its failure name, record type, and JSON path, so the caller can block the type with reason projection-refusal at the unchanged token."
+    },
+    {
+      "name": "not_permitted",
+      "description": "Which required permission was missing, read or history, or that Health Connect denied the read, with no page and no token change."
+    },
+    {
+      "name": "read_failure",
+      "description": "One named read failure with no exception text, page, or token change, which the caller reports as failed with reason read-failed and retries on a later run."
+    }
+  ],
+  "named_failures": [
+    { "name": "changes-token-expired", "outcome": "token-expired" },
+    { "name": "changes-token-too-old", "outcome": "token-expired" },
+    { "name": "clock-behind-changes-token", "outcome": "token-expired" },
+    { "name": "page-projection-refused", "outcome": "projection-refusal" },
+    { "name": "read-permission-missing", "outcome": "not-permitted" },
+    { "name": "history-permission-missing", "outcome": "not-permitted" },
+    { "name": "read-denied", "outcome": "not-permitted" },
+    { "name": "health-connect-unavailable", "outcome": "read-failure" },
+    { "name": "health-connect-io-failure", "outcome": "read-failure" },
+    { "name": "health-connect-request-rejected", "outcome": "read-failure" },
+    { "name": "unexpected-read-failure", "outcome": "read-failure" },
+    { "name": "source-contract-violation", "outcome": "read-failure" }
+  ],
+  "observable_effects": [
+    {
+      "name": "health-connect-read",
+      "description": "Reads granted permissions twice and one change page once from Health Connect; never writes, updates, or deletes Health Connect data, never requests a changes token, and never requests a permission or route consent."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the Health Connect change read for one page and the validation of its response",
+      "the changes-token age limit and the unread-since instant that keeps a token's continuity provable when Health Connect deletes old change logs without expiring the token",
+      "the order of a page's items: every Source Retraction before every Source Projection, each in Health Connect's order, with one retraction per identity",
+      "page completeness: every upserted record is projected, or the whole page is refused",
+      "the full-history and read permission requirements for a change page read",
+      "classification of Health Connect read errors and expiry into the named failures"
+    ],
+    "does_not_own": [
+      "issuing changes tokens and recording the instant read before each request, which belong to begin-initial-snapshot and begin-reconciliation-snapshot",
+      "Change Cycle identity issuance, scheduling, retry, Projection Refusal identity and blocking, permission-gap pauses, and the response to an expired token, which belong to coordinate-sender-sync, begin-initial-snapshot, and begin-reconciliation-snapshot",
+      "persisting tokens and unread-since instants, staging Outbox Messages, encryption, and fragmentation, which belong to stage-outbox-batch",
+      "Change Completion, which belongs to stage-sync-completion",
+      "snapshot pages and positions, which belong to read-snapshot-page",
+      "the projection of each record, which belongs to project-source-record",
+      "applying retractions and ordering source evidence at the Portal, which belong to reconcile-source-record",
+      "requesting permissions, background-read eligibility, and feature availability",
+      "exposing the reader to the TypeScript shell through the Expo module"
+    ]
+  },
+  "dependencies": [
+    { "scope": "project-source-record", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/read-change-page-1.spec.md",
+    "executable_tests": {
+      "kotlin": "sender/app/modules/health-connect/android/src/test/java/org/activitytracker/healthconnect/changes/ReadChangePage1Test.kt",
+      "python": "tests/acceptance/test_read_change_page_1.py"
+    },
+    "runner": "tests/acceptance/run_read_change_page_1.sh",
+    "languages": [
+      "kotlin",
+      "python"
+    ]
+  }
+}
