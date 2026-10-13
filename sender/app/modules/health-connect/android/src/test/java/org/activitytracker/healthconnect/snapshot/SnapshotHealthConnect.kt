@@ -12,7 +12,7 @@ import org.activitytracker.healthconnect.HealthConnectAccess
 /**
  * Synthetic Health Connect for snapshot reads, with no device, Context, or real data.
  *
- * It reproduces the platform read semantics read-snapshot-page@1 relies on, from AOSP
+ * It models the platform read semantics read-snapshot-page@1 relies on, from AOSP
  * HealthFitness (RecordHelper, TimeInstantRangeFilter, ReadRecordsRequestUsingFilters):
  * - records are ordered by start time, then by row; an update keeps its row;
  * - the range includes its start and excludes its end, and filters on start time;
@@ -22,7 +22,9 @@ import org.activitytracker.healthconnect.HealthConnectAccess
  * - without the history permission, records starting more than 30 days before the
  *   first grant are silently hidden.
  *
- * It rejects any page token, so a reader that relies on one fails.
+ * It rejects any page token, so a reader that relies on one fails. It assumes equal-time
+ * records keep insertion order and compares full Instant precision, where Health Connect
+ * stores milliseconds; physical-device qualification checks the real service.
  */
 class SnapshotHealthConnect : HealthConnectAccess {
     sealed interface Call {

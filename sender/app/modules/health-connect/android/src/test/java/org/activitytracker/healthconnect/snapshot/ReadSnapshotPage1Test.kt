@@ -45,6 +45,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -186,10 +187,20 @@ class ReadSnapshotPage1Test {
 
     @Test
     fun record_limit_grows_with_the_boundary_group() {
-        for ((identifiers, limit) in listOf(1 to 1001, 3 to 1003, 4000 to 5000, 4999 to 5000)) {
+        for ((identifiers, limit) in listOf(1 to 1001, 3 to 1003, 4000 to 5000, 4999 to 5000, 6000 to 5000)) {
             val hc = connect()
             read(hc, boundaryPosition(T0, (0 until identifiers).map(::id))).page()
             assertEquals("$identifiers identifiers", limit, hc.recordRequests.single().pageSize)
+        }
+    }
+
+    @Test
+    fun every_supported_type_reads_its_sdk_class() {
+        for (type in PROJECTION_SCHEMA_VERSIONS.keys) {
+            val sdkClass = sdkClassNamed(type)
+            val hc = connect(granted = fullAccess(sdkClass))
+            read(hc, type = type).page()
+            assertEquals(type, sdkClass, hc.recordRequests.single().recordType)
         }
     }
 
@@ -259,6 +270,19 @@ class ReadSnapshotPage1Test {
             """{"boundary_record_ids":["m"],"boundary_start":"2026-01-01T07:30:00.123Z","position_version":1,"record_type":"steps","snapshot_id":"$SNAPSHOT"}""",
             read(millis).page().nextPosition.decodeToString(),
         )
+        for ((nanos, text) in listOf(123_000L to "07:30:00.000123Z", 123_456_789L to "07:30:00.123456789Z")) {
+            assertEquals(
+                """{"boundary_record_ids":["p"],"boundary_start":"2026-01-01T$text","position_version":1,"record_type":"steps","snapshot_id":"$SNAPSHOT"}""",
+                read(connect(steps("p", T0.plusNanos(nanos)))).page().nextPosition.decodeToString(),
+            )
+        }
+        // UTF-8 byte order puts U+FF71 (EF BD B1) before U+1F600 (F0 9F 98 80); UTF-16 order would not.
+        val escaped = connect(steps("\uD83D\uDE00", T0), steps("q\"uote\\back", T0), steps("\uFF71", T0))
+        assertEquals(
+            "{\"boundary_record_ids\":[\"q\\\"uote\\\\back\",\"\uFF71\",\"\uD83D\uDE00\"],\"boundary_start\":\"2026-01-01T07:30:00Z\",\"position_version\":1,\"record_type\":\"steps\",\"snapshot_id\":\"$SNAPSHOT\"}",
+            read(escaped).page().nextPosition.decodeToString(),
+        )
+        assertEquals(listOf("\uD83D\uDE00", "q\"uote\\back", "\uFF71"), read(escaped).page().ids())
     }
 
     @Test
@@ -319,6 +343,11 @@ class ReadSnapshotPage1Test {
             """{"boundary_record_ids":["a"],"boundary_start":"2026-01-01T07:30:00.000Z",$tail""".encodeToByteArray(),
             """{"boundary_record_ids":["a"],"boundary_start":"2026-01-01T08:30:00+01:00",$tail""".encodeToByteArray(),
             """{"boundary_record_ids":["a"],"boundary_start":null,$tail""".encodeToByteArray(),
+            """{"position_version":1,"position_version":1,"record_type":"steps","snapshot_id":"$SNAPSHOT"}""".encodeToByteArray(),
+            "{\"boundary_record_ids\":[\"\\ud800\"],\"boundary_start\":\"2026-01-01T07:30:00Z\",$tail".encodeToByteArray(),
+            "{\"boundary_record_ids\":[\"\\u0061\"],\"boundary_start\":\"2026-01-01T07:30:00Z\",$tail".encodeToByteArray(),
+            """{"boundary_record_ids":["a"],"boundary_start":"+10000-01-01T00:00:00Z",$tail""".encodeToByteArray(),
+            """{"boundary_record_ids":["a"],"boundary_start":"-0001-01-01T00:00:00Z",$tail""".encodeToByteArray(),
         )
         for (position in malformed) {
             val hc = connect(steps("a", T0))
@@ -397,9 +426,9 @@ class ReadSnapshotPage1Test {
 
     @Test
     fun unchanged_records_appear_exactly_once_under_concurrent_change() {
-        for (seed in 1..8) {
+        for ((seed, group) in (1..8).map { it to 3 } + (9..12).map { it to 1200 }) {
             val random = Random(seed)
-            val initial = (0 until 3200).map { steps(id(it), T0 + minutes(it / 3), origin = if (it % 2 == 0) ALPHA else BETA) }
+            val initial = (0 until 3200).map { steps(id(it), T0 + minutes(it / group), origin = if (it % 2 == 0) ALPHA else BETA) }
             val hc = connect(*initial.toTypedArray())
             val live = initial.associateBy { it.metadata.id }.toMutableMap()
             val changed = mutableSetOf<String>()
@@ -475,11 +504,26 @@ class ReadSnapshotPage1Test {
     }
 
     @Test
-    fun an_unreadable_boundary_group_fails_without_reading() {
-        val hc = connect(steps("a", T0))
-        val position = boundaryPosition(T0, (0 until HEALTH_CONNECT_READ_LIMIT).map(::id))
-        assertEquals(ReadFailed("boundary-group-too-large"), read(hc, position))
-        assertTrue(hc.calls.isEmpty())
+    fun a_boundary_group_of_exactly_the_read_limit_exhausts() {
+        val hc = connect(*(0 until HEALTH_CONNECT_READ_LIMIT).map { steps(id(it), T0) }.toTypedArray())
+        val pages = traverse(hc)
+        assertEquals(List(5) { 1000 }, pages.map { it.projections.size })
+        assertTrue(pages.last().exhausted)
+        val again = read(hc, pages.last().nextPosition).page()
+        assertTrue(again.projections.isEmpty())
+        assertTrue(again.exhausted)
+        assertArrayEquals(pages.last().nextPosition, again.nextPosition)
+    }
+
+    @Test
+    fun a_boundary_group_beyond_the_read_limit_fails() {
+        for (more in listOf(steps(id(HEALTH_CONNECT_READ_LIMIT), T0), steps("later", T0 + minutes(1)))) {
+            val hc = connect(*(0 until HEALTH_CONNECT_READ_LIMIT).map { steps(id(it), T0) }.toTypedArray(), more)
+            var position: ByteArray? = null
+            repeat(5) { position = read(hc, position).page().also { assertFalse(it.exhausted) }.nextPosition }
+            assertEquals(ReadFailed("boundary-group-too-large"), read(hc, position))
+            assertEquals(HEALTH_CONNECT_READ_LIMIT, hc.recordRequests.last().pageSize)
+        }
     }
 
     // R10 — Response validation
@@ -519,6 +563,17 @@ class ReadSnapshotPage1Test {
         assertEquals(ReadFailed("source-order-violation"), read(hc))
     }
 
+    @Test
+    fun violations_anywhere_in_the_response_count() {
+        val later = (0 until 1003).map { steps("s-%05d".format(it), T0 + minutes(1 + it)) }
+        val beyond = connect(*later.toTypedArray())
+        beyond.respond = { _, records, token -> (records.dropLast(2) + records.takeLast(2).reversed()) to token }
+        assertEquals(ReadFailed("source-order-violation"), read(beyond, boundaryPosition(T0, listOf("x-1", "x-2", "x-3"))))
+        val excluded = connect(steps("e-1", T0), steps("e-2", T0), *later.toTypedArray())
+        excluded.respond = { _, records, token -> (listOf(records[0], records[0]) + records.drop(2)) to token }
+        assertEquals(ReadFailed("source-order-violation"), read(excluded, boundaryPosition(T0, listOf("e-1", "e-2"))))
+    }
+
     // R11 — Failure classification
 
     @Test
@@ -540,15 +595,25 @@ class ReadSnapshotPage1Test {
             val fromPermissions = connect(steps("a", T0)).apply { permissionFailure = exception() }
             assertEquals("permissions: ${exception()::class.simpleName}", expected, read(fromPermissions))
             assertTrue(fromPermissions.recordRequests.isEmpty())
+            val secondCheck = connect(steps("a", T0)).apply { afterRead = { permissionFailure = exception() } }
+            assertEquals("permissions after the read: ${exception()::class.simpleName}", expected, read(secondCheck))
         }
     }
 
     @Test
     fun cancellation_propagates() {
         val cancelled = CancellationException(SENTINEL)
-        assertThrows(CancellationException::class.java) { read(connect(steps("a", T0)).apply { recordFailure = cancelled }) }
-        assertThrows(CancellationException::class.java) { read(connect(steps("a", T0)).apply { permissionFailure = cancelled }) }
-        assertThrows(SyntheticError::class.java) { read(connect(steps("a", T0)).apply { recordFailure = SyntheticError() }) }
+        val sites = listOf<(SnapshotHealthConnect) -> Unit>(
+            { it.recordFailure = cancelled },
+            { it.permissionFailure = cancelled },
+            { hc -> hc.afterRead = { hc.permissionFailure = cancelled } },
+        )
+        for (site in sites) {
+            val thrown = assertThrows(CancellationException::class.java) { read(connect(steps("a", T0)).also(site)) }
+            assertSame(cancelled, thrown)
+        }
+        val error = SyntheticError()
+        assertSame(error, assertThrows(SyntheticError::class.java) { read(connect(steps("a", T0)).apply { recordFailure = error }) })
     }
 
     // R12 — Health-data-free outcomes
@@ -585,7 +650,7 @@ class ReadSnapshotPage1Test {
             read(connect(steps("a", T0)).apply { recordFailure = IllegalArgumentException() }),
             read(connect(steps("a", T0)).apply { recordFailure = UnsupportedOperationException() }),
             read(connect(steps("a", T0), steps("b", T0 + minutes(1))).apply { respond = { _, records, token -> records.reversed() to token } }),
-            read(connect(), boundaryPosition(T0, (0 until HEALTH_CONNECT_READ_LIMIT).map(::id))),
+            read(connect(*(0..HEALTH_CONNECT_READ_LIMIT).map { steps(id(it), T0) }.toTypedArray()), boundaryPosition(T0, (0 until HEALTH_CONNECT_READ_LIMIT).map(::id))),
             read(connect(), "{}".encodeToByteArray()),
             read(connect(), startPosition(snapshot = OTHER_SNAPSHOT)),
         ).map(::classify).toSet()
@@ -594,6 +659,34 @@ class ReadSnapshotPage1Test {
             .map { it.jsonObject["outcome"]!!.jsonPrimitive.content to it.jsonObject["name"]!!.jsonPrimitive.content }
             .toSet()
         assertEquals(named, observed)
+    }
+
+    // R13 — Order of checks
+
+    @Test
+    fun failures_follow_the_documented_order() {
+        val none = emptySet<String>()
+        val malformedAndForeign = """{"position_version":1,"record_type":"weight","snapshot_id":"$OTHER_SNAPSHOT"} """.encodeToByteArray()
+        connect(steps("a", T0), granted = none).let { hc ->
+            assertEquals(InvalidPosition("malformed-position"), read(hc, malformedAndForeign))
+            assertTrue(hc.calls.isEmpty())
+        }
+        connect(steps("a", T0), granted = none).let { hc ->
+            assertEquals(InvalidPosition("foreign-position"), read(hc, startPosition(type = "weight")))
+            assertTrue(hc.calls.isEmpty())
+        }
+        val missingBeforeFailingRead = connect(steps("a", T0), granted = none).apply { recordFailure = IOException() }
+        assertEquals(NotPermitted("read-permission-missing"), read(missingBeforeFailingRead))
+        val lostWithBrokenResponse = connect(steps("a", T0), steps("b", T0 + minutes(1)))
+        lostWithBrokenResponse.respond = { _, records, token -> records.reversed() to token }
+        lostWithBrokenResponse.afterRead = { lostWithBrokenResponse.granted = lostWithBrokenResponse.granted - HISTORY }
+        assertEquals(NotPermitted("history-permission-missing"), read(lostWithBrokenResponse))
+        val lostWithRefusal = connect(steps("bad", T0, clientRecordId = "\uD800"))
+        lostWithRefusal.afterRead = { lostWithRefusal.granted = none }
+        assertEquals(NotPermitted("read-permission-missing"), read(lostWithRefusal))
+        val brokenWithRefusal = connect(steps("bad", T0, clientRecordId = "\uD800"), steps("b", T0 + minutes(1)))
+        brokenWithRefusal.respond = { _, records, token -> records.reversed() to token }
+        assertEquals(ReadFailed("source-order-violation"), read(brokenWithRefusal))
     }
 
     // Helpers
@@ -714,8 +807,33 @@ private val UTF8_ORDER = Comparator<String> { a, b ->
 private fun startPosition(type: String = "steps", snapshot: String = SNAPSHOT) =
     """{"position_version":1,"record_type":"$type","snapshot_id":"$snapshot"}""".encodeToByteArray()
 
+/** A JSON string as RFC 8785 (ECMAScript JSON.stringify) writes it. */
+private fun jsonString(value: String): String = buildString {
+    append('"')
+    for (char in value) {
+        when (char) {
+            '"' -> append("\\\"")
+            '\\' -> append("\\\\")
+            '\b' -> append("\\b")
+            '\u000C' -> append("\\f")
+            '\n' -> append("\\n")
+            '\r' -> append("\\r")
+            '\t' -> append("\\t")
+            else -> if (char < ' ') append("\\u%04x".format(char.code)) else append(char)
+        }
+    }
+    append('"')
+}
+
+/** Record type names are SDK class names without `Record`, in kebab case (project-source-record@1). */
+private fun sdkClassNamed(type: String): KClass<out Record> {
+    val name = type.split("-").joinToString("") { part -> part.replaceFirstChar(Char::uppercaseChar) } + "Record"
+    @Suppress("UNCHECKED_CAST")
+    return Class.forName("androidx.health.connect.client.records.$name").kotlin as KClass<out Record>
+}
+
 private fun boundaryPosition(start: Instant, ids: Collection<String>, type: String = "steps", snapshot: String = SNAPSHOT): ByteArray {
-    val sorted = ids.sortedWith(UTF8_ORDER).joinToString(",") { "\"$it\"" }
+    val sorted = ids.sortedWith(UTF8_ORDER).joinToString(",", transform = ::jsonString)
     return """{"boundary_record_ids":[$sorted],"boundary_start":"$start","position_version":1,"record_type":"$type","snapshot_id":"$snapshot"}"""
         .encodeToByteArray()
 }
