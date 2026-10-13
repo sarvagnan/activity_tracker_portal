@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"OpenInCiMarked","pack_digest":"","payload":{"name":"project-source-record@1","reason":"Frozen project-source-record@1 (pack/2, DEV-psr-01) awaits approver acceptance after the CI anchor advances on main."},"prev":"6560d64c27308c0c1e20f55158849e6604812f264dfaa7ed0384f432d4511f4b","recorded_at":"2026-10-13T11:21:35+00:00","revision":48,"run_id":""}
