@@ -1,0 +1,36 @@
+apply plugin: 'com.android.library'
+apply plugin: 'expo-module-gradle-plugin'
+
+group = 'org.activitytracker.installationkey'
+version = '0.1.0'
+
+android {
+  namespace 'org.activitytracker.installationkey'
+  defaultConfig {
+    versionCode 1
+    versionName project.version.toString()
+    minSdkVersion 34
+  }
+  testOptions {
+    unitTests.all {
+      testLogging { events 'passed', 'skipped', 'failed' }
+      afterSuite { descriptor, result ->
+        if (descriptor.parent == null) {
+          println "Installation key seam: ${result.testCount} tests, ${result.failedTestCount} failures, ${result.skippedTestCount} skipped"
+        }
+      }
+    }
+  }
+}
+
+kotlin {
+  jvmToolchain {
+    languageVersion = JavaLanguageVersion.of(17)
+    vendor = JvmVendorSpec.ADOPTIUM
+  }
+}
+
+dependencies {
+  testImplementation 'junit:junit:4.13.2'
+  testImplementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1'
+}
