@@ -15,7 +15,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"%(prog)s {version('activity-tracker-portal')}")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("runtime", help="Report and check the Python and SQLite runtime")
-    parser.parse_args(argv)
+    serve = commands.add_parser("serve", help="Run the single-process Portal ingress")
+    serve.add_argument("--config", required=True, help="Path to the Portal JSON configuration")
+    args = parser.parse_args(argv)
+
+    if args.command == "serve":
+        import uvicorn
+
+        from activity_tracker_portal.ingress import PortalSettings, create_app
+
+        try:
+            settings = PortalSettings.from_file(args.config)
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 1
+        uvicorn.run(create_app(settings), host=settings.host, port=settings.port, workers=1)
+        return 0
 
     print(f"Python {sys.version.split()[0]}")
     print(f"SQLite {sqlite3.sqlite_version}")
