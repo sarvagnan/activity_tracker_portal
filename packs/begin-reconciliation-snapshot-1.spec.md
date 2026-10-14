@@ -81,7 +81,7 @@ The request must satisfy three conditions, or it is refused with nothing written
 - **`superseding` names the current attempt.** It must name the record type's current attempt. Otherwise the result is `attempt-mismatch`, including when the type has no current attempt.
 - **Same installation.** The current attempt must belong to the request's Sender Installation. Otherwise the result is `installation-mismatch`.
 - **An established page chain.** The current attempt must be one of these:
-  - an attempt whose snapshot page chain `stage-outbox-batch@1` reports as finished;
+  - an Initial attempt whose own snapshot page chain `stage-outbox-batch@1` reports as finished. The progress must be a finished `initial-snapshot` cycle with the attempt's identity, record type, and installation. Any other progress found under that identity does not count, such as an unrelated cycle whose identity the attempt reuses;
   - an unfinished Reconciliation Snapshot, which is a reread restarted before it finished. That holds whether or not any of its pages were staged.
 
   An unfinished Initial Snapshot is `baseline-unfinished`. For that case, `coordinate-sender-sync` restarts the Initial Snapshot through `begin-initial-snapshot` instead.
@@ -90,6 +90,7 @@ Tests:
 - `a_reconciliation_must_name_the_current_attempt`
 - `another_installation_is_refused`
 - `an_unfinished_initial_snapshot_is_refused`
+- `only_the_attempts_own_finished_chain_counts`
 - `a_finished_initial_or_reconciliation_may_be_reconciled`
 - `an_unfinished_reconciliation_may_be_restarted`
 - `refusals_request_no_token`
@@ -113,7 +114,9 @@ Tests: `a_bad_uuid_source_is_a_caller_error`.
 
 Inside the commit transaction, R3's checks run again before `now()` is read, so a refused recheck reads no clock. Then the attempt is committed through `commitSnapshotAttempt`.
 
-If the current attempt changed meanwhile, for example because another reconciliation or an Initial restart landed, the result is that check's refusal. The issued token is discarded, and nothing is written.
+If the current attempt changed meanwhile, the result is that check's refusal. Examples:
+- another reconciliation or an Initial restart landed;
+- the same attempt's installation or finished progress changed underneath it. The issued token is discarded, and nothing is written.
 
 Tests: `the_commit_rechecks_the_preconditions`.
 
@@ -139,7 +142,7 @@ Tests: `staging_follows_the_reconciliation`.
 
 **Caller errors.** Malformed requests throw `TypeError` before any database or issuer call.
 
-**Health-data-free outcomes.** Every non-`begun` result carries only a named failure. Every named failure is reachable, and no other failure is produced.
+**Health-data-free outcomes.** Every non-`begun` result carries only a named failure. Issuer failures are rebuilt, so extra fields on them never reach the result. Every named failure is reachable, and no other failure is produced.
 
 **Order of checks.** The first applicable check wins:
 1. caller errors;
@@ -148,7 +151,11 @@ Tests: `staging_follows_the_reconciliation`.
 4. the UUID source;
 5. the commit, with its recheck and storage failure.
 
-Tests: `malformed_requests_are_caller_errors`, `non_begun_results_carry_only_named_failures`, `every_named_failure_is_reachable_and_in_the_contract`, `checks_follow_the_documented_order`.
+**Writes only through the primitive.** The module issues no SQL write of its own. A static check confirms that it calls `commitSnapshotAttempt` and contains no `execute` call or write statement.
+
+**Record types.** The caller selects a supported record type. This unit checks only the Wire Protocol record-type pattern, as `begin-initial-snapshot` does.
+
+Tests: `malformed_requests_are_caller_errors`, `non_begun_results_carry_only_named_failures`, `every_named_failure_is_reachable_and_in_the_contract`, `checks_follow_the_documented_order`, `the_module_writes_only_through_the_primitive`.
 
 ## Decisions for the Operator
 
@@ -177,23 +184,33 @@ Not mechanically provable here: the production UUID source is a cryptographicall
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the TypeScript suite, 22 tests;
+- the TypeScript suite, 24 tests;
 - the Python contract suite, 2 tests;
 - the self-verifying runner;
 - the Interface stub `sender/app/src/snapshot/begin-reconciliation-snapshot.ts`.
 
 The suite drives the published `begin-initial-snapshot@2` and `stage-outbox-batch@1` with the production migration list, which has Sender schema version 2. Its issuer is scripted, and it records issuer calls and UUID and clock reads.
 
-**Reference check.** A throwaway reference implementation passed all 22 tests and typechecked. Six mutants of it each failed at least one test:
+**Implementability review.** The implementer's read-only review found one blocking ambiguity. `cycleProgress` looks up a cycle by identity alone, so an Initial attempt reusing an unrelated finished cycle's identity looked finished. R3 now requires the attempt's own `initial-snapshot` progress, with a new test. Its non-blocking findings are added too:
+- issuer failures with extra fields;
+- rechecks of installation and progress that keep the attempt's identity;
+- the static primitive-only check;
+- the record-type wording.
+
+**Reference check.** A throwaway reference implementation passed all 24 tests and typechecked. Nine mutants of it each failed at least one test:
 - allowing an unfinished Initial Snapshot;
 - requiring a finished chain for reconciliations too;
 - skipping the installation check;
 - skipping the in-transaction recheck;
 - reading the clock before the recheck;
-- requesting the token before the pre-checks.
+- requesting the token before the pre-checks;
+- accepting any finished progress found under the attempt's identity;
+- rechecking only the attempt's identity in the transaction;
+- passing the issuer's failure object through unchanged.
 
 **Against the stub:**
-- every TypeScript test fails, because the stub throws;
+- 23 TypeScript tests fail, because the stub throws;
+- `the_module_writes_only_through_the_primitive` also fails, because the stub never calls the primitive;
 - the two Python tests pass, because they check the contract.
 
 **The binding:**

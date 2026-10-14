@@ -259,6 +259,29 @@ test("an_unfinished_initial_snapshot_is_refused", async (t) => {
   begun(await reconcile(f.database, request(uuid(0xa1)), new ScriptedIssuer(), options(uuid(0xa2))));
 });
 
+test("only_the_attempts_own_finished_chain_counts", async (t) => {
+  const f = await fixture(t);
+  const steps = await finishedInitial(f, uuid(0xa1));
+  const context: StagingContext = { installationId: INSTALLATION, keyAlias: KEY_ALIAS, generation: { generation: 1, maxRecordCount: 100, maxMessageBytes: 65_536, projectionSchemas: { steps: [1] } } };
+  // A finished Change Cycle under the steps baseline, whose identity a later Initial attempt then reuses.
+  assert.equal((await stageOutboxBatch(f.database, f.cipher, context, {
+    source: "change", recordType: "steps", cycleId: uuid(0xc1), projectionSchemaVersion: 1, pageIndex: 1,
+    readFrom: steps.changesToken, items: [], nextChangesToken: "synthetic-next", nextUnreadSinceMs: 1, hasMore: false,
+  })).outcome, "staged");
+  assert.equal((await stageOutboxBatch(f.database, f.cipher, context, {
+    source: "change", recordType: "steps", cycleId: uuid(0xc2), projectionSchemaVersion: 1, pageIndex: 1,
+    readFrom: "synthetic-next", items: [], nextChangesToken: "synthetic-next-2", nextUnreadSinceMs: 2, hasMore: false,
+  })).outcome, "staged");
+  // Another record type, and another installation, reuse those cycle identities for unstaged Initial attempts.
+  await initial(f.database, uuid(0xc1), { recordType: "weight" });
+  await initial(f.database, uuid(0xc2), { recordType: "heart-rate", installationId: OTHER_INSTALLATION });
+  for (const [id, recordType, installationId] of [[uuid(0xc1), "weight", INSTALLATION], [uuid(0xc2), "heart-rate", OTHER_INSTALLATION]] as const) {
+    assert.equal((await cycleProgress(f.database, id))?.finished, true, "the published lookup finds the unrelated cycle");
+    assert.deepEqual(await reconcile(f.database, request(id, { recordType, installationId })), { outcome: "refused", failure: "baseline-unfinished" }, recordType);
+    assert.equal((await currentSnapshotAttempt(f.database, recordType))?.abandonedAtMs, null);
+  }
+});
+
 test("a_finished_initial_or_reconciliation_may_be_reconciled", async (t) => {
   const f = await fixture(t);
   await finishedInitial(f, uuid(0xa1));
@@ -383,6 +406,20 @@ test("the_commit_rechecks_the_preconditions", async (t) => {
   assert.deepEqual(await reconcile(f.database, request(uuid(0xa2)), restarting, options(uuid(0xa5))), { outcome: "refused", failure: "attempt-mismatch" });
   assert.equal((await currentSnapshotAttempt(f.database, "steps"))?.snapshotId, uuid(0xa4));
   assert.equal(await snapshotAttempt(f.database, uuid(0xa5)), null);
+  // The same attempt stays current while its installation, or its finished progress, changes underneath.
+  for (const [recordType, n, change, failure] of [
+    ["weight", 0xb1, "UPDATE cycle_progress SET finished = 0 WHERE cycle_id = ?", "baseline-unfinished"],
+    ["heart-rate", 0xd1, "UPDATE snapshot_attempts SET installation_id = '00000000-0000-4000-8000-000000000002' WHERE snapshot_id = ?", "installation-mismatch"],
+  ] as const) {
+    const attempt = await finishedInitial(f, uuid(n), { recordType });
+    const shifting = new ScriptedIssuer([], async () => { await f.database.execute(change, [attempt.snapshotId]); });
+    const clock = options(uuid(n + 8));
+    assert.deepEqual(await reconcile(f.database, request(uuid(n), { recordType }), shifting, clock), { outcome: "refused", failure }, change);
+    assert.deepEqual(shifting.calls, [recordType], "the change landed while the token was being requested");
+    assert.equal(clock.nowCalls, 0);
+    assert.equal(await snapshotAttempt(f.database, uuid(n + 8)), null);
+    assert.equal((await currentSnapshotAttempt(f.database, recordType))?.abandonedAtMs, null);
+  }
 });
 
 // R7 — Nothing begun on failure
@@ -474,6 +511,8 @@ test("non_begun_results_carry_only_named_failures", async (t) => {
     await reconcile(f.database, request(uuid(0xa1)), new ScriptedIssuer([new Error(`${SENTINEL} bridge failure`)])),
     await reconcile(f.database, request(uuid(0xa1)), new ScriptedIssuer([{ outcome: "issued", changesToken: "", unreadSinceMs: UNREAD_SINCE }])),
     await reconcile(failing(f.database, { mutation: 1 }), request(uuid(0xa1)), new ScriptedIssuer([{ outcome: "issued", changesToken: `${SENTINEL}-token`, unreadSinceMs: UNREAD_SINCE }])),
+    await reconcile(f.database, request(uuid(0xa1)), new ScriptedIssuer([{ outcome: "not-permitted", failure: "read-denied", token: `${SENTINEL}-token`, value: SENTINEL }])),
+    await reconcile(f.database, request(uuid(0xa1)), new ScriptedIssuer([{ outcome: "read-failed", failure: "health-connect-unavailable", message: `${SENTINEL} exception`, changesToken: SENTINEL }])),
   ];
   for (const result of results) {
     assert.notEqual(result.outcome, "begun");
@@ -527,4 +566,12 @@ test("checks_follow_the_documented_order", async (t) => {
   // The UUID source before the commit, and the commit last.
   await assert.rejects(reconcile(failing(f.database, { mutation: 1 }), request(uuid(0xb1), { recordType: "weight" }), new ScriptedIssuer(), options("not-a-uuid")), TypeError);
   assert.deepEqual(await reconcile(failing(f.database, { mutation: 1 }), request(uuid(0xb1), { recordType: "weight" })), { outcome: "storage-failed", failure: "storage-failed" });
+});
+
+test("the_module_writes_only_through_the_primitive", () => {
+  // Decision 2: the attempt tables belong to begin-initial-snapshot, so this module issues no SQL write.
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../src/snapshot/begin-reconciliation-snapshot.ts"), "utf8");
+  assert.doesNotMatch(source, /\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER)\b/i);
+  assert.match(source, /\bcommitSnapshotAttempt\s*\(/);
+  assert.doesNotMatch(source, /\.execute\s*\(/);
 });

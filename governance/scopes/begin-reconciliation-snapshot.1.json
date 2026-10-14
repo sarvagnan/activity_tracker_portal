@@ -5,7 +5,7 @@
   "kind": "leaf",
   "purpose": "Start a race-closed full reread of one record type after its established baseline loses change-token continuity: request a fresh pre-read changes token, then durably commit it with a new Reconciliation Snapshot identity through begin-initial-snapshot@2's primitive, superseding and retaining the attempt the caller names, before any page is read, or begin nothing.",
   "inputs": [
-    { "name": "record_type", "mode": "pure", "description": "One record type name from project-source-record's PROJECTION_SCHEMA_VERSIONS." },
+    { "name": "record_type", "mode": "pure", "description": "One record type name from project-source-record's PROJECTION_SCHEMA_VERSIONS; the caller selects a supported type, and this unit checks only the Wire Protocol record-type pattern, as begin-initial-snapshot does." },
     { "name": "sender_installation", "mode": "pure", "description": "The lowercase UUID of the Sender's own active Sender Installation, supplied by the caller." },
     { "name": "superseding", "mode": "pure", "description": "The identity of the record type's current snapshot attempt, whose change-token continuity the caller has found lost." },
     { "name": "snapshot_identity_source", "mode": "volatile", "description": "A source of random lowercase version 4 UUIDs, one of which becomes the new Reconciliation Snapshot identity." },
