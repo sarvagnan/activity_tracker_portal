@@ -5,7 +5,7 @@
 // The 3ug seam allows one storage operation at a time, so a test whose source hook reads storage runs
 // the coordinator with a pool of one, leaving storage idle while the hook runs.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,7 @@ import { SyntheticClock, SyntheticSources, utf8 } from "./support/synthetic-sync
 
 const CONTRACT = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../governance/scopes/coordinate-sender-sync.1.json"), "utf8"));
 const MODULE = join(dirname(fileURLToPath(import.meta.url)), "../src/sync/coordinate-sender-sync.ts");
+const MODULE_DIRECTORY = dirname(MODULE);
 const INSTALLATION = "00000000-0000-4000-8000-000000000001";
 const OTHER_INSTALLATION = "00000000-0000-4000-8000-000000000002";
 const KEY_ALIAS = "synthetic-installation-key";
@@ -383,6 +384,21 @@ test("the_checkpoint_reports_the_run", async (t) => {
   );
 });
 
+test("elapsed_durations_are_whole_milliseconds", async (t) => {
+  // A fractional monotonic difference rounds to the nearest millisecond.
+  const f = await fixture(t, { types: ["steps"] });
+  f.sources.callCostMs = 1_500;
+  const startMono = f.clock.mono;
+  const rounded = await ran(f.make({ monotonicNow: () => f.clock.mono + (f.clock.mono > startMono ? 0.7 : 0.2) }).trigger({ kind: "foreground" }));
+  assert.equal(rounded.summary.elapsedMs, 3 * 1_500 + 1);
+  // A monotonic clock that runs backward reports no elapsed duration.
+  const g = await fixture(t, { types: ["steps"] });
+  g.sources.callCostMs = 1_500;
+  const backward = await ran(g.make({ monotonicNow: () => -g.clock.mono }).trigger({ kind: "foreground" }));
+  assert.equal("elapsedMs" in backward.summary, false);
+  assert.equal("elapsed_ms" in (await checkpointMessages(g))[0], false);
+});
+
 // R4 — Recovery before reading
 
 test("an_open_run_is_checkpointed_as_interrupted_before_reading", async (t) => {
@@ -433,6 +449,16 @@ test("interrupted_runs_report_staged_data_exactly", async (t) => {
     { record_type: "steps", outcome: "interrupted", source_data_staged: true },
     { record_type: "weight", outcome: "interrupted", source_data_staged: false },
   ]);
+  // Records staged by earlier runs do not count for a resumed cycle interrupted before its next page.
+  const g = await fixture(t, { types: ["steps"] });
+  await partway(g);
+  const held = g.sources.hold("snapshot", "steps");
+  void g.sync.trigger({ kind: "background" });
+  await held.arrived;
+  await g.reopen();
+  await foreground(g);
+  const [, resumed] = await checkpointMessages(g);
+  assert.deepEqual(resumed.record_types, [{ record_type: "steps", outcome: "interrupted", source_data_staged: false }]);
 });
 
 test("a_failed_recovery_reads_nothing", async (t) => {
@@ -770,6 +796,14 @@ test("manual_priority_moves_a_type_forward_once", async (t) => {
   const calls = f.sources.calls.length;
   await ran(f.sync.trigger({ kind: "manual", priority: ["weight"] }));
   assert.deepEqual(f.sources.calls.slice(calls).map((call) => call.recordType), ["weight", "heart-rate", "steps", "weight", "weight"]);
+  // Priority changes only which type takes the turn: a turn that only begins an attempt keeps the ring.
+  const g = await fixture(t, { types: ["heart-rate", "steps", "weight"], concurrency: 1 });
+  for (const type of g.types) g.sources.seed(type, 2);
+  await ran(g.sync.trigger({ kind: "manual", priority: ["steps"] }));
+  assert.deepEqual(g.sources.calls.map((call) => [call.method, call.recordType]), [
+    ["issue", "steps"], ["issue", "heart-rate"], ["snapshot", "heart-rate"], ["snapshot", "steps"], ["issue", "weight"],
+    ["snapshot", "weight"], ["change", "heart-rate"], ["change", "steps"], ["change", "weight"],
+  ]);
 });
 
 test("priority_does_not_persist", async (t) => {
@@ -1042,6 +1076,19 @@ test("an_expired_token_after_baseline_reconciles", async (t) => {
   const completions = (await decoded(f)).filter((entry) => entry.kind === "snapshot-completion");
   assert.deepEqual(completions.map((entry) => entry.message.snapshot_kind), ["initial", "reconciliation"]);
   assert.deepEqual(outcomes(result).steps, ["completed", null, true]);
+  // The baseline stays established when the process dies the moment the first Change Completion commits.
+  const g = await fixture(t, { types: ["steps"] });
+  g.sources.seed("steps", 2);
+  const raw = g.database;
+  const crash = crashing(raw, async () => (await outboxMessages(raw)).some((row) => row.kind === "change-completion"));
+  void g.make({ database: crash.database }).trigger({ kind: "foreground" });
+  await crash.death;
+  await g.reopen();
+  const initial = await attemptOf(g);
+  g.sources.expire("steps");
+  await foreground(g);
+  assert.equal((await attemptOf(g)).kind, "reconciliation");
+  assert.notEqual((await attemptOf(g)).snapshotId, initial.snapshotId);
 });
 
 test("an_invalid_position_during_reconciliation_reconciles_again", async (t) => {
@@ -1186,6 +1233,7 @@ test("an_operator_retry_reads_once_with_priority", async (t) => {
   assert.equal(result.summary.trigger, "manual");
   assert.deepEqual(outcomes(result), { "heart-rate": ["not-permitted", null, false], steps: ["blocked", "projection-refusal", false] });
   assert.equal((await typeBlock(f.database, "steps"))!.retryRequested, false);
+  assert.deepEqual(await ring(f.database), ["heart-rate", "steps"], "a refused priority turn keeps the ring");
 });
 
 test("an_identical_repeat_restores_the_block", async (t) => {
@@ -1562,7 +1610,9 @@ const DDL = [
     FOREIGN KEY (installation_id, run_sequence, record_type)
       REFERENCES sync_run_types (installation_id, run_sequence, record_type)) STRICT`,
 ];
-const normalize = (sql: DatabaseValue): DatabaseValue => typeof sql === "string" ? sql.replace(/\s+/g, " ").replace(/\( /g, "(").replace(/ \)/g, ")").trim() : sql;
+/** SQL as its tokens, so whitespace between tokens never matters and literals keep their contents. */
+const normalize = (sql: DatabaseValue): DatabaseValue =>
+  typeof sql === "string" ? (sql.match(/'(?:[^']|'')*'|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|\S/g) ?? []).join(" ") : sql;
 
 async function schemaOf(database: SenderDatabase): Promise<DatabaseRow[]> {
   return (await database.query("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"))
@@ -1649,17 +1699,23 @@ test("checks_follow_the_documented_order", async (t) => {
 });
 
 test("the_module_stays_inside_its_boundary", async (t) => {
-  const source = readFileSync(MODULE, "utf8");
-  for (const table of ["outbox_messages", "outbox_high_water", "cycle_progress", "cycle_completions", "snapshot_attempts", "current_snapshot_attempts", "run_checkpoints"]) {
-    assert.doesNotMatch(source, new RegExp(`\\b${table}\\b`), table);
+  // Every file the coordinator owns: the module and any helper beside it.
+  const files = readdirSync(MODULE_DIRECTORY).filter((name) => name.endsWith(".ts")).map((name) => join(MODULE_DIRECTORY, name));
+  assert.ok(files.includes(MODULE));
+  const sources = files.map((file) => readFileSync(file, "utf8"));
+  for (const source of sources) {
+    for (const table of ["outbox_messages", "outbox_high_water", "cycle_progress", "cycle_completions", "snapshot_attempts", "current_snapshot_attempts", "run_checkpoints"]) {
+      assert.doesNotMatch(source, new RegExp(`\\b${table}\\b`), table);
+    }
+    assert.doesNotMatch(source, /\bcipher\s*\.\s*(?:seal|open|keyStatus|isDeviceSecure|create|delete)\b/);
+    const specifiers = [...source.matchAll(/\b(?:from|import)\s*\(?\s*["']([^"']+)["']/g)].map((match) => match[1]);
+    assert.deepEqual(specifiers.filter((specifier) => !/^(?:\.{1,2}\/|@activity-tracker-portal\/ingest-protocol$)/.test(specifier)), []);
+    assert.doesNotMatch(source, /\b(?:Buffer|require|process)\b/);
   }
-  for (const call of ["beginInitialSnapshot", "beginReconciliationSnapshot", "stageOutboxBatch", "stageSyncCompletion", "stageSyncCheckpoint"]) {
-    assert.match(source, new RegExp(`\\b${call}\\s*\\(`), call);
+  // The owning units' begin and staging functions are used, however they are imported.
+  for (const name of ["beginInitialSnapshot", "beginReconciliationSnapshot", "stageOutboxBatch", "stageSyncCompletion", "stageSyncCheckpoint"]) {
+    assert.ok(sources.some((source) => new RegExp(`\\b${name}\\b`).test(source)), name);
   }
-  assert.doesNotMatch(source, /\bcipher\s*\.\s*(?:seal|open|keyStatus|isDeviceSecure|create|delete)\b/);
-  const specifiers = [...source.matchAll(/\b(?:from|import)\s*\(?\s*["']([^"']+)["']/g)].map((match) => match[1]);
-  assert.deepEqual(specifiers.filter((specifier) => !/^(?:\.{1,2}\/|@activity-tracker-portal\/ingest-protocol$)/.test(specifier)), []);
-  assert.doesNotMatch(source, /\b(?:Buffer|require|process)\b/);
   // At run time, the cipher is used only for sealing, by the staging units.
   const f = await fixture(t, { types: ["steps"] });
   f.sources.seed("steps", 3);

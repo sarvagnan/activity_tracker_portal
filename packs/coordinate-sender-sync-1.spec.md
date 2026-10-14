@@ -128,14 +128,14 @@ Before a cycle's first read in the run, the coordinator records that cycle's sta
 
 The run closes with one checkpoint through `stage-sync-checkpoint@1`:
 - the end time comes from `now()` at closing;
-- `elapsedMs` is the `monotonicNow()` difference;
-- every managed type appears once.
+- `elapsedMs` is the `monotonicNow()` difference rounded to the nearest millisecond, and is omitted when that difference is negative;
+- every managed type appears once, and the returned `summary` lists the types in ascending order, as the checkpoint does.
 
-Tests: `the_run_is_recorded_before_any_source_call`, `run_sequences_count_per_installation`, `the_checkpoint_reports_the_run`.
+Tests: `the_run_is_recorded_before_any_source_call`, `run_sequences_count_per_installation`, `the_checkpoint_reports_the_run`, `elapsed_durations_are_whole_milliseconds`.
 
 ### R4 — Recovery before reading
 
-A run with no checkpoint is open. Before opening a new run, the coordinator checkpoints each open run as interrupted:
+A run with no checkpoint is open. Before opening a new run, the coordinator checkpoints each open run of the active installation as interrupted, under the current staging context. Sender storage belongs to one installation: enrollment resets it when the installation is replaced (ADR 0014), so another installation's runs are never recovered.
 - every recorded type is `interrupted`, with no reason;
 - its trigger, start time, and scheduling status are the recorded ones;
 - its end time is the recovery time, and it has no `elapsedMs`;
@@ -175,7 +175,7 @@ Tests: `an_unchanged_type_stages_an_empty_change_cycle`, `an_unchanged_type_keep
 
 Scheduling limits work as follows:
 - At most one turn runs per type at a time.
-- At most `concurrency` turns run at once. The default is two, and one is allowed.
+- At most `concurrency` turns run at once. The default is two, and one is allowed. Free slots are filled: whenever fewer turns run and an eligible type has none running, that type's turn starts, including while other turns wait on a source call.
 - Types take turns in ring order:
   - a turn that staged a page moves its type to the tail;
   - the new order is durable before the next turn starts;
@@ -208,7 +208,7 @@ Tests: `overlapping_triggers_coalesce_into_one_follow_up`, `merged_triggers_keep
 
 ### R9 — One-time manual priority
 
-A manual run's priority types take its first turns, in order, once each. After its turn, a priority type joins the tail like any other type. The other types keep their relative order. Priority lasts only for that run.
+A manual run's priority types take its first turns, in order, once each. Priority changes only which type takes the turn: the ring moves only as R7 says, when the turn stages a page. A priority turn that only begins an attempt, stages a completion, or stops keeps the type's place. The other types keep their relative order. Priority lasts only for that run.
 
 Tests: `manual_priority_moves_a_type_forward_once`, `priority_does_not_persist`.
 
@@ -426,13 +426,13 @@ Before each step of a turn, the checks run in this order:
 4. The type's block.
 5. The step itself.
 
-A static check confirms four things about the module:
+A static check confirms four things about every file the coordinator owns, which is the module and any helper beside it in `sender/app/src/sync/`:
 - it names no other unit's table;
-- it calls each owning unit's begin and staging functions, and never calls the cipher itself;
+- it uses each owning unit's begin and staging functions, however they are imported, and never calls the cipher itself;
 - it imports only relative modules and the protocol library;
 - it uses no Node built-in.
 
-At run time, a guarded cipher confirms that only the staging units' `seal` is used.
+At run time, a guarded cipher confirms that only `seal` is used. That every seal comes from a staging unit is confirmed by the static check and in implementation review.
 
 Tests: `coordinator_state_is_health_data_free`, `checks_follow_the_documented_order`, `the_module_stays_inside_its_boundary`.
 
