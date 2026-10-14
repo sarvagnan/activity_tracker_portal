@@ -69,10 +69,13 @@ async function contents(database: SenderDatabase) {
 const MUTATION = /^\s*(?:WITH\b[\s\S]*?\b)?(INSERT|UPDATE|DELETE|REPLACE)\b/i;
 const CONTROL = /^\s*(BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b/i;
 
-/** Wraps a database so that its numbered mutating statement (counted from 1) fails. */
-function failing(database: SenderDatabase, mutation: number, error: Error): SenderDatabase {
+/** Wraps a database so that its numbered mutating statement, or numbered read, fails (counted from 1). */
+function failing(database: SenderDatabase, rule: { mutation?: number; read?: number }, error: Error): SenderDatabase {
   let mutations = 0;
-  const guard = (sql: string) => { if (MUTATION.test(sql) && ++mutations === mutation) throw error; };
+  let reads = 0;
+  const guard = (sql: string) => {
+    if (MUTATION.test(sql) ? ++mutations === rule.mutation : ++reads === rule.read) throw error;
+  };
   const wrap = (inner: SenderDatabase): SenderDatabase => ({
     async execute(sql: string, parameters?: readonly DatabaseValue[]) { guard(sql); return inner.execute(sql, parameters); },
     async query(sql: string, parameters?: readonly DatabaseValue[]) { guard(sql); return inner.query(sql, parameters); },
@@ -103,7 +106,7 @@ function untouchable() {
     async execute() { refuse(); },
     async query() { return refuse(); },
     async transaction() { return refuse(); },
-    async close() {},
+    async close() { refuse(); },
   };
   return { handle, calls: () => calls };
 }
@@ -236,7 +239,7 @@ test("database_errors_propagate_to_the_caller", async (t) => {
   let points = 0;
   for (let mutation = 1; ; mutation++) {
     const error = new Error(`${SENTINEL} synthetic write failure ${mutation}`);
-    const database = failing(f.database, mutation, error);
+    const database = failing(f.database, { mutation }, error);
     const result = await database.transaction((transaction) => commitSnapshotAttempt(transaction, attempt(0xa2), uuid(0xa1))).catch((thrown: unknown) => thrown);
     if (result === error) {
       points++;
@@ -248,16 +251,51 @@ test("database_errors_propagate_to_the_caller", async (t) => {
     break;
   }
   assert.ok(points >= 2, "superseding writes the abandonment and the new attempt");
+  // A failing read, such as the current-attempt lookup, propagates unchanged too, and is never a refusal.
+  const settled = await contents(f.database);
+  const error = new Error(`${SENTINEL} synthetic read failure`);
+  const reading = failing(f.database, { read: 1 }, error);
+  const result = await reading.transaction((transaction) => commitSnapshotAttempt(transaction, attempt(0xa3), uuid(0xa2))).catch((thrown: unknown) => thrown);
+  assert.equal(result, error);
+  assert.deepEqual(await contents(f.database), settled);
 });
+
+/** Commit through a handle that records every error the database itself raises. */
+async function commitCapturing(database: SenderDatabase, next: NewSnapshotAttempt, superseding: string | null) {
+  const raised: unknown[] = [];
+  const outcome = await database.transaction((transaction) => {
+    const capture = <T>(run: () => Promise<T>) => run().catch((error: unknown) => { raised.push(error); throw error; });
+    const handle: SenderDatabase = {
+      execute: (sql, parameters) => capture(() => transaction.execute(sql, parameters)),
+      query: (sql, parameters) => capture(() => transaction.query(sql, parameters)),
+      transaction: () => Promise.reject(new Error("The primitive must not open a transaction")),
+      close: () => Promise.reject(new Error("The primitive must not close the handle")),
+    };
+    return commitSnapshotAttempt(handle, next, superseding);
+  }).then((result) => ({ result }), (thrown: unknown) => ({ thrown }));
+  return { raised, outcome };
+}
 
 test("a_reused_snapshot_identity_is_rejected", async (t) => {
   const f = await fixture(t);
   committed(await commit(f.database, attempt(0xa1)));
   committed(await commit(f.database, attempt(0xa2), uuid(0xa1)));
   const before = await contents(f.database);
-  await assert.rejects(commit(f.database, attempt(0xa1, { recordType: "weight" })), "an abandoned attempt's identity");
-  await assert.rejects(commit(f.database, attempt(0xa2, { recordType: "weight" })), "the current attempt's identity");
-  await assert.rejects(commit(f.database, attempt(0xa2), uuid(0xa2)), "superseding an attempt with its own identity");
+  for (const [label, next, superseding] of [
+    ["an abandoned attempt's identity", attempt(0xa1, { recordType: "weight" }), null],
+    ["the current attempt's identity", attempt(0xa2, { recordType: "weight" }), null],
+    ["superseding an attempt with its own identity", attempt(0xa2), uuid(0xa2)],
+  ] as const) {
+    const { raised, outcome } = await commitCapturing(f.database, next, superseding);
+    assert.equal(raised.length, 1, label);
+    assert.ok("thrown" in outcome && outcome.thrown === raised[0], `${label}: the database's own error escapes`);
+    assert.deepEqual(await contents(f.database), before, label);
+  }
+  // The current-attempt refusal comes before insertion, so an unnamed commit that reuses the
+  // current identity is refused, not a database error.
+  const { raised, outcome } = await commitCapturing(f.database, attempt(0xa2), null);
+  assert.deepEqual(raised, []);
+  assert.deepEqual(outcome, { result: { outcome: "refused", failure: "attempt-open" } });
   assert.deepEqual(await contents(f.database), before);
 });
 

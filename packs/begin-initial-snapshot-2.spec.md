@@ -72,7 +72,8 @@ Tests: `an_open_attempt_refuses_an_unnamed_commit`, `superseding_must_name_the_c
 The primitive never opens, commits, or rolls back a transaction, and reads no clock or random source. It runs its reads and writes on the handle it is given.
 - When the caller's transaction rolls back after a successful commit, nothing remains.
 - A database error inside the primitive propagates to the caller unchanged, so the caller's transaction rolls back and classifies the error.
-- An attempt identity already used by any attempt is a database error, which propagates.
+- An attempt identity already used by any attempt is a database error, which propagates as the very error the database raised.
+- A failing read, such as the current-attempt lookup, propagates the same way and is never reported as a refusal.
 
 The suite checks this from several sides:
 - A recording handle shows that the primitive issues no `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, or `RELEASE`, and never calls the handle's `transaction` or `close`.
@@ -92,6 +93,13 @@ A malformed attempt or `superseding` throws `TypeError` before any database call
 - a non-safe-integer instant.
 
 The validation rules are `@1`'s R9, extended to the new fields.
+
+The order of checks follows `@1`:
+1. caller errors;
+2. the current-attempt refusals of R14;
+3. insertion, where a reused identity is a database error.
+
+So an unnamed commit that reuses the current attempt's identity is `attempt-open`.
 
 `beginInitialSnapshot` behaves exactly as in `@1`. `@1`'s re-run suites show this, as does the published `stage-outbox-batch@1`, which reads attempts through `currentSnapshotAttempt` and `snapshotAttempt`.
 
@@ -131,7 +139,13 @@ A throwaway reference passed all 14 new tests and typechecks. With it, the runne
 - `begin-initial-snapshot@1: 15 Kotlin acceptance tests passed`
 - `begin-initial-snapshot@2: 14 TypeScript acceptance tests passed`
 
-Four mutants each failed at least one test: no abandonment, the clock used for the begin time, database errors swallowed as refusals, and `superseding` unchecked.
+Six mutants each failed at least one test: no abandonment, the clock used for the begin time, database write errors swallowed as refusals, `superseding` unchecked, a read failure reported as a refusal, and a reused identity rejected before the current-attempt refusal.
+
+The implementer's read-only implementability review found nothing blocking. Its four clarifications are added:
+- read failures propagate unchanged;
+- the order between the refusal and insertion is explicit and tested;
+- a reused identity must surface the database's own error;
+- the untouchable handle also refuses `close`.
 
 Against the stub, all 14 new tests fail because the primitive throws. Both Python suites pass, and `@1`'s runner passes, because `@1`'s behavior is intact. The runner therefore exits 1.
 
