@@ -134,7 +134,7 @@ A record type has at most one current attempt, and attempts of other types are i
 - **With `abandoning`:** it must name the type's current attempt, or the result is `attempt-mismatch`. That includes the case where the type has no current attempt.
 - **A matched `abandoning`:** the named attempt gets `abandonedAtMs` from `now()`, is retained, and stops being current. The new attempt becomes current. Both changes happen in the same transaction as R5.
 
-These checks run once before the token is requested, so a refused begin requests no token. They run again inside the commit transaction, so a concurrent begin cannot leave two current attempts.
+These checks run once before the token is requested, so a begin refused then requests no token. They run again inside the commit transaction, so a concurrent begin cannot leave two current attempts. A begin refused by that recheck discards the token it was issued and writes nothing.
 
 Tests: `a_current_attempt_refuses_a_new_begin`, `abandoning_must_name_the_current_attempt`, `a_named_attempt_is_abandoned_and_retained`, `refused_begins_request_no_token`, `types_are_independent`, `the_commit_rechecks_the_current_attempt`.
 
@@ -148,7 +148,7 @@ None of the following writes anything:
 
 If the issuer throws, the result is `read-failed` with `unexpected-read-failure`. A malformed result is `read-failed` with `source-contract-violation`. That covers an empty or non-string token, an `unreadSinceMs` that is not a safe integer, an unknown outcome, and a failure name the contract does not give that outcome class.
 
-A database error at any point is `storage-failed`. Inside the transaction, it rolls back everything, including a named abandonment, and the issued token is discarded. The database is compared before and after each of these cases.
+A database error at any point is `storage-failed`. That includes a failing read before the token request, a failing read or write inside the commit transaction, and a failing commit. Inside the transaction, it rolls back everything, including a named abandonment, and the issued token is discarded. The database is compared before and after each of these cases.
 
 Tests: `issuer_failures_write_nothing`, `a_throwing_issuer_is_an_unexpected_read_failure`, `malformed_issuances_are_violations`, `storage_errors_roll_back_everything`, `refusals_write_nothing`.
 
@@ -175,11 +175,9 @@ Tests: `migration_creates_version_one`, `the_schema_enforces_one_current_attempt
 
 ### R9 — Caller errors (TypeScript)
 
-The following throw `TypeError` before any database or issuer call:
-- a malformed `recordType`, `installationId`, or `abandoning`;
-- a `randomUUID` that returns anything other than a lowercase version 4 UUID.
+A malformed `recordType`, `installationId`, or `abandoning` throws `TypeError` before any database or issuer call.
 
-`randomUUID` is called after the issuer succeeds and before the commit.
+`randomUUID` is called once, after the issuer succeeds and before the commit transaction. If it returns anything other than a lowercase version 4 UUID, that throws `TypeError` and writes nothing; the issued token is discarded.
 
 Tests: `malformed_requests_are_caller_errors`, `a_bad_uuid_source_is_a_caller_error`.
 
@@ -240,7 +238,8 @@ Tests: `kotlin_checks_follow_the_documented_order`, `typescript_checks_follow_th
 - Not mechanically provable here; the approver confirms these in implementation review:
   - the Kotlin part reads no records or changes and writes nothing to Health Connect;
   - the production UUID source is a cryptographically random version 4 generator;
-  - the implementation registers `snapshotAttemptsMigration` as the first entry of the production migration list, and changes nothing in the trusted toolchain boundary or the 3ug storage seam's behavior.
+  - the implementation registers `snapshotAttemptsMigration` as the first entry of the production migration list, and changes nothing in the trusted toolchain boundary or the 3ug storage seam's behavior;
+  - the implementation replaces the 3ug storage test's enabling-era expectation of an empty production migration list with version 1 and this unit's tables, which is the only change it makes to that unbound test.
 
 ## Freeze prerequisites
 
@@ -251,7 +250,15 @@ The Operator approved the draft. The executable pack adds:
 - the self-verifying runner;
 - the Interface stubs `token/IssueChangesToken.kt` and `sender/app/src/snapshot/begin-initial-snapshot.ts`.
 
-It pins the table layout in R8, which the schema test relies on, and the validation of issuer failure names in R7.
+It also pins:
+- the table layout in R8, which the schema test relies on;
+- the validation of issuer failure names in R7.
+
+The implementer's read-only implementability review found two contradictions, both now resolved:
+- R9 had required a bad UUID source to fail before the issuer call, against R11 and its test.
+- The contract had promised no token request for every refusal, against the commit-time recheck.
+
+It also noted that the 3ug storage test expects an empty migration list, which the implementation updates. Its suggested commit-time read and commit-failure cases are added to R7.
 
 Against the stubs:
 - every Kotlin test fails, 12 with `NotImplementedError`, and the 2 caller-error and ordering tests and the cancellation test because the stub's error comes first;

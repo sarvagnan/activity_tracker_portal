@@ -102,22 +102,30 @@ async function contents(database: SenderDatabase) {
 
 const MUTATION = /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i;
 
-/** Wraps a database so the given mutating statement, counted from 1, or every query, throws. */
-function failing(database: SenderDatabase, rule: { mutation?: number; queries?: boolean }): SenderDatabase & { readonly mutations: number } {
+/**
+ * Wraps a database so that one statement or step fails: the given mutating statement, counted
+ * from 1; every read outside or inside the transaction; or the commit, simulated by failing after
+ * the transaction body succeeds, which the 3ug seam rolls back.
+ */
+function failing(database: SenderDatabase, rule: { mutation?: number; queries?: boolean; transactionQueries?: boolean; commit?: boolean }): SenderDatabase {
   let mutations = 0;
-  const guard = (sql: string) => {
-    if (rule.queries && !MUTATION.test(sql)) throw new Error(`${SENTINEL} synthetic read failure`);
+  const guard = (sql: string, inTransaction: boolean) => {
+    if (!MUTATION.test(sql) && (rule.queries || (rule.transactionQueries && inTransaction))) throw new Error(`${SENTINEL} synthetic read failure`);
     if (MUTATION.test(sql) && ++mutations === rule.mutation) throw new Error(`${SENTINEL} synthetic write failure`);
   };
-  const wrap = (inner: SenderDatabase): SenderDatabase => ({
-    async execute(sql: string, parameters?: readonly DatabaseValue[]) { guard(sql); return inner.execute(sql, parameters); },
-    async query(sql: string, parameters?: readonly DatabaseValue[]) { guard(sql); return inner.query(sql, parameters); },
+  const wrap = (inner: SenderDatabase, inTransaction: boolean): SenderDatabase => ({
+    async execute(sql: string, parameters?: readonly DatabaseValue[]) { guard(sql, inTransaction); return inner.execute(sql, parameters); },
+    async query(sql: string, parameters?: readonly DatabaseValue[]) { guard(sql, inTransaction); return inner.query(sql, parameters); },
     transaction<T>(fn: (transaction: SenderDatabase) => T | Promise<T>): Promise<T> {
-      return inner.transaction((transaction) => fn(wrap(transaction)));
+      return inner.transaction(async (transaction) => {
+        const result = await fn(wrap(transaction, true));
+        if (rule.commit) throw new Error(`${SENTINEL} synthetic commit failure`);
+        return result;
+      });
     },
     close: () => inner.close(),
   });
-  return Object.assign(wrap(database), { get mutations() { return mutations; } });
+  return wrap(database, false);
 }
 
 // R5 — Beginning a snapshot
@@ -323,6 +331,14 @@ test("storage_errors_roll_back_everything", async (t) => {
   const reading = failing(f.database, { queries: true });
   assert.deepEqual(await begin(reading, issuer, request("weight")), { outcome: "storage-failed", failure: "storage-failed" });
   assert.deepEqual(issuer.calls, []);
+  // So are a failing read inside the commit transaction, such as its recheck, and a failing commit.
+  // The loop's last begin committed uuid 0xa2 as current, so these abandon it.
+  const settled = await contents(f.database);
+  for (const rule of [{ transactionQueries: true }, { commit: true }]) {
+    const result = await begin(failing(f.database, rule), new ScriptedIssuer(), request("steps", { abandoning: uuid(0xa2) }), options(uuid(0xa3)));
+    assert.deepEqual(result, { outcome: "storage-failed", failure: "storage-failed" }, JSON.stringify(rule));
+    assert.deepEqual(await contents(f.database), settled, JSON.stringify(rule));
+  }
 });
 
 test("refusals_write_nothing", async (t) => {

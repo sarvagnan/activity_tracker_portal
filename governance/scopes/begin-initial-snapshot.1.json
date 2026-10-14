@@ -53,7 +53,7 @@
     },
     {
       "name": "refusal",
-      "description": "A named reason the record type's current attempt prevents beginning, with nothing written and no token requested."
+      "description": "A named reason the record type's current attempt prevents beginning, with nothing written. A refusal found before the token request requests no token, and one found by the commit's recheck discards the token it was issued."
     },
     {
       "name": "not_permitted",
