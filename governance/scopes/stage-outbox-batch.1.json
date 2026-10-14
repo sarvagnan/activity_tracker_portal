@@ -1,0 +1,119 @@
+{
+  "contract_schema": 1,
+  "scope": "stage-outbox-batch",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Make one observed source page durable on the Sender before its cursor advances: partition it into numbered, byte-stable Ingest Batch fragments, seal each with the installation key, and commit them to the Sender Outbox with the cycle's next page position, counts, chain, and cursor in one SQLite transaction, or commit nothing.",
+  "inputs": [
+    {
+      "name": "observed_page",
+      "mode": "pure",
+      "description": "One page from read-snapshot-page or read-change-page: record type, cycle identity, projection schema version, one-based page index, the position or changes token it was read from, its ordered projections or retractions, and its tentative next position or token with exhaustion or continuation state."
+    },
+    {
+      "name": "staging_context",
+      "mode": "pure",
+      "description": "The Sender's active Sender Installation, its installation key alias, and the capability generation to stage under: its number, record and byte limits, and supported projection schemas."
+    },
+    {
+      "name": "installation_cipher",
+      "mode": "effectful",
+      "description": "The 3ug InstallationCipher seam, which seals each fragment with AES-256-GCM under the non-exportable installation key."
+    },
+    {
+      "name": "sender_storage",
+      "mode": "effectful",
+      "description": "The Sender's SQLite database: the record type's current snapshot attempt, the cycle's page-chain progress, and the Sender Outbox, read before sealing and again inside the commit transaction."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "page_staged",
+      "description": "Every fragment of the page sealed as an Ingest Batch Outbox Message under consecutive sequences, committed with the cycle's next page position, fragment and record counts, chain value, cursor, and finished state."
+    },
+    {
+      "name": "refusal",
+      "description": "A named reason the page does not continue its cycle or cannot be staged under the generation, with nothing written."
+    },
+    {
+      "name": "block",
+      "description": "One projection or retraction cannot fit in an otherwise empty fragment under the generation's limits, so the page is refused whole with nothing written or sealed."
+    },
+    {
+      "name": "conflict",
+      "description": "The cycle, its snapshot attempt, or the Outbox sequence changed while the page was being sealed, so nothing was written and the page can be staged again from the new state."
+    },
+    {
+      "name": "cipher_failure",
+      "description": "The installation key was missing, unusable, or unavailable, or the cipher failed unexpectedly, with nothing written."
+    },
+    {
+      "name": "storage_failure",
+      "description": "A database read or the commit failed and rolled back, so nothing was staged."
+    }
+  ],
+  "named_failures": [
+    { "name": "cycle-not-current", "outcome": "refusal" },
+    { "name": "installation-mismatch", "outcome": "refusal" },
+    { "name": "cycle-finished", "outcome": "refusal" },
+    { "name": "snapshot-unfinished", "outcome": "refusal" },
+    { "name": "change-cycle-open", "outcome": "refusal" },
+    { "name": "page-position-mismatch", "outcome": "refusal" },
+    { "name": "projection-schema-unsupported", "outcome": "refusal" },
+    { "name": "indivisible-record-limit-exceeded", "outcome": "block" },
+    { "name": "staging-conflict", "outcome": "conflict" },
+    { "name": "installation-key-missing", "outcome": "cipher-failure" },
+    { "name": "installation-key-unusable", "outcome": "cipher-failure" },
+    { "name": "keystore-unavailable", "outcome": "cipher-failure" },
+    { "name": "unexpected-cipher-failure", "outcome": "cipher-failure" },
+    { "name": "storage-failed", "outcome": "storage-failure" }
+  ],
+  "observable_effects": [
+    {
+      "name": "installation-key-seal",
+      "description": "Seals each fragment once through the installation cipher with authenticated data binding it to its Sender Installation and sequence; never creates, deletes, or opens with the key."
+    },
+    {
+      "name": "sender-storage-write",
+      "description": "Applies this unit's Sender schema migration, and commits a page's Outbox Messages, the installation's sequence high-water mark, and the cycle's progress in one SQLite transaction or not at all."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the Sender Outbox table, the per-installation sequence high-water mark, and the sealing and authenticated-data format of every Outbox Message, which later stagers append through and send-outbox-message opens",
+      "partitioning and sealing one observed page into Ingest Batch Outbox Messages through ingest-protocol's partition rule",
+      "each cycle's page-chain progress after its empty initial state: pages staged, fragment and record counts, chain value, saved position or changes token, unread-since instant, and finished state",
+      "the rule that a page continues its cycle from the saved position, and that a Change Cycle continues the record type's change stream from its current snapshot attempt's pre-read token",
+      "classification of cipher and storage failures into the named failures"
+    ],
+    "does_not_own": [
+      "reading pages, which belongs to read-snapshot-page and read-change-page",
+      "beginning snapshots and the current-attempt rule, which belong to begin-initial-snapshot and begin-reconciliation-snapshot",
+      "deciding when to stage, retry, or begin a Change Cycle, minting Change Cycle identities, and recording or reporting a per-type block, which belong to coordinate-sender-sync",
+      "Snapshot Completion and Change Completion messages, which belong to stage-sync-completion",
+      "Sync Checkpoints, which belong to stage-sync-checkpoint",
+      "adopting capability generations and the installation key's lifecycle, which belong to manage-sender-enrollment",
+      "delivery and receipt-bound removal of Outbox Messages, which belong to send-outbox-message",
+      "the Wire Protocol encoding, fragment chain, and partition rule, which belong to ingest-protocol",
+      "the Expo bridge between Kotlin and TypeScript"
+    ]
+  },
+  "dependencies": [
+    { "scope": "begin-initial-snapshot", "version": "1" },
+    { "scope": "ingest-protocol", "version": "1" },
+    { "scope": "read-change-page", "version": "1" },
+    { "scope": "read-snapshot-page", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/stage-outbox-batch-1.spec.md",
+    "executable_tests": {
+      "typescript": "sender/app/test/stage-outbox-batch-1.test.ts",
+      "python": "tests/acceptance/test_stage_outbox_batch_1.py"
+    },
+    "runner": "tests/acceptance/run_stage_outbox_batch_1.sh",
+    "languages": [
+      "python",
+      "typescript"
+    ]
+  }
+}
