@@ -163,12 +163,35 @@ class SpyCipher implements InstallationCipher {
   isDeviceSecure() { return this.inner.isDeviceSecure(); }
 }
 
+/**
+ * Passes every call through to `inner`, recording each call the unit is never allowed to make:
+ * creating, deleting, or opening with an installation key.
+ */
+function guarded(inner: InstallationCipher): { cipher: InstallationCipher; forbidden: string[] } {
+  const forbidden: string[] = [];
+  return {
+    forbidden,
+    cipher: {
+      seal: (alias, plaintext, aad) => inner.seal(alias, plaintext, aad),
+      keyStatus: (alias) => inner.keyStatus(alias),
+      isDeviceSecure: () => inner.isDeviceSecure(),
+      create: (alias) => { forbidden.push("create"); return inner.create(alias); },
+      delete: (alias) => { forbidden.push("delete"); return inner.delete(alias); },
+      open: (alias, sealed, aad) => { forbidden.push("open"); return inner.open(alias, sealed, aad); },
+    },
+  };
+}
+
+/** Stage through a guarded cipher, failing if the unit created, deleted, or opened with a key. */
 async function stage(
   f: { database: SenderDatabase; cipher: InstallationCipher },
   page: ObservedPage,
   options: { cipher?: InstallationCipher; context?: StagingContext; database?: SenderDatabase } = {},
 ): Promise<StageResult> {
-  return stageOutboxBatch(options.database ?? f.database, options.cipher ?? f.cipher, options.context ?? context(), page);
+  const guard = guarded(options.cipher ?? f.cipher);
+  const result = await stageOutboxBatch(options.database ?? f.database, guard.cipher, options.context ?? context(), page);
+  assert.deepEqual(guard.forbidden, [], "staging only seals");
+  return result;
 }
 
 function staged(result: StageResult): Extract<StageResult, { outcome: "staged" }> {
@@ -397,6 +420,21 @@ test("sealed_rows_fail_under_another_sequence", async (t) => {
   assert.deepEqual(await f.cipher.open(KEY_ALIAS, first.sealed, outboxAad(INSTALLATION, 2)), { status: "error", reason: "authentication-failed" });
   assert.deepEqual(await f.cipher.open(KEY_ALIAS, first.sealed, outboxAad(OTHER_INSTALLATION, 1)), { status: "error", reason: "authentication-failed" });
   assert.deepEqual(await f.cipher.open(KEY_ALIAS, second.sealed, outboxAad(INSTALLATION, 1)), { status: "error", reason: "authentication-failed" });
+});
+
+test("staging_never_creates_deletes_or_opens_keys", async (t) => {
+  const f = await fixture(t);
+  const attempt = await begin(f.database, "steps", uuid(0xa1));
+  const guard = guarded(f.cipher);
+  const results = [
+    await stageOutboxBatch(f.database, guard.cipher, context(), snapshotPage(uuid(0xa1), { exhausted: true })),
+    await stageOutboxBatch(f.database, guard.cipher, context(), changePage(uuid(0xc1), attempt.changesToken)),
+    await stageOutboxBatch(f.database, guard.cipher, context({ keyAlias: "synthetic-missing-key" }), changePage(uuid(0xc2), token("c1-1"))),
+    await stageOutboxBatch(failing(f.database, { commit: true }), guard.cipher, context(), changePage(uuid(0xc2), token("c1-1"))),
+  ];
+  assert.deepEqual(results.map((result) => result.outcome), ["staged", "staged", "cipher-failed", "storage-failed"]);
+  assert.deepEqual(guard.forbidden, []);
+  assert.equal(await f.cipher.keyStatus(KEY_ALIAS), "present");
 });
 
 test("the_database_holds_no_plaintext_items", async (t) => {
@@ -1072,6 +1110,8 @@ test("malformed_inputs_are_caller_errors", async (t) => {
     context({ generation: generation({ maxMessageBytes: Number.MAX_SAFE_INTEGER + 1 }) }),
     context({ generation: generation({ projectionSchemas: null as unknown as Record<string, number[]> }) }),
     context({ generation: generation({ projectionSchemas: [] as unknown as Record<string, number[]> }) }),
+    context({ generation: generation({ projectionSchemas: new (class Schemas { steps = [1]; })() as unknown as Record<string, number[]> }) }),
+    context({ generation: generation({ projectionSchemas: new Map([["steps", [1]]]) as unknown as Record<string, number[]> }) }),
     context({ generation: generation({ projectionSchemas: { Steps: [1] } }) }),
     context({ generation: generation({ projectionSchemas: { steps: [0] } }) }),
     context({ generation: generation({ projectionSchemas: { steps: "1" as unknown as number[] } }) }),

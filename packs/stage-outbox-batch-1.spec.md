@@ -118,7 +118,9 @@ A stored row opens to its exact fragment bytes only with its own authenticated d
 
 No fragment bytes, projection bytes, Source Identities, or message hashes appear in the database outside the sealed blobs. The test checks this by scanning the database file for synthetic sentinels, base64 projections, fragment JSON, and each fragment's SHA-256.
 
-Tests: `each_fragment_is_sealed_with_its_own_aad`, `sealed_rows_fail_under_another_sequence`, `the_database_holds_no_plaintext_items`.
+Staging never creates, deletes, or opens with an installation key. Every staging in the suite runs through a guarded cipher that records any such call, and the test fails if one occurs.
+
+Tests: `each_fragment_is_sealed_with_its_own_aad`, `sealed_rows_fail_under_another_sequence`, `staging_never_creates_deletes_or_opens_keys`, `the_database_holds_no_plaintext_items`.
 
 ### R4 — One atomic commit
 
@@ -259,7 +261,7 @@ Tests: `migration_creates_version_two`, `the_schema_constrains_outbox_kinds`, `m
 **Caller errors.** A malformed page or context throws `TypeError` before any database or cipher call:
 - an `installationId` or `cycleId` that is not a lowercase UUID, or an empty or non-string `keyAlias`;
 - a `recordType` that does not match the Wire Protocol record-type pattern of at most 64 characters, in the page or as a `projectionSchemas` key;
-- a `generation`, `maxRecordCount`, `projectionSchemaVersion`, `pageIndex`, or listed schema version that is not a positive safe integer, a `maxMessageBytes` that is not a safe integer of at least 4096, or `projectionSchemas` that is not a plain object of arrays;
+- a `generation`, `maxRecordCount`, `projectionSchemaVersion`, `pageIndex`, or listed schema version that is not a positive safe integer, a `maxMessageBytes` that is not a safe integer of at least 4096, or `projectionSchemas` that is not a plain object, whose prototype is `Object.prototype` or `null`, of arrays;
 - an unknown `source`; a snapshot `readFrom` that is neither `null` nor bytes, `nextPosition` that is not bytes, or a non-boolean `exhausted`;
 - a change `readFrom` or `nextChangesToken` that is empty or not a string, a `nextUnreadSinceMs` that is not a safe integer, or a non-boolean `hasMore`;
 - a projection that is not non-empty bytes, a Source Identity that is not 1 to 256 Unicode code points free of control characters below U+0020, or an item of another kind.
@@ -348,7 +350,7 @@ Tests: `malformed_inputs_are_caller_errors`, `non_staged_results_carry_only_name
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the TypeScript suite, 43 tests;
+- the TypeScript suite, 44 tests;
 - the Python contract suite, 2 tests;
 - the self-verifying runner;
 - the Interface stub `sender/app/src/outbox/stage-outbox-batch.ts`.
@@ -371,7 +373,11 @@ Its coverage findings are added:
 
 The permitted edit to `migrations.ts` is now explicit.
 
-A throwaway reference implementation passed all 43 tests and typechecks. Eight mutants of it each failed at least one test:
+The approver's first Gate B review required two more checks, both added:
+- every staging runs through a cipher guard that fails on any key creation, deletion, or opening;
+- a class instance or `Map` as `projectionSchemas` is a caller error.
+
+A throwaway reference implementation passed all 44 tests and typechecks. Nine mutants of it each failed at least one test:
 - reading `projectionSchemas` with `in`, which inherits `constructor`;
 - skipping the recheck;
 - moving the recheck outside the transaction;
@@ -379,10 +385,11 @@ A throwaway reference implementation passed all 43 tests and typechecks. Eight m
 - counting a Source Identity's UTF-16 code units;
 - ordering Change Cycles by identity;
 - omitting the snapshot-identity refusal;
-- encoding base64 with `Buffer`.
+- encoding base64 with `Buffer`;
+- opening each sealed row after sealing it, to verify it.
 
 Against the stub:
-- 42 TypeScript tests fail, because the stub's migration throws and the 3ug runner reports `frozen`, which the fixture asserts against;
+- 43 TypeScript tests fail, because the stub's migration throws and the 3ug runner reports `frozen`, which the fixture asserts against;
 - `the_module_imports_no_node_built_ins` passes, because it checks the module's imports and is a constraint rather than behavior;
 - the two Python tests pass, because they check the contract.
 
