@@ -201,7 +201,7 @@ async function contents(database: SenderDatabase) {
   };
 }
 
-const MUTATION = /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i;
+const MUTATION = /^\s*(?:WITH\b[\s\S]*?\b)?(INSERT|UPDATE|DELETE|REPLACE)\b/i;
 
 /**
  * Wraps a database so that one statement or step fails: the given mutating statement, counted
@@ -229,6 +229,35 @@ function failing(database: SenderDatabase, rule: { mutation?: number; queries?: 
     close: () => inner.close(),
   });
   return wrap(database, false);
+}
+
+/** A database whose every use throws and is counted, to prove a check comes before storage. */
+function untouchable(): { database: SenderDatabase; calls: () => number } {
+  let calls = 0;
+  const refuse = () => { calls++; throw new Error(`${SENTINEL} storage must not be touched`); };
+  return {
+    database: {
+      async execute() { refuse(); },
+      async query() { return refuse(); },
+      async transaction() { return refuse(); },
+      async close() {},
+    },
+    calls: () => calls,
+  };
+}
+
+/** Runs `hook` once, just before the wrapped database opens its next transaction. */
+function beforeTransaction(database: SenderDatabase, hook: () => Promise<void>): SenderDatabase {
+  let pending = true;
+  return {
+    execute: (sql, parameters) => database.execute(sql, parameters),
+    query: (sql, parameters) => database.query(sql, parameters),
+    async transaction<T>(fn: (transaction: SenderDatabase) => T | Promise<T>): Promise<T> {
+      if (pending) { pending = false; await hook(); }
+      return database.transaction(fn);
+    },
+    close: () => database.close(),
+  };
 }
 
 /** The protocol partition the unit must reproduce for one page. */
@@ -559,15 +588,22 @@ test("later_change_cycles_continue_from_the_final_token", async (t) => {
   const f = await fixture(t);
   const attempt = await begin(f.database, "steps", uuid(0xa1));
   staged(await stage(f, snapshotPage(uuid(0xa1), { exhausted: true })));
-  staged(await stage(f, changePage(uuid(0xc1), attempt.changesToken, { nextChangesToken: token("c1-1"), hasMore: true })));
-  staged(await stage(f, changePage(uuid(0xc1), token("c1-1"), { pageIndex: 2, nextChangesToken: token("c1-2"), nextUnreadSinceMs: UNREAD_SINCE + 2 })));
-  assert.deepEqual(await changeOrigin(f.database, "steps"), { snapshotId: uuid(0xa1), changesToken: token("c1-2"), unreadSinceMs: UNREAD_SINCE + 2 });
+  // Cycle identities are deliberately out of order, so only lineage orders the cycles.
+  staged(await stage(f, changePage(uuid(0xc9), attempt.changesToken, { nextChangesToken: token("c9-1"), hasMore: true })));
+  staged(await stage(f, changePage(uuid(0xc9), token("c9-1"), { pageIndex: 2, nextChangesToken: token("c9-2"), nextUnreadSinceMs: UNREAD_SINCE + 2 })));
+  assert.deepEqual(await changeOrigin(f.database, "steps"), { snapshotId: uuid(0xa1), changesToken: token("c9-2"), unreadSinceMs: UNREAD_SINCE + 2 });
   assert.deepEqual(await stage(f, changePage(uuid(0xc2), attempt.changesToken)), refused("page-position-mismatch"));
-  assert.deepEqual(await stage(f, changePage(uuid(0xc2), token("c1-1"))), refused("page-position-mismatch"));
-  const second = staged(await stage(f, changePage(uuid(0xc2), token("c1-2"), { nextChangesToken: token("c2-1"), nextUnreadSinceMs: UNREAD_SINCE + 3 })));
-  assert.equal(second.progress.chain, expectedPartition(changePage(uuid(0xc2), token("c1-2")), "change-cycle", 4, chainStart(uuid(0xc2))).next_chain);
-  assert.deepEqual(await changeOrigin(f.database, "steps"), { snapshotId: uuid(0xa1), changesToken: token("c2-1"), unreadSinceMs: UNREAD_SINCE + 3 });
-  staged(await stage(f, changePage(uuid(0xc3), token("c2-1"))));
+  assert.deepEqual(await stage(f, changePage(uuid(0xc2), token("c9-1"))), refused("page-position-mismatch"));
+  const second = staged(await stage(f, changePage(uuid(0xc2), token("c9-2"), { nextChangesToken: token("c2-1"), nextUnreadSinceMs: UNREAD_SINCE + 3, hasMore: true })));
+  assert.equal(second.progress.chain, expectedPartition(changePage(uuid(0xc2), token("c9-2")), "change-cycle", 4, chainStart(uuid(0xc2))).next_chain);
+  // While the second cycle is unfinished, the origin stays at the first cycle's final token.
+  assert.deepEqual(await changeOrigin(f.database, "steps"), { snapshotId: uuid(0xa1), changesToken: token("c9-2"), unreadSinceMs: UNREAD_SINCE + 2 });
+  staged(await stage(f, changePage(uuid(0xc2), token("c2-1"), { pageIndex: 2, nextChangesToken: token("c2-2"), nextUnreadSinceMs: UNREAD_SINCE + 4 })));
+  assert.deepEqual(await changeOrigin(f.database, "steps"), { snapshotId: uuid(0xa1), changesToken: token("c2-2"), unreadSinceMs: UNREAD_SINCE + 4 });
+  staged(await stage(f, changePage(uuid(0xc5), token("c2-2"))));
+  assert.deepEqual(await f.database.query("SELECT cycle_id, lineage FROM cycle_progress ORDER BY lineage"), [
+    { cycle_id: uuid(0xa1), lineage: 0 }, { cycle_id: uuid(0xc9), lineage: 1 }, { cycle_id: uuid(0xc2), lineage: 2 }, { cycle_id: uuid(0xc5), lineage: 3 },
+  ]);
 });
 
 test("a_change_cycle_waits_for_its_snapshot", async (t) => {
@@ -616,8 +652,12 @@ test("change_pages_must_continue_from_the_saved_token", async (t) => {
   assert.deepEqual(await stage(f, changePage(uuid(0xc1), token("wrong"), { pageIndex: 2 })), mismatch);
   assert.deepEqual(await stage(f, changePage(uuid(0xc1), token("c1-1"), { pageIndex: 3 })), mismatch);
   assert.deepEqual(await stage(f, changePage(uuid(0xc1), attempt.changesToken)), mismatch);
-  // A page must name a current cycle of its own kind and record type.
+  // A page must name a current cycle of its own kind and record type. A snapshot attempt's
+  // identity, staged or not, current or abandoned, never names a Change Cycle.
   assert.deepEqual(await stage(f, changePage(uuid(0xa1), token("c1-1"), { pageIndex: 2 })), refused("cycle-not-current"));
+  assert.deepEqual(await stage(f, changePage(uuid(0xa1), attempt.changesToken)), refused("cycle-not-current"));
+  assert.deepEqual(await stage(f, changePage(uuid(0xb1), token("b1"), { recordType: "weight" })), refused("cycle-not-current"));
+  assert.deepEqual(await stage(f, changePage(uuid(0xb1), attempt.changesToken)), refused("cycle-not-current"));
   assert.deepEqual(await stage(f, snapshotPage(uuid(0xc1), { pageIndex: 2, readFrom: position("1") })), refused("cycle-not-current"));
   assert.deepEqual(await stage(f, changePage(uuid(0xc1), token("c1-1"), { pageIndex: 2, recordType: "weight" })), refused("cycle-not-current"));
   staged(await stage(f, changePage(uuid(0xc1), token("c1-1"), { pageIndex: 2, nextChangesToken: token("c1-2") })));
@@ -763,7 +803,7 @@ test("storage_errors_roll_back_everything", async (t) => {
     failurePoints++;
     assert.ok(mutation < 30, "the staging never completed");
   }
-  assert.ok(failurePoints >= 5, "three fragments, the high-water mark, and the progress are each written");
+  assert.ok(failurePoints >= 3, "the Outbox, the high-water mark, and the progress each take a statement");
   // A failing read before sealing is a storage failure too, and seals nothing.
   const settled = await contents(f.database);
   const next = snapshotPage(uuid(0xa1), { pageIndex: 3, readFrom: position("2"), nextPosition: position("3") });
@@ -829,6 +869,56 @@ test("a_retry_after_conflict_stages_from_the_new_state", async (t) => {
   assert.deepEqual(await stage(f, page2), refused("cycle-not-current"));
 });
 
+test("the_recheck_runs_inside_the_commit_transaction", async (t) => {
+  const conflict = { outcome: "conflict", failure: "staging-conflict" };
+  const outer = (f: { database: SenderDatabase }) => f.database;
+  // Each state the recheck covers changes on its own, just before the commit transaction opens.
+  {
+    const f = await fixture(t);
+    await begin(f.database, "steps", uuid(0xa1));
+    await begin(f.database, "weight", uuid(0xb1));
+    const database = beforeTransaction(outer(f), async () => {
+      staged(await stage(f, snapshotPage(uuid(0xb1), { recordType: "weight" })));
+    });
+    assert.deepEqual(await stage(f, snapshotPage(uuid(0xa1)), { database }), conflict);
+    assert.equal(await cycleProgress(f.database, uuid(0xa1)), null);
+  }
+  {
+    const f = await fixture(t);
+    await begin(f.database, "steps", uuid(0xa1));
+    staged(await stage(f, snapshotPage(uuid(0xa1))));
+    const outbox = await outboxMessages(f.database);
+    const database = beforeTransaction(outer(f), async () => {
+      await f.database.execute("UPDATE cycle_progress SET chain = ? WHERE cycle_id = ?", [chainStart(uuid(0xff)), uuid(0xa1)]);
+    });
+    assert.deepEqual(await stage(f, snapshotPage(uuid(0xa1), { pageIndex: 2, readFrom: position("1") }), { database }), conflict);
+    assert.deepEqual(await outboxMessages(f.database), outbox);
+    assert.equal((await cycleProgress(f.database, uuid(0xa1)))?.pagesStaged, 1);
+  }
+  {
+    const f = await fixture(t);
+    await begin(f.database, "steps", uuid(0xa1));
+    const database = beforeTransaction(outer(f), async () => { await begin(f.database, "steps", uuid(0xa2), { abandoning: uuid(0xa1) }); });
+    assert.deepEqual(await stage(f, snapshotPage(uuid(0xa1)), { database }), conflict);
+    assert.deepEqual(await outboxMessages(f.database), []);
+  }
+  for (const change of [
+    "UPDATE cycle_progress SET changes_token = 'synthetic-changes-token-moved' WHERE cycle_id = ?",
+    "UPDATE cycle_progress SET chain = 'synthetic-chain-moved' WHERE cycle_id = (SELECT snapshot_id FROM cycle_progress WHERE cycle_id = ?)",
+  ]) {
+    // A new Change Cycle depends on the latest finished cycle and on its snapshot's progress.
+    const f = await fixture(t);
+    const attempt = await begin(f.database, "steps", uuid(0xa1));
+    staged(await stage(f, snapshotPage(uuid(0xa1), { exhausted: true })));
+    staged(await stage(f, changePage(uuid(0xc1), attempt.changesToken, { nextChangesToken: token("c1-1") })));
+    const before = await outboxMessages(f.database);
+    const database = beforeTransaction(outer(f), async () => { await f.database.execute(change, [uuid(0xc1)]); });
+    assert.deepEqual(await stage(f, changePage(uuid(0xc2), token("c1-1")), { database }), conflict, change);
+    assert.deepEqual(await outboxMessages(f.database), before);
+    assert.equal(await cycleProgress(f.database, uuid(0xc2)), null);
+  }
+});
+
 test("append_refuses_a_moved_high_water_mark", async (t) => {
   const f = await fixture(t);
   const message = (kind: OutboxMessage["kind"], n: number): OutboxMessage => ({ kind, sealed: utf8(`synthetic-sealed-${n}`), messageBytes: 100 + n });
@@ -849,19 +939,29 @@ test("append_refuses_a_moved_high_water_mark", async (t) => {
   ]);
   await begin(f.database, "steps", uuid(0xa1));
   assert.equal(staged(await stage(f, snapshotPage(uuid(0xa1)))).firstSequence, 5);
-  const settled = await contents(f.database);
-  for (const bad of [
-    () => appendOutboxMessages(f.database, INSTALLATION, 5, []),
-    () => appendOutboxMessages(f.database, INSTALLATION, -1, [message("sync-checkpoint", 6)]),
-    () => appendOutboxMessages(f.database, INSTALLATION, 1.5, [message("sync-checkpoint", 6)]),
-    () => appendOutboxMessages(f.database, "not-a-uuid", 5, [message("sync-checkpoint", 6)]),
-    () => appendOutboxMessages(f.database, INSTALLATION, 5, [{ ...message("sync-checkpoint", 6), kind: "delivery-receipt" as OutboxMessage["kind"] }]),
-    () => appendOutboxMessages(f.database, INSTALLATION, 5, [{ ...message("sync-checkpoint", 6), sealed: new Uint8Array() }]),
-    () => appendOutboxMessages(f.database, INSTALLATION, 5, [{ ...message("sync-checkpoint", 6), messageBytes: 0 }]),
-  ]) {
-    await assert.rejects(bad(), TypeError);
+  // Every argument, and every message in the list, is validated before any read or write.
+  const probe = untouchable();
+  const valid = message("sync-checkpoint", 6);
+  const invalid: unknown[][] = [
+    [INSTALLATION, 5, []],
+    [INSTALLATION, 5, "not-a-list"],
+    [INSTALLATION, -1, [valid]],
+    [INSTALLATION, 1.5, [valid]],
+    [INSTALLATION, Number.MAX_SAFE_INTEGER + 1, [valid]],
+    ["not-a-uuid", 5, [valid]],
+    [INSTALLATION, 5, [{ ...valid, kind: "delivery-receipt" }]],
+    [INSTALLATION, 5, [{ ...valid, sealed: new Uint8Array() }]],
+    [INSTALLATION, 5, [{ ...valid, sealed: "synthetic-sealed" }]],
+    [INSTALLATION, 5, [{ ...valid, messageBytes: 0 }]],
+    [INSTALLATION, 5, [{ ...valid, messageBytes: 1.5 }]],
+    [INSTALLATION, 5, [{ ...valid, messageBytes: Number.MAX_SAFE_INTEGER + 1 }]],
+    [INSTALLATION, 5, [valid, null]],
+    [INSTALLATION, 5, [valid, { ...valid, kind: "ingest" }]],
+  ];
+  for (const [installation, expected, messages] of invalid) {
+    await assert.rejects(appendOutboxMessages(probe.database, installation as string, expected as number, messages as OutboxMessage[]), TypeError, JSON.stringify([expected, messages]));
   }
-  assert.deepEqual(await contents(f.database), settled);
+  assert.equal(probe.calls(), 0);
 });
 
 // R11 — The Sender schema migration
@@ -957,7 +1057,8 @@ test("migration_is_idempotent", async (t) => {
 test("malformed_inputs_are_caller_errors", async (t) => {
   const f = await fixture(t);
   await begin(f.database, "steps", uuid(0xa1));
-  const broken = failing(f.database, { everything: true });
+  const probe = untouchable();
+  const broken = probe.database;
   const spy = new SpyCipher(f.cipher);
   const contexts: unknown[] = [
     context({ installationId: "00000000-0000-4000-8000-00000000000A" }),
@@ -1008,6 +1109,7 @@ test("malformed_inputs_are_caller_errors", async (t) => {
     await assert.rejects(stageOutboxBatch(broken, spy, context(), page as ObservedPage), TypeError, JSON.stringify(page));
   }
   assert.equal(spy.seals.length, 0);
+  assert.equal(probe.calls(), 0);
   for (const [installation, sequence] of [["not-a-uuid", 1], [INSTALLATION, 0], [INSTALLATION, 1.5], [INSTALLATION, Number.MAX_SAFE_INTEGER + 1]] as const) {
     assert.throws(() => outboxAad(installation, sequence), TypeError);
   }
@@ -1084,13 +1186,15 @@ test("checks_follow_the_documented_order", async (t) => {
   const f = await fixture(t);
   await begin(f.database, "steps", uuid(0xa1));
   await begin(f.database, "weight", uuid(0xb1), { installationId: OTHER_INSTALLATION });
-  const broken = failing(f.database, { everything: true });
+  const probe = untouchable();
+  const broken = probe.database;
   const oversized = { projections: [projection(1, 5000)] };
   const small = context({ generation: generation({ maxMessageBytes: 4096 }) });
   // 1. Caller errors before everything, even an unsupported type and a broken store.
   await assert.rejects(stageOutboxBatch(broken, f.cipher, context(), snapshotPage(uuid(0xa1), { recordType: "Sleep", projectionSchemaVersion: 9 })), TypeError);
   // 2. The generation's projection schemas before any storage read.
   assert.deepEqual(await stage(f, snapshotPage(uuid(0xa1), { projectionSchemaVersion: 9 }), { database: broken }), refused("projection-schema-unsupported"));
+  assert.equal(probe.calls(), 0);
   // 3. Reading the state, then the cycle checks, before partitioning.
   assert.deepEqual(await stage(f, snapshotPage(uuid(0xa1), oversized), { database: failing(f.database, { queries: true }), context: small }), { outcome: "storage-failed", failure: "storage-failed" });
   assert.deepEqual(await stage(f, snapshotPage(uuid(0xa9), oversized), { context: small }), refused("cycle-not-current"));
@@ -1111,4 +1215,14 @@ test("checks_follow_the_documented_order", async (t) => {
   // 6. The commit last.
   assert.deepEqual(await stage(f, snapshotPage(uuid(0xa1)), { database: failing(f.database, { mutation: 1 }) }), { outcome: "storage-failed", failure: "storage-failed" });
   staged(await stage(f, snapshotPage(uuid(0xa1))));
+});
+
+test("the_module_imports_no_node_built_ins", () => {
+  // The module runs under Hermes in the Sender, which has no Node built-in modules.
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../src/outbox/stage-outbox-batch.ts"), "utf8");
+  const specifiers = [...source.matchAll(/\b(?:from|import)\s*\(?\s*["']([^"']+)["']/g)].map((match) => match[1]);
+  assert.ok(specifiers.length > 0);
+  const allowed = /^(?:\.{1,2}\/|@activity-tracker-portal\/ingest-protocol$)/;
+  assert.deepEqual(specifiers.filter((specifier) => !allowed.test(specifier)), []);
+  assert.doesNotMatch(source, /\b(?:Buffer|require|process)\b/);
 });

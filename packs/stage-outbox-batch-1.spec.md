@@ -158,7 +158,12 @@ The first page of a new cycle identity must meet three conditions:
 - no earlier Change Cycle under the attempt is unfinished, otherwise `change-cycle-open`;
 - `readFrom` equals the change origin, otherwise `page-position-mismatch`. The origin is the final changes token of the latest finished Change Cycle under the attempt, or, if there is none, the attempt's pre-read token. The origin's unread-since instant comes with it, and `changeOrigin` reports both. An unfinished cycle does not move the origin.
 
-Later pages continue as in R5. The saved changes token takes the place of the saved position, and a page after the one without `hasMore` is `cycle-finished`. A change page naming a snapshot cycle, a cycle under another attempt, or a cycle of another record type is `cycle-not-current`.
+Later pages continue as in R5. The saved changes token takes the place of the saved position, and a page after the one without `hasMore` is `cycle-finished`. A change page is `cycle-not-current` when it names:
+- any snapshot attempt's identity, whether staged or not, current or abandoned;
+- a cycle under another attempt;
+- a cycle of another record type.
+
+Change Cycles are ordered by their lineage number, never by identity.
 
 Tests:
 - `the_first_change_cycle_starts_from_the_pre_read_token`
@@ -205,7 +210,13 @@ Tests: `refusals_and_blocks_write_nothing`, `cipher_failures_write_nothing`, `a_
 
 The cycle's progress, its attempt's currency, and the installation's high-water mark are read before sealing; for a new Change Cycle, so are its snapshot's progress and the latest Change Cycle under the attempt. They are read again inside the commit transaction. If any of them changed, the result is `conflict` with `staging-conflict`, nothing is written, and the sealed bytes are discarded. A retry partitions and seals again from the new state. `appendOutboxMessages` applies the same rule to the high-water mark for every stager.
 
-Tests: `interleaved_stagings_conflict_without_writing`, `a_retry_after_conflict_stages_from_the_new_state`, `append_refuses_a_moved_high_water_mark`.
+The recheck must run inside the transaction: a change made just before the transaction opens is a conflict too. Each rechecked state is tested on its own:
+- the high-water mark;
+- the cycle's progress;
+- the attempt's currency;
+- for a new Change Cycle, the latest cycle and the snapshot's progress.
+
+Tests: `interleaved_stagings_conflict_without_writing`, `a_retry_after_conflict_stages_from_the_new_state`, `the_recheck_runs_inside_the_commit_transaction`, `append_refuses_a_moved_high_water_mark`.
 
 ### R11 — The Sender schema migration
 
@@ -253,7 +264,9 @@ Tests: `migration_creates_version_two`, `the_schema_constrains_outbox_kinds`, `m
 - a change `readFrom` or `nextChangesToken` that is empty or not a string, a `nextUnreadSinceMs` that is not a safe integer, or a non-boolean `hasMore`;
 - a projection that is not non-empty bytes, a Source Identity that is not 1 to 256 Unicode code points free of control characters below U+0020, or an item of another kind.
 
-`outboxAad` throws `TypeError` for a malformed installation or a sequence that is not a positive safe integer. `appendOutboxMessages` throws `TypeError` for a malformed installation, an `expectedLastSequence` that is not a non-negative safe integer, an empty message list, or a message with an unknown kind, empty or non-byte sealed bytes, or a byte length that is not a positive safe integer.
+`outboxAad` throws `TypeError` for a malformed installation or a sequence that is not a positive safe integer. `appendOutboxMessages` throws `TypeError` for a malformed installation, an `expectedLastSequence` that is not a non-negative safe integer, a missing or empty message list, or any message with an unknown kind, empty or non-byte sealed bytes, or a byte length that is not a positive safe integer. It validates every argument and message before any read or write.
+
+**Hermes.** The module runs under Hermes in the Sender. It imports only relative modules and `@activity-tracker-portal/ingest-protocol`, and uses no `Buffer`, `require`, or `process`.
 
 **Health-data-free outcomes.** Every non-`staged` result carries only a named failure. Every named failure is reachable, and no other failure is produced.
 
@@ -265,7 +278,7 @@ Tests: `migration_creates_version_two`, `the_schema_constrains_outbox_kinds`, `m
 5. sealing;
 6. the commit, with its recheck and storage failure.
 
-Tests: `malformed_inputs_are_caller_errors`, `non_staged_results_carry_only_named_failures`, `every_named_failure_is_reachable_and_in_the_contract`, `checks_follow_the_documented_order`.
+Tests: `malformed_inputs_are_caller_errors`, `non_staged_results_carry_only_named_failures`, `every_named_failure_is_reachable_and_in_the_contract`, `checks_follow_the_documented_order`, `the_module_imports_no_node_built_ins`.
 
 ## Decisions for the Operator
 
@@ -314,7 +327,13 @@ Tests: `malformed_inputs_are_caller_errors`, `non_staged_results_carry_only_name
   - the 3ug `NodeInstallationCipher`, with real AES-256-GCM, its synthetic invalidation and outage, and a recording `SpyCipher` that delegates to it. The spy can replace a numbered seal call with a returned value or a thrown value, or run a hook before it;
   - `begin-initial-snapshot@1` with a scripted issuer to create and abandon attempts. A Reconciliation Snapshot attempt is written directly to that unit's tables, because `begin-reconciliation-snapshot` is not yet delivered.
 
-  They inject database failures through a wrapping `SenderDatabase`, which fails each mutating statement in turn, every read, every read inside the transaction, the commit, or everything. Concurrency is simulated by a seal hook that stages or begins on the same connection while the page is being sealed.
+  They inject database failures through a wrapping `SenderDatabase`. It fails each mutating statement in turn, every read, every read inside the transaction, or the commit. A mutating statement is one that begins with `INSERT`, `UPDATE`, `DELETE`, or `REPLACE`, possibly after a `WITH` clause.
+
+  An untouchable database counts and refuses every use, which proves a check comes before storage.
+
+  Concurrency is simulated in two ways:
+  - a seal hook that stages or begins on the same connection while the page is being sealed;
+  - a hook that changes state just before the commit transaction opens.
 - The runner does not trust exit statuses. It passes the suite only when a fresh JUnit report lists exactly the bound suite's tests, none failed, errored, or skipped.
 - The trusted toolchain boundary is:
   - Node 26.11.1, pinned by `.node-version`;
@@ -323,13 +342,13 @@ Tests: `malformed_inputs_are_caller_errors`, `non_staged_results_carry_only_name
   - the published `@activity-tracker-portal/ingest-protocol` library and `begin-initial-snapshot@1`'s module.
 - Not mechanically provable here; the approver confirms these in implementation review:
   - the production cipher is the Keystore-backed `nativeInstallationCipher()`, which the caller supplies;
-  - the implementation registers `outboxMigration` second in the production migration list `senderMigrations`, after `snapshotAttemptsMigration`, and changes nothing in the seams or published modules;
+  - the implementation registers `outboxMigration` second in the production migration list `senderMigrations`, after `snapshotAttemptsMigration`. In `sender/app/src/storage/migrations.ts`, that import and list entry, with its comment, is the only change permitted. Nothing else in the seams or published modules changes;
   - the implementation updates the 3ug storage test's production-migration expectation to version 2 and this unit's tables, which is the only change it makes to that unbound test.
 
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the TypeScript suite, 41 tests;
+- the TypeScript suite, 43 tests;
 - the Python contract suite, 2 tests;
 - the self-verifying runner;
 - the Interface stub `sender/app/src/outbox/stage-outbox-batch.ts`.
@@ -340,13 +359,31 @@ It also pins:
 - the caller-error list and the order of the cycle checks (R12);
 - `changeOrigin`, which reports R6's origin.
 
-A throwaway reference implementation passed all 41 tests and typechecks. Three mutants of it each failed at least one test:
+The implementer's read-only implementability review found one blocking test: `storage_errors_roll_back_everything` required five mutating statements, where a correct implementation may use three. It now requires one for each table, and the mutation detector recognizes a leading `WITH`.
+
+Its coverage findings are added:
+- the recheck must run inside the transaction, and each rechecked state is tested on its own;
+- lineage, not identity, orders Change Cycles, and the origin holds while a later cycle is unfinished;
+- a change page naming an unstaged snapshot attempt is refused;
+- `appendOutboxMessages` validates every message before storage;
+- caller errors and unsupported projections touch no storage;
+- the module avoids Node built-ins.
+
+The permitted edit to `migrations.ts` is now explicit.
+
+A throwaway reference implementation passed all 43 tests and typechecks. Eight mutants of it each failed at least one test:
 - reading `projectionSchemas` with `in`, which inherits `constructor`;
-- skipping the in-transaction recheck;
-- counting a Source Identity's UTF-16 code units.
+- skipping the recheck;
+- moving the recheck outside the transaction;
+- rechecking only the high-water mark;
+- counting a Source Identity's UTF-16 code units;
+- ordering Change Cycles by identity;
+- omitting the snapshot-identity refusal;
+- encoding base64 with `Buffer`.
 
 Against the stub:
-- every TypeScript test fails, because the stub's migration throws and the 3ug runner reports `frozen`, which the fixture asserts against;
+- 42 TypeScript tests fail, because the stub's migration throws and the 3ug runner reports `frozen`, which the fixture asserts against;
+- `the_module_imports_no_node_built_ins` passes, because it checks the module's imports and is a constraint rather than behavior;
 - the two Python tests pass, because they check the contract.
 
 The binding is:
