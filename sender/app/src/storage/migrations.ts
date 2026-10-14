@@ -1,3 +1,4 @@
+import { snapshotAttemptsMigration } from "../snapshot/begin-initial-snapshot.ts";
 import type { SenderDatabase } from "./database.ts";
 
 export interface Migration {
@@ -8,8 +9,8 @@ export type MigrationResult =
   | { status: "ready"; version: number }
   | { status: "frozen"; version: number; reason: "migration-failed" | "newer-schema" };
 
-/** Governed units add their own migrations later. This enabling task owns no tables. */
-export const senderMigrations: readonly Migration[] = Object.freeze([]);
+/** Governed units append their own migrations; this first one is begin-initial-snapshot@1's. */
+export const senderMigrations: readonly Migration[] = Object.freeze([snapshotAttemptsMigration]);
 
 export async function migrate(
   database: SenderDatabase,

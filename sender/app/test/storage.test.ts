@@ -248,11 +248,33 @@ test("safe integer limits match protocol numbers exactly and reject larger or fr
   await assert.rejects(database.query("SELECT 1.5 AS value"), TypeError);
 });
 
-test("production migrations are empty and opening creates no governed tables", async (t) => {
+test("production migration creates only begin-initial-snapshot version one tables and indexes", async (t) => {
+  const { snapshotAttemptsMigration } = await import("../src/snapshot/begin-initial-snapshot.ts");
   const { database } = await fixture(t);
-  assert.equal(senderMigrations.length, 0);
-  assert.deepEqual(await migrate(database), { status: "ready", version: 0 });
-  assert.deepEqual(await database.query("SELECT name FROM sqlite_schema"), []);
+  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration]);
+  assert.deepEqual(await migrate(database), { status: "ready", version: 1 });
+  const schema = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name");
+  const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
+  assert.deepEqual(schema.map((row) => ({ ...row, sql: typeof row.sql === "string" ? normalize(row.sql) : row.sql })), [
+    {
+      type: "table", name: "current_snapshot_attempts", tbl_name: "current_snapshot_attempts",
+      sql: normalize(`CREATE TABLE current_snapshot_attempts (
+        record_type TEXT PRIMARY KEY NOT NULL, snapshot_id TEXT NOT NULL UNIQUE,
+        FOREIGN KEY (snapshot_id, record_type) REFERENCES snapshot_attempts (snapshot_id, record_type)) STRICT`),
+    },
+    {
+      type: "table", name: "snapshot_attempts", tbl_name: "snapshot_attempts",
+      sql: normalize(`CREATE TABLE snapshot_attempts (
+        snapshot_id TEXT PRIMARY KEY NOT NULL, record_type TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('initial', 'reconciliation')), installation_id TEXT NOT NULL,
+        changes_token TEXT NOT NULL, unread_since_ms INTEGER NOT NULL, begun_at_ms INTEGER NOT NULL,
+        abandoned_at_ms INTEGER, UNIQUE (snapshot_id, record_type)) STRICT`),
+    },
+    { type: "index", name: "sqlite_autoindex_current_snapshot_attempts_1", tbl_name: "current_snapshot_attempts", sql: null },
+    { type: "index", name: "sqlite_autoindex_current_snapshot_attempts_2", tbl_name: "current_snapshot_attempts", sql: null },
+    { type: "index", name: "sqlite_autoindex_snapshot_attempts_1", tbl_name: "snapshot_attempts", sql: null },
+    { type: "index", name: "sqlite_autoindex_snapshot_attempts_2", tbl_name: "snapshot_attempts", sql: null },
+  ]);
 });
 
 test("migrations run in order and advance user_version in the same transaction", async (t) => {
