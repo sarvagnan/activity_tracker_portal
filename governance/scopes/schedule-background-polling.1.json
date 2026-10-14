@@ -1,0 +1,63 @@
+{
+  "contract_schema": 1,
+  "scope": "schedule-background-polling",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Adapt Expo's deferrable background callback into the same durable synchronization interface used by foreground and manual triggers: keep one hourly background task registered, deliver each background callback to coordinate-sender-sync as a budgeted background trigger, and observe the Background Scheduling Status for each Polling Run, raising a persistent Operator-action-required condition and one local notification when scheduling is restricted or unexpectedly unregistered.",
+  "inputs": [
+    { "name": "minimum_interval", "mode": "pure", "description": "The desired hourly minimum interval between background callbacks: 60 minutes." },
+    { "name": "expected_registration", "mode": "pure", "description": "Registration is expected whenever the Sender has an active installation; the shell constructs this module only then." },
+    { "name": "execution_budget", "mode": "pure", "description": "The eight-minute soft work deadline within WorkManager's ten-minute execution window, delivered with each background trigger." },
+    { "name": "scheduling_platform", "mode": "effectful", "description": "A seam over Expo BackgroundTask and TaskManager registration state and registration, combined with the operating system's background restriction." },
+    { "name": "background_callback", "mode": "volatile", "description": "Each invocation of the registered task's executor by the operating system." },
+    { "name": "local_notifier", "mode": "effectful", "description": "A seam that raises one health-data-free local notification naming an action-required scheduling condition." },
+    { "name": "sender_sync", "mode": "effectful", "description": "coordinate-sender-sync@1's trigger, which receives each background trigger." },
+    { "name": "sender_storage", "mode": "effectful", "description": "The Sender's SQLite database: this unit's scheduling state, behind the 3ug seam." },
+    { "name": "clock", "mode": "volatile", "description": "The Sender wall clock for observation times." }
+  ],
+  "outputs": [
+    { "name": "registered_task", "description": "One persistently registered background task with a 60-minute minimum interval, registered only when missing and never replaced or removed." },
+    { "name": "background_trigger", "description": "Each background callback delivered as one background trigger with an eight-minute budget, reporting success only when the run checkpointed." },
+    { "name": "scheduling_observation", "description": "The available, restricted, or unregistered Background Scheduling Status observed for a Polling Run, recorded with its time; an observation, not a guarantee." },
+    { "name": "action_required_condition", "description": "A persistent restricted or unregistered condition, with one local notification at its onset, cleared when scheduling is observed available again." }
+  ],
+  "named_failures": [
+    { "name": "background-restricted", "outcome": "action-required" },
+    { "name": "registration-missing", "outcome": "action-required" },
+    { "name": "sync-run-failed", "outcome": "run-failure" },
+    { "name": "storage-failed", "outcome": "storage-failure" }
+  ],
+  "observable_effects": [
+    { "name": "background-task-registration", "description": "Registers the background task through the scheduling platform when it is missing; never unregisters it, replaces it, or requests a battery-optimization exemption or foreground service." },
+    { "name": "local-notification", "description": "Raises one health-data-free local notification at the onset of each action-required condition." },
+    { "name": "sender-storage-write", "description": "Applies this unit's Sender schema migration and writes only its own scheduling state." }
+  ],
+  "authority": {
+    "owns": [
+      "the background task's name, minimum interval, and register-when-missing rule",
+      "the eight-minute background budget and the background task's success or failure result",
+      "deriving the Background Scheduling Status from registration state and platform restriction",
+      "the persistent action-required scheduling condition and its notification rule",
+      "this unit's Sender schema migration"
+    ],
+    "does_not_own": [
+      "Polling Runs, trigger coalescing, deadlines, and checkpoints, which belong to coordinate-sender-sync",
+      "reading Health Connect, cursors, the Outbox, and health state, which belong to the reader and staging units",
+      "the Expo, TaskManager, notification, and background-restriction adapters, their package pins, and Android permissions, which the Sender shell enabling task provides",
+      "foreground and manual trigger adapters and Sender screens",
+      "presenting Background Scheduling Status, Polling Freshness, and staleness, which belong to the Portal"
+    ]
+  },
+  "dependencies": [
+    { "scope": "coordinate-sender-sync", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/schedule-background-polling-1.spec.md",
+    "executable_tests": {
+      "typescript": "sender/app/test/schedule-background-polling-1.test.ts",
+      "python": "tests/acceptance/test_schedule_background_polling_1.py"
+    },
+    "runner": "tests/acceptance/run_schedule_background_polling_1.sh",
+    "languages": ["python", "typescript"]
+  }
+}
