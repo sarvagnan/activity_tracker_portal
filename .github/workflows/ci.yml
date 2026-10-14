@@ -72,6 +72,8 @@ jobs:
         run: tests/acceptance/run_stage_sync_completion_1.sh
       - name: Run stage-sync-checkpoint@1 acceptance
         run: tests/acceptance/run_stage_sync_checkpoint_1.sh
+      - name: Run coordinate-sender-sync@1 acceptance
+        run: tests/acceptance/run_coordinate_sender_sync_1.sh
 
   vouch:
     needs: [test, sender]

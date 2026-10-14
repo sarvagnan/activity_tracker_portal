@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_coordinate_sender_sync_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"d5789bb29c7563336500070249de369fbfdc716b9c0da78933e2a1e82377d0ee","parent":"GENESIS","recorded_at":"2026-10-14T20:06:01+00:00","sequence":1,"unit":{"name":"coordinate-sender-sync","version":"1"}}

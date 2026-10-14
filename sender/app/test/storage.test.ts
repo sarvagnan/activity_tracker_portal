@@ -248,14 +248,15 @@ test("safe integer limits match protocol numbers exactly and reject larger or fr
   await assert.rejects(database.query("SELECT 1.5 AS value"), TypeError);
 });
 
-test("production migrations create only the seven version four tables and automatic indexes", async (t) => {
+test("production migrations create only the twelve version five tables and automatic indexes", async (t) => {
   const { snapshotAttemptsMigration } = await import("../src/snapshot/begin-initial-snapshot.ts");
   const { outboxMigration } = await import("../src/outbox/stage-outbox-batch.ts");
   const { completionMigration } = await import("../src/outbox/stage-sync-completion.ts");
   const { checkpointMigration } = await import("../src/outbox/stage-sync-checkpoint.ts");
+  const { syncMigration } = await import("../src/sync/coordinate-sender-sync.ts");
   const { database } = await fixture(t);
-  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration]);
-  assert.deepEqual(await migrate(database), { status: "ready", version: 4 });
+  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration]);
+  assert.deepEqual(await migrate(database), { status: "ready", version: 5 });
   const schema = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name");
   const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
   assert.deepEqual(schema.map((row) => ({ ...row, sql: typeof row.sql === "string" ? normalize(row.sql) : row.sql })), [
@@ -330,6 +331,54 @@ test("production migrations create only the seven version four tables and automa
     { type: "index", name: "sqlite_autoindex_run_checkpoints_2", tbl_name: "run_checkpoints", sql: null },
     { type: "index", name: "sqlite_autoindex_snapshot_attempts_1", tbl_name: "snapshot_attempts", sql: null },
     { type: "index", name: "sqlite_autoindex_snapshot_attempts_2", tbl_name: "snapshot_attempts", sql: null },
+    { type: "index", name: "sqlite_autoindex_sync_blocks_1", tbl_name: "sync_blocks", sql: null },
+    { type: "index", name: "sqlite_autoindex_sync_run_cycles_1", tbl_name: "sync_run_cycles", sql: null },
+    { type: "index", name: "sqlite_autoindex_sync_run_types_1", tbl_name: "sync_run_types", sql: null },
+    { type: "index", name: "sqlite_autoindex_sync_runs_1", tbl_name: "sync_runs", sql: null },
+    { type: "index", name: "sqlite_autoindex_sync_types_1", tbl_name: "sync_types", sql: null },
+    { type: "index", name: "sqlite_autoindex_sync_types_2", tbl_name: "sync_types", sql: null },
+    {
+      type: "table", name: "sync_blocks", tbl_name: "sync_blocks",
+      sql: normalize(`CREATE TABLE sync_blocks (
+      record_type TEXT PRIMARY KEY NOT NULL REFERENCES sync_types (record_type),
+      cause TEXT NOT NULL CHECK (cause IN ('projection-refusal', 'record-too-large')),
+      identity TEXT NOT NULL, failure TEXT NOT NULL, path TEXT,
+      retry_requested INTEGER NOT NULL CHECK (retry_requested IN (0, 1)),
+      CHECK ((cause = 'projection-refusal') = (path IS NOT NULL)),
+      CHECK (cause = 'projection-refusal' OR retry_requested = 0)) STRICT`),
+    },
+    {
+      type: "table", name: "sync_run_cycles", tbl_name: "sync_run_cycles",
+      sql: normalize(`CREATE TABLE sync_run_cycles (
+      installation_id TEXT NOT NULL, run_sequence INTEGER NOT NULL, record_type TEXT NOT NULL, cycle_id TEXT NOT NULL,
+      records_before INTEGER NOT NULL CHECK (records_before >= 0),
+      PRIMARY KEY (installation_id, run_sequence, record_type, cycle_id),
+      FOREIGN KEY (installation_id, run_sequence, record_type)
+        REFERENCES sync_run_types (installation_id, run_sequence, record_type)) STRICT`),
+    },
+    {
+      type: "table", name: "sync_run_types", tbl_name: "sync_run_types",
+      sql: normalize(`CREATE TABLE sync_run_types (
+      installation_id TEXT NOT NULL, run_sequence INTEGER NOT NULL, record_type TEXT NOT NULL,
+      PRIMARY KEY (installation_id, run_sequence, record_type),
+      FOREIGN KEY (installation_id, run_sequence) REFERENCES sync_runs (installation_id, run_sequence)) STRICT`),
+    },
+    {
+      type: "table", name: "sync_runs", tbl_name: "sync_runs",
+      sql: normalize(`CREATE TABLE sync_runs (
+      installation_id TEXT NOT NULL, run_sequence INTEGER NOT NULL CHECK (run_sequence > 0),
+      trigger TEXT NOT NULL CHECK (trigger IN ('background', 'foreground', 'manual')),
+      started_at_ms INTEGER NOT NULL,
+      background_scheduling TEXT NOT NULL CHECK (background_scheduling IN ('available', 'restricted', 'unregistered')),
+      PRIMARY KEY (installation_id, run_sequence)) STRICT`),
+    },
+    {
+      type: "table", name: "sync_types", tbl_name: "sync_types",
+      sql: normalize(`CREATE TABLE sync_types (
+      record_type TEXT PRIMARY KEY NOT NULL, ring_order INTEGER NOT NULL UNIQUE CHECK (ring_order > 0),
+      change_cycle_id TEXT, change_snapshot_id TEXT, established INTEGER NOT NULL CHECK (established IN (0, 1)),
+      CHECK ((change_cycle_id IS NULL) = (change_snapshot_id IS NULL))) STRICT`),
+    },
   ]);
 });
 
