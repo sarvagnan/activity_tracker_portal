@@ -275,9 +275,19 @@ def stop_superseded_generation(store: OperationalStore, now: datetime) -> int | 
     _validate_now(now)
     with _store_outcomes():
         with store.read() as view:
-            if any(status.state == "pending" for status in view.installations()):
+            installations = view.installations()
+            if any(status.state == "pending" for status in installations):
                 raise InstallationRefusal("pending-installation-exists")
-            acknowledged = view.latest_acknowledged_generation()
+            delivering = next((status for status in installations if status.state in ("active", "draining")), None)
+            if delivering is None:
+                acknowledged = view.latest_acknowledged_generation()
+            else:
+                acknowledged = None
+                for sequence, _ in view.accepted_envelopes(delivering.installation_id):
+                    message = view.archived_message(delivering.installation_id, sequence)
+                    if message is not None and message.kind == "capability-acknowledgement":
+                        if acknowledged is None or message.staged_generation > acknowledged:
+                            acknowledged = message.staged_generation
             if acknowledged is None:
                 return None
             superseded = [item.generation for item in view.honored_generations() if item.generation < acknowledged]
