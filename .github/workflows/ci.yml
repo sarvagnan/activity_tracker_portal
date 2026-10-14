@@ -64,6 +64,8 @@ jobs:
         run: tests/acceptance/run_begin_initial_snapshot_1.sh
       - name: Run stage-outbox-batch@1 acceptance
         run: tests/acceptance/run_stage_outbox_batch_1.sh
+      - name: Run begin-initial-snapshot@2 acceptance
+        run: tests/acceptance/run_begin_initial_snapshot_2.sh
 
   vouch:
     needs: [test, sender]
