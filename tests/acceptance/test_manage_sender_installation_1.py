@@ -42,7 +42,7 @@ from activity_tracker_portal.sender_installation import (
     offer_enrollment,
     retire_destructively,
     retire_drained,
-    stop_superseded_generations,
+    stop_superseded_generation,
     withdraw_installation,
 )
 
@@ -292,7 +292,7 @@ class R2CallerErrors(Case):
             lambda: retire_drained(UNTOUCHABLE, A, 0, naive),
             lambda: retire_destructively(UNTOUCHABLE, A, naive, acknowledge_possible_loss=True),
             lambda: honor_capabilities(UNTOUCHABLE, CAPABILITIES, naive),
-            lambda: stop_superseded_generations(UNTOUCHABLE, naive),
+            lambda: stop_superseded_generation(UNTOUCHABLE, naive),
         ]
         for call in calls:
             with self.assertRaises(ValueError):
@@ -486,6 +486,25 @@ class R5RetriedConfirmations(Case):
             self.assertEqual(first, answer_enrollment_confirmation(self.store, confirmation(SECRET_CODE, A), at(4)))
             self.assertEqual(before, self.dump(), step)
         self.assertEqual(ConfirmationResponse("pending", advertisement(1), None), first)
+
+    def test_retries_receive_the_newest_advertisement(self) -> None:
+        self.honor(CAPABILITIES)
+        offer = self.offer()
+        data = confirmation(offer.code, A)
+        answer_enrollment_confirmation(self.store, data, at(1))
+        steps: list[tuple[Capabilities, int, Callable[[], object] | None]] = [
+            (LATER, 2, None),
+            (LATEST, 3, lambda: confirm_installation(self.store, A, installation_fingerprint(A), at(3))),
+            (CAPABILITIES, 4, lambda: begin_draining(self.store, A, at(4))),
+        ]
+        for capabilities, generation, transition in steps:
+            if transition is not None:
+                transition()
+            self.honor(capabilities, generation)
+            before = self.dump()
+            response = answer_enrollment_confirmation(self.store, data, at(generation + 0.5))
+            self.assertEqual(ConfirmationResponse("pending", advertisement(generation, capabilities), None), response)
+            self.assertEqual(before, self.dump())
 
     def test_ended_identity_never_enrolls_again(self) -> None:
         self.honor()
@@ -684,14 +703,14 @@ class R9CapabilityGenerations(Case):
         self.honor(CAPABILITIES)
         self.honor(LATER, 1)
         self.honor(LATEST, 2)
-        self.assertEqual((), stop_superseded_generations(self.store, at(3)))
+        self.assertIsNone(stop_superseded_generation(self.store, at(3)))
         self.activate(A, 3)
         self.deliver(A, 1, generation=2, minutes=4)
-        self.assertEqual((1,), stop_superseded_generations(self.store, at(5)))
+        self.assertEqual(1, stop_superseded_generation(self.store, at(5)))
         self.assertEqual([2, 3], self.honored())
-        self.assertEqual((), stop_superseded_generations(self.store, at(6)))
+        self.assertIsNone(stop_superseded_generation(self.store, at(6)))
         self.deliver(A, 2, generation=3, minutes=7)
-        self.assertEqual((2,), stop_superseded_generations(self.store, at(8)))
+        self.assertEqual(2, stop_superseded_generation(self.store, at(8)))
         self.assertEqual([3], self.honored())
 
     def test_latest_acknowledgement_is_the_highest_not_the_newest(self) -> None:
@@ -701,8 +720,39 @@ class R9CapabilityGenerations(Case):
         self.activate(A, 3)
         self.deliver(A, 1, generation=3, minutes=4)
         self.deliver(A, 2, generation=2, minutes=5)
-        self.assertEqual((1, 2), stop_superseded_generations(self.store, at(6)))
+        self.assertEqual(1, stop_superseded_generation(self.store, at(6)))
+        self.assertEqual(2, stop_superseded_generation(self.store, at(7)))
+        self.assertIsNone(stop_superseded_generation(self.store, at(8)))
         self.assertEqual([3], self.honored())
+
+    def test_each_call_stops_only_the_lowest_superseded_generation(self) -> None:
+        self.honor(CAPABILITIES)
+        self.honor(LATER, 1)
+        self.honor(LATEST, 2)
+        self.activate(A, 3)
+        self.deliver(A, 1, generation=3, minutes=4)
+
+        class CountingStops:
+            """The real store, recording each generation stop so one call is one transaction."""
+
+            def __init__(self, store: Any) -> None:
+                self.store = store
+                self.stopped: list[int] = []
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self.store, name)
+
+            def stop_honoring_generation(self, generation: int, at: datetime) -> None:
+                self.stopped.append(generation)
+                self.store.stop_honoring_generation(generation, at)
+
+        proxy = CountingStops(self.store)
+        self.assertEqual(1, stop_superseded_generation(proxy, at(5)))
+        self.assertEqual([1], proxy.stopped)
+        self.assertEqual([2, 3], self.honored())
+        self.assertEqual(2, stop_superseded_generation(proxy, at(6)))
+        self.assertIsNone(stop_superseded_generation(proxy, at(7)))
+        self.assertEqual([1, 2], proxy.stopped)
 
     def test_generations_are_kept_while_an_installation_is_pending(self) -> None:
         self.honor(CAPABILITIES)
@@ -710,9 +760,9 @@ class R9CapabilityGenerations(Case):
         self.activate(A, 2)
         self.deliver(A, 1, generation=2, minutes=3)
         self.enroll(B, 4)
-        self.assertRefused("pending-installation-exists", lambda: stop_superseded_generations(self.store, at(5)))
+        self.assertRefused("pending-installation-exists", lambda: stop_superseded_generation(self.store, at(5)))
         withdraw_installation(self.store, B, at(6))
-        self.assertEqual((1,), stop_superseded_generations(self.store, at(7)))
+        self.assertEqual(1, stop_superseded_generation(self.store, at(7)))
 
     def test_current_advertisement_is_the_highest_generation(self) -> None:
         self.assertRefused("no-capability-generation", lambda: current_advertisement(self.store))
@@ -722,7 +772,7 @@ class R9CapabilityGenerations(Case):
         self.assertEqual(advertisement(2, LATER), current_advertisement(self.store))
         self.activate(A, 2)
         self.deliver(A, 1, generation=2, minutes=3)
-        stop_superseded_generations(self.store, at(4))
+        stop_superseded_generation(self.store, at(4))
         self.assertEqual(advertisement(2, LATER), current_advertisement(self.store))
 
 
@@ -746,7 +796,7 @@ class R10RefusalsChangeNothing(Case):
             ("installation-transition-invalid", lambda: withdraw_installation(self.store, A, at(8))),
             ("active-installation-exists", lambda: confirm_installation(self.store, B, installation_fingerprint(B), at(8))),
             ("loss-not-acknowledged", lambda: retire_destructively(self.store, A, at(8), acknowledge_possible_loss=False)),
-            ("pending-installation-exists", lambda: stop_superseded_generations(self.store, at(8))),
+            ("pending-installation-exists", lambda: stop_superseded_generation(self.store, at(8))),
         ]
         for failure, call in refusals:
             self.assertRefused(failure, call)
@@ -793,7 +843,7 @@ class R10RefusalsChangeNothing(Case):
         begin_draining(self.store, A, at(8))
         before = self.dump()
         blocker = self.blocked()
-        for call in (lambda: retire_drained(self.store, A, 2, at(9)), lambda: stop_superseded_generations(self.store, at(9))):
+        for call in (lambda: retire_drained(self.store, A, 2, at(9)), lambda: stop_superseded_generation(self.store, at(9))):
             with self.assertRaises(InstallationRetryable) as busy:
                 call()
             self.assertEqual("store-busy", busy.exception.failure)
@@ -803,42 +853,6 @@ class R10RefusalsChangeNothing(Case):
         self.assertEqual("installation-unknown", unknown.exception.failure)
         blocker.rollback()
         self.assertEqual(before, self.dump())
-
-
-    def test_stopping_resumes_after_a_transient_failure(self) -> None:
-        self.honor(CAPABILITIES)
-        self.honor(LATER, 1)
-        self.honor(LATEST, 2)
-        self.activate(A, 3)
-        self.deliver(A, 1, generation=3, minutes=4)
-        case = self
-
-        class BusyOnSecondStop:
-            """The real store, made busy just before the second generation is stopped."""
-
-            def __init__(self, store: Any) -> None:
-                self.store = store
-                self.stops = 0
-                self.blocker: sqlite3.Connection | None = None
-
-            def __getattr__(self, name: str) -> Any:
-                return getattr(self.store, name)
-
-            def stop_honoring_generation(self, generation: int, at: datetime) -> None:
-                self.stops += 1
-                if self.stops == 2:
-                    self.blocker = case.blocked()
-                self.store.stop_honoring_generation(generation, at)
-
-        proxy = BusyOnSecondStop(self.store)
-        with self.assertRaises(InstallationRetryable) as caught:
-            stop_superseded_generations(proxy, at(5))
-        self.assertEqual("store-busy", caught.exception.failure)
-        assert proxy.blocker is not None
-        proxy.blocker.rollback()
-        self.assertEqual([2, 3], self.honored())
-        self.assertEqual((2,), stop_superseded_generations(self.store, at(6)))
-        self.assertEqual([3], self.honored())
 
 
 class R11HealthDataFreeOutcomes(Case):
@@ -898,7 +912,7 @@ class R11HealthDataFreeOutcomes(Case):
         self.enroll(C, 16)
         refused(lambda: confirm_installation(self.store, C, "0" * 64, at(17)))
         refused(lambda: begin_draining(self.store, C, at(17)))
-        refused(lambda: stop_superseded_generations(self.store, at(17)))
+        refused(lambda: stop_superseded_generation(self.store, at(17)))
         refused(lambda: retire_destructively(self.store, C, at(17), acknowledge_possible_loss=False))
         self.activate(D, 18)
         refused(lambda: confirm_installation(self.store, C, installation_fingerprint(C), at(19)))

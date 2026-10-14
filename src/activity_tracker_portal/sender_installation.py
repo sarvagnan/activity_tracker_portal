@@ -105,7 +105,7 @@ def honor_capabilities(store: OperationalStore, capabilities: Capabilities, now:
     raise NotImplementedError("manage-sender-installation@1 is not implemented")
 
 
-def stop_superseded_generations(store: OperationalStore, now: datetime) -> tuple[int, ...]:
+def stop_superseded_generation(store: OperationalStore, now: datetime) -> int | None:
     raise NotImplementedError("manage-sender-installation@1 is not implemented")
 
 

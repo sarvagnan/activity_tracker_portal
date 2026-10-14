@@ -8,7 +8,7 @@
     {
       "name": "operator_intent",
       "mode": "pure",
-      "description": "One Operator intent: offer enrollment; confirm a pending installation with the fingerprint the Operator compared; withdraw a pending installation; begin draining; retire as drained with the final sequence the Sender reports; retire destructively with acknowledged possible loss; honor the configured capabilities; or stop superseded capability generations."
+      "description": "One Operator intent: offer enrollment; confirm a pending installation with the fingerprint the Operator compared; withdraw a pending installation; begin draining; retire as drained with the final sequence the Sender reports; retire destructively with acknowledged possible loss; honor the configured capabilities; or stop the lowest superseded capability generation."
     },
     {
       "name": "enrollment_confirmation",
@@ -51,7 +51,7 @@
     },
     {
       "name": "capability_generation",
-      "description": "The generation honored for the configured capabilities, or the superseded generations stopped."
+      "description": "The generation honored for the configured capabilities, or the one superseded generation stopped."
     },
     {
       "name": "refusal",
@@ -103,7 +103,7 @@
       "the Sender's identity, key, confirmation, capability adoption, drain mode, and local destruction, which belong to manage-sender-enrollment",
       "accepting deliveries from pending, draining, retired, or withdrawn installations, which belongs to the accept-* units",
       "HTTP routes and Authorized Ingress, which belong to the Portal ingress shell",
-      "serializing store-writing operations across lifecycle intents, confirmation answers, generation changes, and archival, which belongs to the Portal process that hosts them",
+      "serializing store-writing operations across lifecycle intents, confirmation answers, generation changes, and archival, which the Portal ingress shell provides behind one writer lock and verifies in its own tests",
       "Operations page and portal command presentation, including how fingerprints and offers are displayed"
     ]
   },
