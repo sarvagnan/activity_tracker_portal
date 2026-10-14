@@ -11,9 +11,9 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { beginReconciliationSnapshot } from "../src/snapshot/begin-reconciliation-snapshot.ts";
 import type { ReconcileRequest, ReconcileResult } from "../src/snapshot/begin-reconciliation-snapshot.ts";
-import { beginInitialSnapshot, currentSnapshotAttempt, snapshotAttempt } from "../src/snapshot/begin-initial-snapshot.ts";
+import { beginInitialSnapshot, currentSnapshotAttempt, snapshotAttempt, snapshotAttemptsMigration } from "../src/snapshot/begin-initial-snapshot.ts";
 import type { BeginOptions, ChangesTokenIssuer, IssuedToken, SnapshotAttempt } from "../src/snapshot/begin-initial-snapshot.ts";
-import { changeOrigin, cycleProgress, stageOutboxBatch } from "../src/outbox/stage-outbox-batch.ts";
+import { changeOrigin, cycleProgress, outboxMigration, stageOutboxBatch } from "../src/outbox/stage-outbox-batch.ts";
 import type { StagingContext } from "../src/outbox/stage-outbox-batch.ts";
 import type { DatabaseValue, SenderDatabase } from "../src/storage/database.ts";
 import { migrate } from "../src/storage/migrations.ts";
@@ -28,13 +28,16 @@ const NOW = 1_791_000_005_000;
 const SENTINEL = "SENTINEL";
 const KEY_ALIAS = "synthetic-installation-key";
 const uuid = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+// The migrations this unit's tables need, named explicitly so that later units' migrations do not
+// change what the suite asserts (rebound after publication; see the pack's rebind note).
+const MIGRATIONS = [snapshotAttemptsMigration, outboxMigration];
 
 async function fixture(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "sender-synthetic-"));
   const path = join(directory, "synthetic.sqlite");
   let database = await openNodeDatabase(path);
   t.after(async () => { await database.close(); rmSync(directory, { recursive: true, force: true }); });
-  assert.deepEqual(await migrate(database), { status: "ready", version: 2 });
+  assert.deepEqual(await migrate(database, MIGRATIONS), { status: "ready", version: 2 });
   const cipher = new NodeInstallationCipher();
   assert.equal((await cipher.create(KEY_ALIAS)).status, "ok");
   return {
@@ -219,7 +222,7 @@ test("the_reconciliation_survives_reopening", async (t) => {
   await finishedInitial(f, uuid(0xa1));
   const attempt = begun(await reconcile(f.database, request(uuid(0xa1)), new ScriptedIssuer(), options(uuid(0xa2))));
   const reopened = await f.reopen();
-  assert.deepEqual(await migrate(reopened), { status: "ready", version: 2 });
+  assert.deepEqual(await migrate(reopened, MIGRATIONS), { status: "ready", version: 2 });
   assert.deepEqual(await currentSnapshotAttempt(reopened, "steps"), attempt);
 });
 
