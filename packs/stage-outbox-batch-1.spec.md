@@ -17,8 +17,10 @@ The unit is TypeScript only. The page arrives as a TypeScript value that mirrors
 **TypeScript**, module `sender/app/src/outbox/stage-outbox-batch.ts`. It uses:
 - the 3ug storage seam (`SenderDatabase`, `Migration`);
 - the 3ug `InstallationCipher` seam;
-- `sender/protocol` (`partitionPage`, `chainStart`, `encodeMessage`);
+- the published protocol library `@activity-tracker-portal/ingest-protocol` (`partitionPage`, `chainStart`, `ProtocolRefusal`);
 - `begin-initial-snapshot@1`'s `currentSnapshotAttempt`.
+
+The stub declares every exported type: `ObservedPage` (`SnapshotPage | ChangePage`), `ChangeItem`, `StagingContext`, `StagingGeneration`, `CycleKind`, `CycleProgress`, `ChangeOrigin`, `StageResult`, `OutboxKind`, `OutboxMessage`, and `OutboxRow`.
 
 ### The page
 
@@ -49,7 +51,7 @@ The unit is TypeScript only. The page arrives as a TypeScript value that mirrors
   generation: { generation, maxRecordCount, maxMessageBytes, projectionSchemas } }
 ```
 
-`projectionSchemas` maps each record type to its supported projection schema versions. The context comes from `manage-sender-enrollment`'s cached capability generation, and the caller supplies it.
+`projectionSchemas` is a plain object mapping each record type to its supported projection schema versions; only its own properties count. The context comes from `manage-sender-enrollment`'s cached capability generation, and the caller supplies it.
 
 ### Functions
 
@@ -61,14 +63,15 @@ The unit is TypeScript only. The page arrives as a TypeScript value that mirrors
   - `pagesStaged`, `fragmentCount`, `recordCount`, and `chain`;
   - `position` (snapshot cycles) or `changesToken` and `unreadSinceMs` (Change Cycles);
   - `finished`.
+- `changeOrigin(database, recordType)` returns `{ snapshotId, changesToken, unreadSinceMs }`, where the record type's next new Change Cycle must read from (R6), or `null` when the type has no current snapshot attempt.
 - **Shared Outbox primitives** (Decision 2), which later stagers use in their own transactions:
-  - `outboxAad(installationId, sequence)`;
-  - `lastOutboxSequence(database, installationId)`;
+  - `outboxAad(installationId, sequence)`, which is synchronous;
+  - `lastOutboxSequence(database, installationId)`, which is 0 before the installation's first message;
   - `appendOutboxMessages(transaction, installationId, expectedLastSequence, messages)`, where each message is `{ kind, sealed, messageBytes }`. It returns `false` and writes nothing when the high-water mark is no longer `expectedLastSequence`.
-  - `outboxMessages(database)`.
+  - `outboxMessages(database)`, which lists every row as `{ installationId, sequence, kind, sealed, messageBytes }`, ordered by installation and sequence.
 - `outboxMigration`, which is Sender schema version 2.
 
-Caller errors throw `TypeError`. They are malformed identities, record types, integers, byte arrays, tokens, Source Identities, or generation fields.
+Caller errors throw `TypeError`; R12 lists them.
 
 ## Requirements
 
@@ -103,17 +106,17 @@ Each staged page's fragments are exactly the bytes that `ingest-protocol@1`'s `p
 - the cycle's saved chain value;
 - the page's items in order.
 
-A snapshot projection becomes `{"kind": "projection", "data": <base64>}`. Change items keep the reader's order, retractions before projections. An empty page stages exactly one fragment with no items. Sequences continue across cycles and record types for the same installation.
+A snapshot projection becomes `{"kind": "projection", "data": <base64>}`. Change items keep the reader's order, retractions before projections. An empty page stages exactly one fragment with no items. Sequences continue across cycles and record types for the same installation, and each installation has its own. A sequence whose row was later removed, as `send-outbox-message` removes delivered rows, is never reused.
 
-Tests: `fragments_match_the_protocol_partition`, `items_keep_their_page_order`, `an_empty_page_stages_one_empty_fragment`, `sequences_continue_across_cycles_and_types`.
+Tests: `fragments_match_the_protocol_partition`, `items_keep_their_page_order`, `an_empty_page_stages_one_empty_fragment`, `sequences_continue_across_cycles_and_types`, `removed_sequences_are_never_reused`.
 
 ### R3 — Each fragment is sealed with its own authenticated data
 
-Each fragment is sealed once, with `cipher.seal(keyAlias, fragmentBytes, outboxAad(installationId, sequence))`. `outboxAad` binds the sealed bytes to their Sender Installation and sequence; the executable pack fixes its exact bytes.
+Each fragment is sealed once, with `cipher.seal(keyAlias, fragmentBytes, outboxAad(installationId, sequence))`. `outboxAad` binds the sealed bytes to their Sender Installation and sequence. Its bytes are the UTF-8 encoding of `activity-tracker-outbox-v1:<installationId>:<sequence>`, with the sequence in decimal.
 
 A stored row opens to its exact fragment bytes only with its own authenticated data. Opening it with another sequence or installation fails authentication.
 
-No fragment bytes, projection bytes, or Source Identities appear in the database outside the sealed blobs. The test checks this by scanning the database file for synthetic sentinels.
+No fragment bytes, projection bytes, Source Identities, or message hashes appear in the database outside the sealed blobs. The test checks this by scanning the database file for synthetic sentinels, base64 projections, fragment JSON, and each fragment's SHA-256.
 
 Tests: `each_fragment_is_sealed_with_its_own_aad`, `sealed_rows_fail_under_another_sequence`, `the_database_holds_no_plaintext_items`.
 
@@ -140,6 +143,7 @@ A snapshot page's `cycleId` must be its record type's current snapshot attempt, 
 - **Installation:** an attempt begun under another Sender Installation than the context's is `installation-mismatch`.
 - **Position:** the page's `pageIndex` must be one above the cycle's pages staged, and `readFrom` must equal its saved position (`null` before the first page). Otherwise `page-position-mismatch`.
 - **Finished cycles:** a page after the exhausted page is `cycle-finished`.
+- **Kind of page:** a snapshot page naming a Change Cycle, or a page of another record type, does not name its type's current attempt, so it is `cycle-not-current`.
 
 The first staged page creates the cycle's progress from its empty initial state: no pages, zero counts, and the chain start of the snapshot identity.
 
@@ -152,9 +156,9 @@ A Change Cycle descends from its record type's current snapshot attempt. Once th
 The first page of a new cycle identity must meet three conditions:
 - the attempt's snapshot chain is finished, otherwise `snapshot-unfinished`;
 - no earlier Change Cycle under the attempt is unfinished, otherwise `change-cycle-open`;
-- `readFrom` equals the change origin, otherwise `page-position-mismatch`. The origin is the final changes token of the latest finished Change Cycle under the attempt, or, if there is none, the attempt's pre-read token. The origin's unread-since instant comes with it.
+- `readFrom` equals the change origin, otherwise `page-position-mismatch`. The origin is the final changes token of the latest finished Change Cycle under the attempt, or, if there is none, the attempt's pre-read token. The origin's unread-since instant comes with it, and `changeOrigin` reports both. An unfinished cycle does not move the origin.
 
-Later pages continue as in R5. The saved changes token takes the place of the saved position, and a page after the one without `hasMore` is `cycle-finished`.
+Later pages continue as in R5. The saved changes token takes the place of the saved position, and a page after the one without `hasMore` is `cycle-finished`. A change page naming a snapshot cycle, a cycle under another attempt, or a cycle of another record type is `cycle-not-current`.
 
 Tests:
 - `the_first_change_cycle_starts_from_the_pre_read_token`
@@ -186,7 +190,7 @@ Cipher failures are classified as follows:
 - `missing-key` is `installation-key-missing`.
 - `unusable-key` is `installation-key-unusable`.
 - `keystore-unavailable` is `keystore-unavailable`.
-- A cipher that throws or returns a malformed result is `unexpected-cipher-failure`.
+- A cipher that throws any value, or returns anything else, is `unexpected-cipher-failure`. That includes an empty or non-byte sealed value and any other failure reason, such as `authentication-failed`.
 
 A failure while sealing the third of four fragments stores none of them.
 
@@ -199,16 +203,41 @@ Tests: `refusals_and_blocks_write_nothing`, `cipher_failures_write_nothing`, `a_
 
 ### R10 — Staging rechecks its state inside the commit
 
-The cycle's progress, its attempt's currency, and the installation's high-water mark are read before sealing. They are read again inside the commit transaction. If any of them changed, the result is `conflict` with `staging-conflict`, nothing is written, and the sealed bytes are discarded. A retry partitions and seals again from the new state.
+The cycle's progress, its attempt's currency, and the installation's high-water mark are read before sealing; for a new Change Cycle, so are its snapshot's progress and the latest Change Cycle under the attempt. They are read again inside the commit transaction. If any of them changed, the result is `conflict` with `staging-conflict`, nothing is written, and the sealed bytes are discarded. A retry partitions and seals again from the new state. `appendOutboxMessages` applies the same rule to the high-water mark for every stager.
 
 Tests: `interleaved_stagings_conflict_without_writing`, `a_retry_after_conflict_stages_from_the_new_state`, `append_refuses_a_moved_high_water_mark`.
 
 ### R11 — The Sender schema migration
 
-`outboxMigration` is Sender schema version 2, registered after `begin-initial-snapshot@1`'s version 1. It creates three tables, and the executable pack pins their exact layout:
-- **The Outbox:** sequence, installation, kind, sealed bytes, and plaintext byte length. Its kind is constrained to the five Outbox Message kinds.
-- **The per-installation high-water marks.**
-- **Cycle progress.** It references the snapshot attempt each cycle descends from.
+`outboxMigration` is Sender schema version 2, registered after `begin-initial-snapshot@1`'s version 1. It creates exactly these three tables, compared token for token with whitespace ignored, and nothing else besides their automatic indexes:
+
+```sql
+CREATE TABLE outbox_messages (
+  installation_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0),
+  kind TEXT NOT NULL CHECK (kind IN ('capability-acknowledgement', 'ingest-batch', 'snapshot-completion', 'change-completion', 'sync-checkpoint')),
+  sealed BLOB NOT NULL, message_bytes INTEGER NOT NULL CHECK (message_bytes > 0),
+  PRIMARY KEY (installation_id, sequence)) STRICT;
+CREATE TABLE outbox_high_water (
+  installation_id TEXT PRIMARY KEY NOT NULL, last_sequence INTEGER NOT NULL CHECK (last_sequence > 0)) STRICT;
+CREATE TABLE cycle_progress (
+  cycle_id TEXT PRIMARY KEY NOT NULL, record_type TEXT NOT NULL,
+  cycle_kind TEXT NOT NULL CHECK (cycle_kind IN ('initial-snapshot', 'reconciliation-snapshot', 'change-cycle')),
+  snapshot_id TEXT NOT NULL, lineage INTEGER NOT NULL CHECK (lineage >= 0), installation_id TEXT NOT NULL,
+  pages_staged INTEGER NOT NULL CHECK (pages_staged > 0), fragment_count INTEGER NOT NULL CHECK (fragment_count > 0),
+  record_count INTEGER NOT NULL CHECK (record_count >= 0), chain TEXT NOT NULL,
+  position BLOB, changes_token TEXT, unread_since_ms INTEGER, finished INTEGER NOT NULL CHECK (finished IN (0, 1)),
+  UNIQUE (snapshot_id, lineage),
+  FOREIGN KEY (snapshot_id, record_type) REFERENCES snapshot_attempts (snapshot_id, record_type),
+  CHECK ((cycle_kind = 'change-cycle') = (lineage > 0)),
+  CHECK ((lineage = 0) = (cycle_id = snapshot_id)),
+  CHECK (CASE WHEN cycle_kind = 'change-cycle'
+    THEN position IS NULL AND changes_token IS NOT NULL AND unread_since_ms IS NOT NULL
+    ELSE position IS NOT NULL AND changes_token IS NULL AND unread_since_ms IS NULL END)) STRICT;
+```
+
+- **The Outbox** keys each sealed message by installation and sequence, and constrains its kind to the five Outbox Message kinds.
+- **The high-water marks** hold each installation's last sequence.
+- **Cycle progress** references the snapshot attempt each cycle descends from. `lineage` is 0 for the snapshot cycle itself, whose identity is the attempt's, and numbers the attempt's Change Cycles 1, 2, and so on.
 
 Nothing else reads or writes these tables except this module's functions. A database already at version 2 is unchanged by migration.
 
@@ -216,14 +245,22 @@ Tests: `migration_creates_version_two`, `the_schema_constrains_outbox_kinds`, `m
 
 ### R12 — Caller errors, health-data-free outcomes, and order of checks
 
-**Caller errors.** A malformed page or context throws `TypeError` before any database or cipher call.
+**Caller errors.** A malformed page or context throws `TypeError` before any database or cipher call:
+- an `installationId` or `cycleId` that is not a lowercase UUID, or an empty or non-string `keyAlias`;
+- a `recordType` that does not match the Wire Protocol record-type pattern of at most 64 characters, in the page or as a `projectionSchemas` key;
+- a `generation`, `maxRecordCount`, `projectionSchemaVersion`, `pageIndex`, or listed schema version that is not a positive safe integer, a `maxMessageBytes` that is not a safe integer of at least 4096, or `projectionSchemas` that is not a plain object of arrays;
+- an unknown `source`; a snapshot `readFrom` that is neither `null` nor bytes, `nextPosition` that is not bytes, or a non-boolean `exhausted`;
+- a change `readFrom` or `nextChangesToken` that is empty or not a string, a `nextUnreadSinceMs` that is not a safe integer, or a non-boolean `hasMore`;
+- a projection that is not non-empty bytes, a Source Identity that is not 1 to 256 Unicode code points free of control characters below U+0020, or an item of another kind.
+
+`outboxAad` throws `TypeError` for a malformed installation or a sequence that is not a positive safe integer. `appendOutboxMessages` throws `TypeError` for a malformed installation, an `expectedLastSequence` that is not a non-negative safe integer, an empty message list, or a message with an unknown kind, empty or non-byte sealed bytes, or a byte length that is not a positive safe integer.
 
 **Health-data-free outcomes.** Every non-`staged` result carries only a named failure. Every named failure is reachable, and no other failure is produced.
 
 **Order of checks.** The first applicable check in this order wins:
 1. caller errors;
 2. the generation's projection schemas;
-3. the cycle checks of R5 and R6, against the state read before sealing;
+3. reading the state, where a failing read is `storage-failed`, then the cycle checks of R5 and R6 in this order: `cycle-not-current`, `installation-mismatch`, `cycle-finished`, `snapshot-unfinished`, `change-cycle-open`, `page-position-mismatch`;
 4. partitioning and its block;
 5. sealing;
 6. the commit, with its recheck and storage failure.
@@ -274,30 +311,47 @@ Tests: `malformed_inputs_are_caller_errors`, `non_staged_results_carry_only_name
 
 - TypeScript tests use:
   - the 3ug `node:sqlite` substitute in temporary files;
-  - the 3ug `NodeInstallationCipher`, with injected keys and IVs, plus a scripted failing cipher;
-  - `begin-initial-snapshot@1` with a scripted issuer to create and abandon attempts.
+  - the 3ug `NodeInstallationCipher`, with real AES-256-GCM, its synthetic invalidation and outage, and a recording `SpyCipher` that delegates to it. The spy can replace a numbered seal call with a returned value or a thrown value, or run a hook before it;
+  - `begin-initial-snapshot@1` with a scripted issuer to create and abandon attempts. A Reconciliation Snapshot attempt is written directly to that unit's tables, because `begin-reconciliation-snapshot` is not yet delivered.
 
-  They inject database failures through a wrapping `SenderDatabase`, which fails each mutating statement in turn, or every read.
+  They inject database failures through a wrapping `SenderDatabase`, which fails each mutating statement in turn, every read, every read inside the transaction, the commit, or everything. Concurrency is simulated by a seal hook that stages or begins on the same connection while the page is being sealed.
 - The runner does not trust exit statuses. It passes the suite only when a fresh JUnit report lists exactly the bound suite's tests, none failed, errored, or skipped.
 - The trusted toolchain boundary is:
   - Node 26.11.1, pinned by `.node-version`;
   - `uv` and the pinned CPython;
-  - the 3ug storage and cipher seams;
-  - the published `sender/protocol` library;
-  - `begin-initial-snapshot@1`'s module.
+  - the 3ug storage and cipher seams in `sender/app/src/storage/` and `sender/app/src/installation-cipher.ts`;
+  - the published `@activity-tracker-portal/ingest-protocol` library and `begin-initial-snapshot@1`'s module.
 - Not mechanically provable here; the approver confirms these in implementation review:
-  - the production cipher is the Keystore-backed `nativeInstallationCipher()`;
-  - the implementation registers `outboxMigration` second in the production migration list, and changes nothing in the seams or published modules.
+  - the production cipher is the Keystore-backed `nativeInstallationCipher()`, which the caller supplies;
+  - the implementation registers `outboxMigration` second in the production migration list `senderMigrations`, after `snapshotAttemptsMigration`, and changes nothing in the seams or published modules;
+  - the implementation updates the 3ug storage test's production-migration expectation to version 2 and this unit's tables, which is the only change it makes to that unbound test.
 
 ## Freeze prerequisites
 
-After Operator approval, the executable pack adds:
-- the TypeScript suite, about 45 tests;
+The Operator approved the draft. The executable pack adds:
+- the TypeScript suite, 41 tests;
 - the Python contract suite, 2 tests;
 - the self-verifying runner;
 - the Interface stub `sender/app/src/outbox/stage-outbox-batch.ts`.
 
 It also pins:
-- the exact `outboxAad` bytes;
+- the exact `outboxAad` bytes (R3);
 - the R11 table layout;
-- the structure of the scripted failing cipher.
+- the caller-error list and the order of the cycle checks (R12);
+- `changeOrigin`, which reports R6's origin.
+
+A throwaway reference implementation passed all 41 tests and typechecks. Three mutants of it each failed at least one test:
+- reading `projectionSchemas` with `in`, which inherits `constructor`;
+- skipping the in-transaction recheck;
+- counting a Source Identity's UTF-16 code units.
+
+Against the stub:
+- every TypeScript test fails, because the stub's migration throws and the 3ug runner reports `frozen`, which the fixture asserts against;
+- the two Python tests pass, because they check the contract.
+
+The binding is:
+- spec files: the contract and this pack;
+- test files:
+  - `stage-outbox-batch-1.test.ts`;
+  - its 3ug substitutes `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`;
+  - `test_stage_outbox_batch_1.py` and the runner.
