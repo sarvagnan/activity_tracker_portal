@@ -1,0 +1,124 @@
+{
+  "contract_schema": 1,
+  "scope": "manage-sender-installation",
+  "version": "1",
+  "kind": "integration",
+  "purpose": "Carry out the Operator's Sender Installation intents in the Portal under the Operator-mediated Wire Protocol Version 1 lifecycle: offer one-use enrollment, answer enrollment confirmations, confirm or withdraw pending installations, drain an installation and retire it once the Sender's reported final sequence matches the archived history, retire it destructively only with acknowledged possible loss, and assign and retire capability generations, keeping at most one active or draining installation and never letting a new installation inherit retired operational state.",
+  "inputs": [
+    {
+      "name": "operator_intent",
+      "mode": "pure",
+      "description": "One Operator intent: offer enrollment; confirm a pending installation with the fingerprint the Operator compared; withdraw a pending installation; begin draining; retire as drained with the final sequence the Sender reports; retire destructively with acknowledged possible loss; honor the configured capabilities; or stop superseded capability generations."
+    },
+    {
+      "name": "enrollment_confirmation",
+      "mode": "pure",
+      "description": "The exact bytes a Sender sent to confirm an enrollment, claiming an enrollment code, a non-authoritative installation identity, and its fingerprint."
+    },
+    {
+      "name": "portal_configuration",
+      "mode": "pure",
+      "description": "The Portal URL placed in enrollment offers, and the configured capability content: supported Wire Protocol Versions, per-type Source Projection schema versions, maximum record count, and maximum message bytes."
+    },
+    {
+      "name": "current_time",
+      "mode": "pure",
+      "description": "The timezone-aware time of the intent or confirmation, supplied by the caller."
+    },
+    {
+      "name": "enrollment_randomness",
+      "mode": "volatile",
+      "description": "Ten random bytes per enrollment offer from the supplied source, by default the operating system's cryptographically secure generator."
+    },
+    {
+      "name": "operational_state",
+      "mode": "effectful",
+      "description": "The Operational Store's enrollment offers, installations and lifecycle events, honored capability generations and acknowledgements, and per-installation delivery facts, read and written through operational-store@1."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "enrollment_offer",
+      "description": "The one-use enrollment code, its expiry, and the exact enrollment-offer message bytes for a QR code or manual entry."
+    },
+    {
+      "name": "confirmation_response",
+      "description": "For an enrollment confirmation: pending, with the exact bytes of the current capability advertisement; retryable, with retryable-failure message bytes; or refused, with a named failure and no response bytes."
+    },
+    {
+      "name": "lifecycle_transition",
+      "description": "The installation's status after a confirmed, withdrawn, draining, or retired transition."
+    },
+    {
+      "name": "capability_generation",
+      "description": "The generation honored for the configured capabilities, or the superseded generations stopped."
+    },
+    {
+      "name": "refusal",
+      "description": "A named refusal of an Operator intent that leaves the Operational Store unchanged."
+    },
+    {
+      "name": "retryable",
+      "description": "A named transient store condition that leaves the Operational Store unchanged, so the intent can be repeated."
+    }
+  ],
+  "named_failures": [
+    { "name": "malformed-message", "outcome": "refusal" },
+    { "name": "noncanonical-message", "outcome": "refusal" },
+    { "name": "unsupported-wire-protocol", "outcome": "refusal" },
+    { "name": "enrollment-code-unknown", "outcome": "refusal" },
+    { "name": "enrollment-code-consumed", "outcome": "refusal" },
+    { "name": "enrollment-code-expired", "outcome": "refusal" },
+    { "name": "enrollment-code-exists", "outcome": "refusal" },
+    { "name": "installation-ended", "outcome": "refusal" },
+    { "name": "installation-unknown", "outcome": "refusal" },
+    { "name": "installation-transition-invalid", "outcome": "refusal" },
+    { "name": "active-installation-exists", "outcome": "refusal" },
+    { "name": "fingerprint-mismatch", "outcome": "refusal" },
+    { "name": "drain-sequence-mismatch", "outcome": "refusal" },
+    { "name": "drain-has-gaps", "outcome": "refusal" },
+    { "name": "loss-not-acknowledged", "outcome": "refusal" },
+    { "name": "no-capability-generation", "outcome": "refusal" },
+    { "name": "pending-installation-exists", "outcome": "refusal" },
+    { "name": "store-busy", "outcome": "retryable" },
+    { "name": "storage-reserve-exhausted", "outcome": "retryable" }
+  ],
+  "observable_effects": [
+    {
+      "name": "operational-store-write",
+      "description": "Records enrollment offers, enrolls, activates, withdraws, drains, and retires installations with their lifecycle events, and honors or stops capability generations, each in one operational-store@1 transaction or not at all."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "issuing one-use enrollment codes and enrollment offers, and their lifetime",
+      "answering enrollment confirmations, including idempotent retries and refusal of ended identities",
+      "requiring the compared fingerprint before activation",
+      "when an installation may be retired as drained, and the acknowledgement destructive retirement requires",
+      "assigning capability generations to configured capabilities and when superseded generations stop being honored",
+      "classifying store and protocol outcomes into the named failures"
+    ],
+    "does_not_own": [
+      "message shapes, canonical bytes, fingerprints, and compatibility decisions, which belong to ingest-protocol",
+      "the lifecycle state machine, one-use code storage, transactions, and the one-delivering-installation invariant, which belong to operational-store",
+      "the Sender's identity, key, confirmation, capability adoption, drain mode, and local destruction, which belong to manage-sender-enrollment",
+      "accepting deliveries from pending, draining, retired, or withdrawn installations, which belongs to the accept-* units",
+      "HTTP routes and Authorized Ingress, which belong to the Portal ingress shell",
+      "Operations page and portal command presentation, including how fingerprints and offers are displayed"
+    ]
+  },
+  "dependencies": [
+    { "scope": "ingest-protocol", "version": "1" },
+    { "scope": "operational-store", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/manage-sender-installation-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_manage_sender_installation_1.py"
+    },
+    "runner": "tests/acceptance/run_manage_sender_installation_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}
