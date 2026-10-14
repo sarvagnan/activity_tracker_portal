@@ -167,6 +167,20 @@ function failing(database: SenderDatabase, rule: { mutation?: number; queries?: 
   return wrap(database, false);
 }
 
+/** Runs `hook` once, just before the wrapped database opens its next transaction. */
+function beforeTransaction(database: SenderDatabase, hook: () => Promise<void>): SenderDatabase {
+  let pending = true;
+  return {
+    execute: (sql, parameters) => database.execute(sql, parameters),
+    query: (sql, parameters) => database.query(sql, parameters),
+    async transaction<T>(fn: (transaction: SenderDatabase) => T | Promise<T>): Promise<T> {
+      if (pending) { pending = false; await hook(); }
+      return database.transaction(fn);
+    },
+    close: () => database.close(),
+  };
+}
+
 /** A database whose every use throws and is counted, to prove validation comes first. */
 function untouchable() {
   let calls = 0;
@@ -419,6 +433,25 @@ test("the_commit_rechecks_the_preconditions", async (t) => {
     assert.equal(clock.nowCalls, 0);
     assert.equal(await snapshotAttempt(f.database, uuid(n + 8)), null);
     assert.equal((await currentSnapshotAttempt(f.database, recordType))?.abandonedAtMs, null);
+  }
+});
+
+test("the_recheck_runs_inside_the_commit_transaction", async (t) => {
+  const f = await fixture(t);
+  for (const [recordType, n, change, failure] of [
+    ["steps", 0xa1, "UPDATE cycle_progress SET finished = 0 WHERE cycle_id = ?", "baseline-unfinished"],
+    ["weight", 0xb1, "UPDATE snapshot_attempts SET installation_id = '00000000-0000-4000-8000-000000000002' WHERE snapshot_id = ?", "installation-mismatch"],
+  ] as const) {
+    const attempt = await finishedInitial(f, uuid(n), { recordType });
+    const issuer = new ScriptedIssuer();
+    const clock = options(uuid(n + 8));
+    const database = beforeTransaction(f.database, async () => { await f.database.execute(change, [attempt.snapshotId]); });
+    assert.deepEqual(await reconcile(database, request(uuid(n), { recordType }), issuer, clock), { outcome: "refused", failure }, change);
+    assert.deepEqual(issuer.calls, [recordType], "the token was obtained before the change");
+    assert.deepEqual([clock.uuidCalls, clock.nowCalls], [1, 0]);
+    assert.equal(await snapshotAttempt(f.database, uuid(n + 8)), null);
+    assert.equal((await currentSnapshotAttempt(f.database, recordType))?.snapshotId, uuid(n));
+    assert.equal((await snapshotAttempt(f.database, uuid(n)))?.abandonedAtMs, null);
   }
 });
 

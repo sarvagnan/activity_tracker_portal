@@ -82,7 +82,7 @@ The request must satisfy three conditions, or it is refused with nothing written
 - **Same installation.** The current attempt must belong to the request's Sender Installation. Otherwise the result is `installation-mismatch`.
 - **An established page chain.** The current attempt must be one of these:
   - an Initial attempt whose own snapshot page chain `stage-outbox-batch@1` reports as finished. The progress must be a finished `initial-snapshot` cycle with the attempt's identity, record type, and installation. Any other progress found under that identity does not count, such as an unrelated cycle whose identity the attempt reuses;
-  - an unfinished Reconciliation Snapshot, which is a reread restarted before it finished. That holds whether or not any of its pages were staged.
+  - a Reconciliation Snapshot, finished or unfinished. A finished one is an established baseline again. An unfinished one is a reread that may be restarted before it finishes, whether or not any of its pages were staged.
 
   An unfinished Initial Snapshot is `baseline-unfinished`. For that case, `coordinate-sender-sync` restarts the Initial Snapshot through `begin-initial-snapshot` instead.
 
@@ -112,13 +112,13 @@ Tests: `a_bad_uuid_source_is_a_caller_error`.
 
 ### R6 — The commit rechecks
 
-Inside the commit transaction, R3's checks run again before `now()` is read, so a refused recheck reads no clock. Then the attempt is committed through `commitSnapshotAttempt`.
+Inside the commit transaction, R3's checks run again on the transaction handle before `now()` is read, so a refused recheck reads no clock. The recheck must run inside the transaction. A change that lands just before the transaction opens is refused too, after the token and identity were obtained. Examples are a change to the attempt's installation, or to its finished progress. Then the attempt is committed through `commitSnapshotAttempt`.
 
 If the current attempt changed meanwhile, the result is that check's refusal. Examples:
 - another reconciliation or an Initial restart landed;
 - the same attempt's installation or finished progress changed underneath it. The issued token is discarded, and nothing is written.
 
-Tests: `the_commit_rechecks_the_preconditions`.
+Tests: `the_commit_rechecks_the_preconditions`, `the_recheck_runs_inside_the_commit_transaction`.
 
 ### R7 — Nothing begun on failure
 
@@ -184,7 +184,7 @@ Not mechanically provable here: the production UUID source is a cryptographicall
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the TypeScript suite, 24 tests;
+- the TypeScript suite, 25 tests;
 - the Python contract suite, 2 tests;
 - the self-verifying runner;
 - the Interface stub `sender/app/src/snapshot/begin-reconciliation-snapshot.ts`.
@@ -197,7 +197,11 @@ The suite drives the published `begin-initial-snapshot@2` and `stage-outbox-batc
 - the static primitive-only check;
 - the record-type wording.
 
-**Reference check.** A throwaway reference implementation passed all 24 tests and typechecked. Nine mutants of it each failed at least one test:
+**Approver's first Gate B review.** The approver required two corrections, both made:
+- R3 now lists a finished Reconciliation Snapshot, which its own test already covered;
+- the new test `the_recheck_runs_inside_the_commit_transaction` changes the installation or finished progress just before the commit transaction opens, so a recheck placed outside the transaction is caught.
+
+**Reference check.** A throwaway reference implementation passed all 25 tests and typechecked. Ten mutants of it each failed at least one test:
 - allowing an unfinished Initial Snapshot;
 - requiring a finished chain for reconciliations too;
 - skipping the installation check;
@@ -206,10 +210,11 @@ The suite drives the published `begin-initial-snapshot@2` and `stage-outbox-batc
 - requesting the token before the pre-checks;
 - accepting any finished progress found under the attempt's identity;
 - rechecking only the attempt's identity in the transaction;
-- passing the issuer's failure object through unchanged.
+- passing the issuer's failure object through unchanged;
+- rechecking just before the transaction instead of inside it.
 
 **Against the stub:**
-- 23 TypeScript tests fail, because the stub throws;
+- 24 TypeScript tests fail, because the stub throws;
 - `the_module_writes_only_through_the_primitive` also fails, because the stub never calls the primitive;
 - the two Python tests pass, because they check the contract.
 
