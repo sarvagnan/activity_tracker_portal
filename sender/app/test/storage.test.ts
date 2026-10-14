@@ -248,13 +248,14 @@ test("safe integer limits match protocol numbers exactly and reject larger or fr
   await assert.rejects(database.query("SELECT 1.5 AS value"), TypeError);
 });
 
-test("production migrations create only the six version three tables and automatic indexes", async (t) => {
+test("production migrations create only the seven version four tables and automatic indexes", async (t) => {
   const { snapshotAttemptsMigration } = await import("../src/snapshot/begin-initial-snapshot.ts");
   const { outboxMigration } = await import("../src/outbox/stage-outbox-batch.ts");
   const { completionMigration } = await import("../src/outbox/stage-sync-completion.ts");
+  const { checkpointMigration } = await import("../src/outbox/stage-sync-checkpoint.ts");
   const { database } = await fixture(t);
-  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration]);
-  assert.deepEqual(await migrate(database), { status: "ready", version: 3 });
+  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration]);
+  assert.deepEqual(await migrate(database), { status: "ready", version: 4 });
   const schema = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name");
   const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
   assert.deepEqual(schema.map((row) => ({ ...row, sql: typeof row.sql === "string" ? normalize(row.sql) : row.sql })), [
@@ -303,6 +304,13 @@ test("production migrations create only the six version three tables and automat
   PRIMARY KEY (installation_id, sequence)) STRICT`),
     },
     {
+      type: "table", name: "run_checkpoints", tbl_name: "run_checkpoints",
+      sql: normalize(`CREATE TABLE run_checkpoints (
+  installation_id TEXT NOT NULL, run_sequence INTEGER NOT NULL CHECK (run_sequence > 0),
+  sequence INTEGER NOT NULL CHECK (sequence > 0),
+  PRIMARY KEY (installation_id, run_sequence), UNIQUE (installation_id, sequence)) STRICT`),
+    },
+    {
       type: "table", name: "snapshot_attempts", tbl_name: "snapshot_attempts",
       sql: normalize(`CREATE TABLE snapshot_attempts (
         snapshot_id TEXT PRIMARY KEY NOT NULL, record_type TEXT NOT NULL,
@@ -318,6 +326,8 @@ test("production migrations create only the six version three tables and automat
     { type: "index", name: "sqlite_autoindex_cycle_progress_2", tbl_name: "cycle_progress", sql: null },
     { type: "index", name: "sqlite_autoindex_outbox_high_water_1", tbl_name: "outbox_high_water", sql: null },
     { type: "index", name: "sqlite_autoindex_outbox_messages_1", tbl_name: "outbox_messages", sql: null },
+    { type: "index", name: "sqlite_autoindex_run_checkpoints_1", tbl_name: "run_checkpoints", sql: null },
+    { type: "index", name: "sqlite_autoindex_run_checkpoints_2", tbl_name: "run_checkpoints", sql: null },
     { type: "index", name: "sqlite_autoindex_snapshot_attempts_1", tbl_name: "snapshot_attempts", sql: null },
     { type: "index", name: "sqlite_autoindex_snapshot_attempts_2", tbl_name: "snapshot_attempts", sql: null },
   ]);
