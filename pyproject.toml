@@ -7,7 +7,10 @@ authors = [
     { name = "sarvagnan", email = "github@sl.sarva.email" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "fastapi==0.143.0",
+    "uvicorn==0.54.0",
+]
 
 [project.scripts]
 portal = "activity_tracker_portal.cli:main"
@@ -21,5 +24,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "httpx==0.28.1",
     "jsonschema==4.26.0",
 ]
