@@ -21,6 +21,7 @@ from os import PathLike
 from pathlib import Path
 from typing import TypeVar
 
+import uvicorn
 from fastapi import FastAPI, Request, Response
 
 from activity_tracker_portal import ingest_protocol, operational_store, sender_installation
@@ -210,3 +211,11 @@ def create_app(
         return Response(content=body, status_code=200, media_type="application/json")
 
     return app
+
+
+def create_server_config(settings: PortalSettings) -> uvicorn.Config:
+    """Build the single-process server without logging private request targets."""
+    return uvicorn.Config(
+        create_app(settings), host=settings.host, port=settings.port,
+        workers=1, reload=False, access_log=False,
+    )

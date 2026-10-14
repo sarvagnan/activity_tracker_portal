@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import sqlite3
 import tempfile
 import threading
@@ -210,6 +211,55 @@ class RouteTests(Case):
                 self.assertEqual(response.status_code, 409)
                 self.assertEqual(answer.call_args.args[1], b"x" * 4096)
 
+    def test_secret_query_and_bodies_are_not_logged(self) -> None:
+        records = []
+
+        class Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = Capture()
+        loggers = [logging.getLogger(name) for name in ("", "uvicorn", "uvicorn.access", "uvicorn.error")]
+        levels = [logger.level for logger in loggers]
+        for logger in loggers:
+            logger.addHandler(handler)
+            logger.setLevel(logging.DEBUG)
+        try:
+            # HTTPX's client-side URL summaries are outside the server boundary.
+            # Keep all application and Uvicorn loggers enabled for this capture.
+            with patch.object(logging.getLogger("httpx"), "disabled", True), TestClient(self.app()) as client:
+                offer = self.offer(client.app.state.writer)
+                code = "ABCDEFGHIJKLMNOP"
+                installation_id = identity(1)
+                query = f"?enrollment_code={code}&sender_installation={installation_id}"
+                body_marker = b"SYNTHETIC-PRIVATE-BODY"
+                pending_body = confirmation(offer.code, 1)
+                requests = (
+                    ("POST", "/v1/enrollment-confirmation", body_marker, 409),
+                    ("POST", "/v1/enrollment-confirmation", body_marker * 4097, 413),
+                    ("POST", "/v1/enrollment-confirmation", pending_body, 200),
+                    ("GET", "/v1/capabilities", b"", 200),
+                )
+                for method, path, body, status in requests:
+                    with self.subTest(method=method, path=path, status=status):
+                        records.clear()
+                        response = client.request(method, path + query, content=body)
+                        self.assertEqual(response.status_code, status)
+                        for record in records:
+                            # Inspect both formatted output and unformatted log arguments.
+                            logged = record.getMessage() + repr(record.__dict__)
+                            for secret in (
+                                code, installation_id, offer.code, body_marker.decode(),
+                                installation_fingerprint(installation_id), pending_body.decode(),
+                            ):
+                                self.assertNotIn(secret, logged)
+                            self.assertNotIn(path, logged)
+        finally:
+            for logger, level in zip(loggers, levels):
+                logger.removeHandler(handler)
+                logger.setLevel(level)
+            handler.close()
+
     def test_capabilities_without_a_generation_return_canonical_retryable_bytes(self) -> None:
         app = self.app()
         # A fixture leaves the real store open but suppresses startup honoring.
@@ -373,26 +423,44 @@ class WriterTests(Case):
 class ServeCommandTests(Case):
     def test_serve_help_does_not_start_a_server(self) -> None:
         stdout = io.StringIO()
-        with patch("uvicorn.run") as run, redirect_stdout(stdout), self.assertRaises(SystemExit) as result:
+        with patch("uvicorn.Server") as server, redirect_stdout(stdout), self.assertRaises(SystemExit) as result:
             cli.main(["serve", "--help"])
         self.assertEqual(result.exception.code, 0)
         self.assertIn("--config", stdout.getvalue())
-        run.assert_not_called()
+        server.assert_not_called()
 
     def test_serve_uses_config_and_one_worker_without_reload(self) -> None:
         self.config_path.write_text(json.dumps(self.config()), encoding="utf-8")
-        with patch("uvicorn.run") as run:
+        with patch("uvicorn.Server") as server:
             self.assertEqual(cli.main(["serve", "--config", str(self.config_path)]), 0)
-        self.assertEqual(run.call_args.kwargs, {"host": "127.0.0.1", "port": 8443, "workers": 1})
-        self.assertEqual(run.call_args.args[0].state.settings.reserve_bytes, 12345)
+        config = server.call_args.args[0]
+        self.assertEqual(config.host, "127.0.0.1")
+        self.assertEqual(config.port, 8443)
+        self.assertEqual(config.workers, 1)
+        self.assertFalse(config.reload)
+        self.assertFalse(config.access_log)
+        self.assertEqual(config.app.state.settings.reserve_bytes, 12345)
+        server.return_value.run.assert_called_once_with()
+
+    def test_server_config_is_testable_without_starting_a_server(self) -> None:
+        with patch("uvicorn.Server") as server:
+            config = ingress.create_server_config(self.settings)
+        server.assert_not_called()
+        self.assertEqual(config.host, self.settings.host)
+        self.assertEqual(config.port, self.settings.port)
+        self.assertEqual(config.workers, 1)
+        self.assertFalse(config.reload)
+        self.assertFalse(config.access_log)
+        self.assertEqual(config.app.state.settings, self.settings)
+        self.assertFalse(self.path.exists())
 
     def test_invalid_config_is_reported_without_starting_a_server(self) -> None:
         stderr = io.StringIO()
         self.config_path.write_text('{"SYNTHETIC-SECRET":', encoding="utf-8")
-        with patch("uvicorn.run") as run, redirect_stderr(stderr):
+        with patch("uvicorn.Server") as server, redirect_stderr(stderr):
             self.assertEqual(cli.main(["serve", "--config", str(self.config_path)]), 1)
         self.assertEqual(stderr.getvalue(), "invalid Portal configuration\n")
-        run.assert_not_called()
+        server.assert_not_called()
 
 
 if __name__ == "__main__":

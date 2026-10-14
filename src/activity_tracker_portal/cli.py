@@ -22,14 +22,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         import uvicorn
 
-        from activity_tracker_portal.ingress import PortalSettings, create_app
+        from activity_tracker_portal.ingress import PortalSettings, create_server_config
 
         try:
             settings = PortalSettings.from_file(args.config)
         except ValueError as error:
             print(error, file=sys.stderr)
             return 1
-        uvicorn.run(create_app(settings), host=settings.host, port=settings.port, workers=1)
+        uvicorn.Server(create_server_config(settings)).run()
         return 0
 
     print(f"Python {sys.version.split()[0]}")
