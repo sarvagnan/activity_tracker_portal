@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_manage_sender_installation_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"e4b7ba1ee7d1a17fdff2d7b07b80576c5ac5f30e3ae6c233b6dce4fcf66b1e5b","parent":"GENESIS","recorded_at":"2026-10-14T05:03:36+00:00","sequence":1,"unit":{"name":"manage-sender-installation","version":"1"}}
