@@ -78,11 +78,14 @@ The staged message is exactly `ingest-protocol@1`'s `encodeMessage` of a `sync-c
 
 The message decodes under the protocol library, and a run with no permitted record types has an empty list.
 
+Instants must lie within the protocol's four-digit-year range, `0000-01-01T00:00:00.000Z` through `9999-12-31T23:59:59.999Z`. Instants before 1970 and an end before the start are formatted unchanged.
+
 Tests:
 - `a_checkpoint_matches_the_protocol`
 - `record_types_are_sorted`
 - `optional_fields_appear_only_when_supplied`
 - `an_empty_run_is_checkpointed`
+- `instants_become_protocol_timestamps`
 
 ### R3 — Counts sampled before insertion
 
@@ -116,7 +119,14 @@ Tests: `cipher_failures_write_nothing`, `storage_errors_roll_back_everything`.
 
 ### R8 — The Sender schema migration
 
-`checkpointMigration` is Sender schema version 4, registered after `stage-sync-completion@1`'s version 3. It creates one table of checkpoint records, keyed by installation and run sequence, and references no other unit's table.
+`checkpointMigration` is Sender schema version 4, registered after `stage-sync-completion@1`'s version 3. It references no other unit's table. It creates exactly this table, which is compared token by token with whitespace ignored, and nothing else besides its automatic indexes:
+
+```sql
+CREATE TABLE run_checkpoints (
+  installation_id TEXT NOT NULL, run_sequence INTEGER NOT NULL CHECK (run_sequence > 0),
+  sequence INTEGER NOT NULL CHECK (sequence > 0),
+  PRIMARY KEY (installation_id, run_sequence), UNIQUE (installation_id, sequence)) STRICT;
+```
 
 Tests: `migration_creates_version_four`, `migration_is_idempotent`.
 
@@ -159,9 +169,33 @@ Not mechanically provable here; the approver confirms these in implementation re
 
 ## Freeze prerequisites
 
-After Operator approval, the executable pack adds:
-- the TypeScript suite, about 22 tests;
+The Operator approved the draft. The executable pack adds:
+- the TypeScript suite, 23 tests;
 - the Python contract suite, 2 tests;
 - the self-verifying runner;
-- the Interface stub;
-- the pinned checkpoint-record table layout.
+- the Interface stub `sender/app/src/outbox/stage-sync-checkpoint.ts`.
+
+The suite migrates with the explicit list `[snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration]` to version 4. It fills the Outbox through `appendOutboxMessages`, and it guards the cipher against any key creation, deletion, or opening.
+
+A throwaway reference implementation passes all 23 tests and typechecks. Eight mutants of it each fail at least one test:
+- every installation's rows are counted;
+- sealed sizes are counted;
+- record types are left unsorted;
+- reasons are dropped;
+- there is no exactly-once check;
+- the checkpoint counts itself;
+- the recheck runs outside the transaction;
+- the recheck ignores byte counts.
+
+Against the stub:
+- every TypeScript test fails, because the stub's migration throws and the static check finds no `appendOutboxMessages` call;
+- the two Python tests pass, because they check the contract.
+
+The binding is:
+- spec files:
+  - the contract;
+  - this pack;
+- test files:
+  - `stage-sync-checkpoint-1.test.ts`;
+  - its 3ug substitutes, `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`;
+  - `test_stage_sync_checkpoint_1.py` and the runner.
