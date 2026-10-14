@@ -1,6 +1,6 @@
 # Draft acceptance pack — `stage-outbox-batch@1`
 
-**Status:** Draft approved by the Operator on 2026-10-14, including the nine decisions below; the executable pack adds the refinements its tests pin down. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
+**Status:** Draft approved by the Operator on 2026-10-14, including the nine decisions below; the executable pack adds the refinements its tests pin down. Amended to `stage-outbox-batch-pack/2` by DEV-sob-01 on the Operator's decision; see Decision 2. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
 
 **Acceptance owner:** Operator, who approves the draft semantics. **Pack drafter:** Claude. **Implementer after freeze:** GPT 6.1 Sol through a T3 delegated task. **Approver for freeze, implementation review, merge, and publication:** GPT 6 Astra through a T3 delegated task, as a separate agent from the drafter and implementer.
 
@@ -290,7 +290,9 @@ Tests: `malformed_inputs_are_caller_errors`, `non_staged_results_carry_only_name
    - each installation's sequence high-water mark, which never decreases, so a sequence removed after its receipt is never reused;
    - the sealing and authenticated-data format.
 
-   Later stagers append through its primitives inside their own transactions: `stage-sync-completion`, `stage-sync-checkpoint`, and `manage-sender-enrollment`'s capability acknowledgement. `send-outbox-message` opens and removes rows. The `stage-sync-checkpoint` and `manage-sender-enrollment` rows therefore gain a dependency on `stage-outbox-batch`.
+   Later stagers append through its primitives inside their own transactions: `stage-sync-completion`, `stage-sync-checkpoint`, and `manage-sender-enrollment`'s capability acknowledgement. `send-outbox-message` opens and removes rows. The `stage-sync-checkpoint` row therefore gains a dependency on `stage-outbox-batch`.
+
+   The `manage-sender-enrollment` row gains that dependency at its own Gate A. The published `manage-sender-installation@1` pins that row's dependencies in its bound acceptance test, so the edge is deferred until the pinned row is resolved there (DEV-sob-01, Beads `ae2`).
 
    *Alternative:* a separate `sender-outbox` scope that every stager depends on. That is cleaner in isolation, but it adds a unit, and this one would be its only Phase 2 consumer.
 3. **Seal before the commit, then recheck.** The 3ug connection rejects, rather than queues, an operation while another is active. Holding SQLite's write transaction open across Keystore calls, which StrongBox can make slow, would stall all other Sender storage use for that time.
@@ -372,6 +374,8 @@ Its coverage findings are added:
 - the module avoids Node built-ins.
 
 The permitted edit to `migrations.ts` is now explicit.
+
+DEV-sob-01 amended `pack/1` to `pack/2` after freeze. The frozen contract test required the `manage-sender-enrollment` row to depend on `stage-outbox-batch`, which contradicted the published `manage-sender-installation@1`'s bound test, and the project CI `test` job failed. On the Operator's decision, `pack/2` defers that edge. It leaves the row unchanged, drops the row from this unit's contract test, and states the deferral in Decision 2. Nothing else changes.
 
 The approver's first Gate B review required two more checks, both added:
 - every staging runs through a cipher guard that fails on any key creation, deletion, or opening;

@@ -67,8 +67,10 @@ class R1GovernedScopeContract(unittest.TestCase):
             self.assertIn(phrase, inputs)
         for phrase in ("byte-stable encrypted Ingest Batch Outbox Messages", "committed together in the Sender Outbox", "pre-read token", "no commit on any failure or concurrent change", "visible block"):
             self.assertIn(phrase, outputs)
-        # Decision 2: later stagers append through this unit's Outbox.
-        for scope in ("`stage-sync-completion`", "`stage-sync-checkpoint`", "`manage-sender-enrollment`", "`send-outbox-message`"):
+        # Decision 2: later stagers append through this unit's Outbox. The manage-sender-enrollment
+        # edge waits for that unit's own Gate A, because published manage-sender-installation@1
+        # pins its row (DEV-sob-01).
+        for scope in ("`stage-sync-completion`", "`stage-sync-checkpoint`", "`send-outbox-message`"):
             self.assertIn("`stage-outbox-batch`", rows[scope][5], scope)
 
 
