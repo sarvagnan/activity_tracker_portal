@@ -59,7 +59,7 @@ The coordinator is created once per Sender process:
   - `{ outcome: "checkpointed", runSequence, summary }`, where `summary` is the `RunSummary` staged;
   - `{ outcome: "failed", failure }`.
 - `SenderSync.requestRetry(recordType)` returns what `trigger` returns, or `{ outcome: "refused", failure: "retry-not-blocked" }`.
-- `typeBlock(database, recordType)` returns `{ recordType, cause, failure, retryRequested }` or `null`. `cause` is `projection-refusal` or `record-too-large`.
+- `typeBlock(database, recordType)` returns `{ recordType, cause, failure, path, retryRequested }` or `null`. `cause` is `projection-refusal` or `record-too-large`; `path` is the refused field's JSON path, or `null` for an oversized record.
 - `syncMigration`: Sender schema version 5.
 
 ## Terms
@@ -122,8 +122,9 @@ Before any source call, one transaction opens the run. It records:
 - the trigger;
 - the start time from `now()`;
 - the Background Scheduling Status;
-- the managed types;
-- each type's resumable cycles.
+- the managed types.
+
+Before a cycle's first read in the run, the coordinator records that cycle's staged item count, so the run's staged items are known from durable state alone.
 
 The run closes with one checkpoint through `stage-sync-checkpoint@1`:
 - the end time comes from `now()` at closing;
@@ -180,7 +181,7 @@ Scheduling limits work as follows:
   - the new order is durable before the next turn starts;
   - new managed types join the tail in ascending order.
 - A type that is skipped or stops keeps its place, and claims no slot.
-- Concurrent turns never lose a page or conflict with each other.
+- Concurrent turns never lose a page or conflict with each other. Only source reads overlap: the 3ug seam allows one storage operation at a time, so the coordinator serializes every use of Sender storage, including the published units' calls.
 - After a restart, the ring continues where it stood.
 
 Tests:
@@ -213,7 +214,7 @@ Tests: `manual_priority_moves_a_type_forward_once`, `priority_does_not_persist`.
 
 ### R10 — Soft deadline
 
-With a budget, once `monotonicNow()` passes the run's start plus the budget:
+With a budget, once `monotonicNow()` reaches the run's start plus the budget:
 - no source call starts;
 - a read already in flight is staged;
 - a completion owed by a staged final page is still staged.
@@ -378,13 +379,45 @@ Tests: `every_outcome_row_is_reachable`, `source_data_staged_counts_items`, `rep
 
 ### R21 — The Sender schema migration
 
-`syncMigration` is Sender schema version 5, registered after `stage-sync-checkpoint@1`'s version 4. It leaves every earlier schema object unchanged. It creates only tables whose names begin with `sync_`, plus their automatic indexes, and it references no other unit's table. The executable pack pins the exact DDL.
+`syncMigration` is Sender schema version 5, registered after `stage-sync-checkpoint@1`'s version 4. It leaves every earlier schema object unchanged. It creates exactly these tables, compared token by token with whitespace ignored, and nothing else besides their automatic indexes. It references no other unit's table.
+
+```sql
+CREATE TABLE sync_types (
+  record_type TEXT PRIMARY KEY NOT NULL, ring_order INTEGER NOT NULL UNIQUE CHECK (ring_order > 0),
+  change_cycle_id TEXT, change_snapshot_id TEXT, established INTEGER NOT NULL CHECK (established IN (0, 1)),
+  CHECK ((change_cycle_id IS NULL) = (change_snapshot_id IS NULL))) STRICT;
+CREATE TABLE sync_blocks (
+  record_type TEXT PRIMARY KEY NOT NULL REFERENCES sync_types (record_type),
+  cause TEXT NOT NULL CHECK (cause IN ('projection-refusal', 'record-too-large')),
+  identity TEXT NOT NULL, failure TEXT NOT NULL, path TEXT,
+  retry_requested INTEGER NOT NULL CHECK (retry_requested IN (0, 1)),
+  CHECK ((cause = 'projection-refusal') = (path IS NOT NULL)),
+  CHECK (cause = 'projection-refusal' OR retry_requested = 0)) STRICT;
+CREATE TABLE sync_runs (
+  installation_id TEXT NOT NULL, run_sequence INTEGER NOT NULL CHECK (run_sequence > 0),
+  trigger TEXT NOT NULL CHECK (trigger IN ('background', 'foreground', 'manual')),
+  started_at_ms INTEGER NOT NULL,
+  background_scheduling TEXT NOT NULL CHECK (background_scheduling IN ('available', 'restricted', 'unregistered')),
+  PRIMARY KEY (installation_id, run_sequence)) STRICT;
+CREATE TABLE sync_run_types (
+  installation_id TEXT NOT NULL, run_sequence INTEGER NOT NULL, record_type TEXT NOT NULL,
+  PRIMARY KEY (installation_id, run_sequence, record_type),
+  FOREIGN KEY (installation_id, run_sequence) REFERENCES sync_runs (installation_id, run_sequence)) STRICT;
+CREATE TABLE sync_run_cycles (
+  installation_id TEXT NOT NULL, run_sequence INTEGER NOT NULL, record_type TEXT NOT NULL, cycle_id TEXT NOT NULL,
+  records_before INTEGER NOT NULL CHECK (records_before >= 0),
+  PRIMARY KEY (installation_id, run_sequence, record_type, cycle_id),
+  FOREIGN KEY (installation_id, run_sequence, record_type)
+    REFERENCES sync_run_types (installation_id, run_sequence, record_type)) STRICT;
+```
+
+`sync_types` holds the ring, the Change Cycle each type began under its current attempt, and whether its baseline is established (R14). `sync_blocks` holds the type blocks. The three run tables hold each run's marker, types, and the staged item counts recorded before each cycle's first read in the run (R3).
 
 Tests: `migration_creates_version_five`, `migration_is_idempotent`.
 
 ### R22 — Health-data-free state, order of checks, and module boundary
 
-The coordinator's own tables hold no position bytes, tokens, Health Connect identifiers, start times, or health values. A run result or retry result carries only named failures and the checkpointed summary.
+The coordinator's own tables hold no position bytes, tokens, Health Connect identifiers, record start times, or health values. A run result or retry result carries only named failures and the checkpointed summary.
 
 Before each step of a turn, the checks run in this order:
 1. A run failure.
@@ -393,10 +426,13 @@ Before each step of a turn, the checks run in this order:
 4. The type's block.
 5. The step itself.
 
-A static check confirms three things about the module:
+A static check confirms four things about the module:
 - it names no other unit's table;
+- it calls each owning unit's begin and staging functions, and never calls the cipher itself;
 - it imports only relative modules and the protocol library;
 - it uses no Node built-in.
+
+At run time, a guarded cipher confirms that only the staging units' `seal` is used.
 
 Tests: `coordinator_state_is_health_data_free`, `checks_follow_the_documented_order`, `the_module_stays_inside_its_boundary`.
 
@@ -422,7 +458,7 @@ Tests: `coordinator_state_is_health_data_free`, `checks_follow_the_documented_or
 11. **Follow-ups live in memory; the retry request is durable.** The OS or the Operator triggers again after a process death, so only the Operator's retry request is stored, with its block. It lasts until a read evaluates it.
 12. **The soft deadline stops source calls, not staging (R10).** A finished cycle is never left waiting a run for its completion. Collection-disabled differs: there, completions are withheld until collection is re-enabled.
 13. **Reasons have a fixed precedence (R20).** For `progressed`, `changes-token-expired` comes first, because a Reconciliation is the most consequential event. Otherwise the reason is the type's stop cause.
-14. **Recovered runs report only what is provable (R4).** Every type is `interrupted`. The end time is the recovery time, and there is no elapsed duration. `sourceDataStaged` comes from durable cycle progress recorded when the run opened.
+14. **Recovered runs report only what is provable (R4).** Every type is `interrupted`. The end time is the recovery time, and there is no elapsed duration. `sourceDataStaged` comes from durable cycle progress, recorded before each cycle's first read in the run.
 
 ## Ground rules
 
@@ -431,17 +467,22 @@ Tests: `coordinator_state_is_health_data_free`, `checks_follow_the_documented_or
   - `PRAGMA user_version`;
   - every schema object;
   - every row of every table, including sealed bytes.
+- The fake answers each source call after yielding a macrotask, so concurrent turns genuinely overlap. A test whose source hook reads storage runs with a pool of one, because the 3ug seam allows one storage operation at a time.
+- Crashes are simulated by a storage wrapper whose every top-level operation hangs after a chosen commit, followed by reopening the database in a new coordinator.
+- The runner sets a per-test timeout, so an implementation that hangs fails rather than stalls CI.
 - Not mechanically provable here; the approver confirms these in implementation review:
   - the production shell supplies real conditions, clocks, and Background Scheduling Status;
   - the coordinator runs on Hermes, which the static check covers only in part.
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the TypeScript suite and its synthetic fake;
+The Operator approved the draft. The executable pack adds:
+- the TypeScript suite `coordinate-sender-sync-1.test.ts` and its synthetic fake `support/synthetic-sync-sources.ts`;
 - the Python contract suite;
 - the runner;
 - the Interface stub `sync/coordinate-sender-sync.ts`, whose migration and functions throw;
-- the pinned migration DDL.
+- the pinned migration DDL (R21).
 
-Against the stub, every TypeScript test fails, and the two Python tests pass. GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation registers `syncMigration` fifth and updates the production-migration test in `storage.test.ts`.
+Against the stub, every TypeScript test fails, and the two Python tests pass. The binding is:
+- spec files: the contract and this pack;
+- test files: `coordinate-sender-sync-1.test.ts`, `synthetic-sync-sources.ts`, `node-database.ts`, `node-installation-cipher.ts`, `test_coordinate_sender_sync_1.py`, and the runner. GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation registers `syncMigration` fifth and updates the production-migration test in `storage.test.ts`.
