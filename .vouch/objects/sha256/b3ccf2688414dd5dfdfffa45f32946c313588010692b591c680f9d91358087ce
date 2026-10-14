@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"DeviationOpened","pack_digest":"","payload":{"deviation_id":"DEV-msi-01","deviation_type":"pack-defect","unit":{"name":"manage-sender-installation","version":"1"}},"prev":"1b9d3d47182543431452c3b074a495ef5c1010a07f47b6d773ff8f2aea556772","recorded_at":"2026-10-14T05:44:07+00:00","revision":90,"run_id":""}
