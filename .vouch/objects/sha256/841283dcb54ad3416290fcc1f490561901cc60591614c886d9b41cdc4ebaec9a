@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_begin_initial_snapshot_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"8c7352a1a4071a4444845159a796d319688df10ef22c1c57b025dd0f8629ef86","parent":"GENESIS","recorded_at":"2026-10-14T11:02:48+00:00","sequence":1,"unit":{"name":"begin-initial-snapshot","version":"1"}}
