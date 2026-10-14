@@ -182,3 +182,30 @@ function attemptFromRow(row: DatabaseRow): SnapshotAttempt {
     abandonedAtMs: row.abandoned_at_ms as number | null,
   };
 }
+
+/** A complete new attempt of either kind, as a snapshot unit commits it (begin-initial-snapshot@2). */
+export interface NewSnapshotAttempt {
+  readonly snapshotId: string;
+  readonly recordType: string;
+  readonly kind: "initial" | "reconciliation";
+  readonly installationId: string;
+  readonly changesToken: string;
+  readonly unreadSinceMs: number;
+  readonly begunAtMs: number;
+}
+
+export type CommitAttemptResult =
+  | { readonly outcome: "committed"; readonly attempt: SnapshotAttempt }
+  | { readonly outcome: "refused"; readonly failure: "attempt-open" | "attempt-mismatch" };
+
+/**
+ * Inside the caller's transaction, commit `attempt` as its record type's current attempt,
+ * superseding and retaining the attempt named by `superseding`; never opens a transaction.
+ */
+export async function commitSnapshotAttempt(
+  transaction: SenderDatabase,
+  attempt: NewSnapshotAttempt,
+  superseding: string | null,
+): Promise<CommitAttemptResult> {
+  throw new Error("begin-initial-snapshot@2 is not implemented");
+}

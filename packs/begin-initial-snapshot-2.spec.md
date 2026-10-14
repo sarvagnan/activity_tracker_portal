@@ -63,7 +63,9 @@ The rule is `@1`'s R6, applied to every caller:
 
 A refusal writes nothing. Record types are independent.
 
-Tests: `an_open_attempt_refuses_an_unnamed_commit`, `superseding_must_name_the_current_attempt`, `a_superseded_attempt_is_abandoned_and_retained`, `refused_commits_write_nothing`, `types_are_independent_for_the_primitive`.
+The primitive and `beginInitialSnapshot` enforce this one rule together. An attempt committed through the primitive blocks an unnamed Initial begin, and `beginInitialSnapshot` may abandon it by name.
+
+Tests: `an_open_attempt_refuses_an_unnamed_commit`, `superseding_must_name_the_current_attempt`, `a_superseded_attempt_is_abandoned_and_retained`, `refused_commits_write_nothing`, `types_are_independent_for_the_primitive`, `the_primitive_and_begin_initial_snapshot_share_one_rule`.
 
 ### R15 — Only inside the caller's transaction
 
@@ -72,7 +74,12 @@ The primitive never opens, commits, or rolls back a transaction, and reads no cl
 - A database error inside the primitive propagates to the caller unchanged, so the caller's transaction rolls back and classifies the error.
 - An attempt identity already used by any attempt is a database error, which propagates.
 
-Tests: `a_callers_rollback_undoes_the_commit`, `database_errors_propagate_to_the_caller`, `a_reused_snapshot_identity_is_rejected`.
+The suite checks this from several sides:
+- A recording handle shows that the primitive issues no `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, or `RELEASE`, and never calls the handle's `transaction` or `close`.
+- `Date.now`, `Math.random`, `crypto.randomUUID`, and `crypto.getRandomValues` throw for the duration of the call.
+- Every failing mutating statement rejects with the very error the database raised.
+
+Tests: `a_callers_rollback_undoes_the_commit`, `database_errors_propagate_to_the_caller`, `a_reused_snapshot_identity_is_rejected`, `the_primitive_never_opens_a_transaction_or_reads_a_clock`.
 
 ### R16 — Caller errors and compatibility
 
@@ -88,7 +95,9 @@ The validation rules are `@1`'s R9, extended to the new fields.
 
 `beginInitialSnapshot` behaves exactly as in `@1`. `@1`'s re-run suites show this, as does the published `stage-outbox-batch@1`, which reads attempts through `currentSnapshotAttempt` and `snapshotAttempt`.
 
-Tests: `malformed_commits_are_caller_errors`, `begin_initial_snapshot_one_behaviour_is_unchanged` (the bound `@1` runner).
+These caller errors are checked against an untouchable handle, which counts and refuses every use.
+
+Tests: `malformed_commits_are_caller_errors`. `@1`'s unchanged behavior is shown by the `@2` runner, which calls `@1`'s bound runner. That runner must print both of its pass lines: 24 TypeScript and 15 Kotlin tests.
 
 ## Decisions for the Operator
 
@@ -108,8 +117,32 @@ Not mechanically provable here; the approver confirms this in implementation rev
 
 ## Freeze prerequisites
 
-After Operator approval, the executable pack adds:
-- the new TypeScript suite, about 14 tests;
-- the Python contract suite, 2 tests;
-- the runner, which calls `@1`'s runner and then verifies the new suite's fresh JUnit report;
-- the stub of `commitSnapshotAttempt`.
+The Operator approved the draft. The executable pack adds:
+- the new TypeScript suite, 14 tests;
+- the Python contract suite, 2 tests. It checks that `@2` keeps `@1`'s named failures, effects, and dependency, and adds only the primitive.
+- the runner `tests/acceptance/run_begin_initial_snapshot_2.sh`, which runs:
+  1. the `@2` Python suite;
+  2. `@1`'s bound runner, unchanged;
+  3. the new suite, with fresh-report verification;
+- the stub of `commitSnapshotAttempt`, appended to the published module. Every `@1` function stays implemented.
+
+A throwaway reference passed all 14 new tests and typechecks. With it, the runner prints:
+- `begin-initial-snapshot@1: 24 TypeScript acceptance tests passed`
+- `begin-initial-snapshot@1: 15 Kotlin acceptance tests passed`
+- `begin-initial-snapshot@2: 14 TypeScript acceptance tests passed`
+
+Four mutants each failed at least one test: no abandonment, the clock used for the begin time, database errors swallowed as refusals, and `superseding` unchecked.
+
+Against the stub, all 14 new tests fail because the primitive throws. Both Python suites pass, and `@1`'s runner passes, because `@1`'s behavior is intact. The runner therefore exits 1.
+
+The binding is:
+- **spec files:**
+  - this contract and pack;
+  - `@1`'s contract and pack, which R1–R11 carry over and the contract test compares against;
+- **test files:**
+  - the new suite, `test_begin_initial_snapshot_2.py`, and the `@2` runner;
+  - every file `begin-initial-snapshot-pack/1` binds:
+    - `IssueChangesToken1Test.kt` and `TokenHealthConnect.kt`;
+    - `begin-initial-snapshot-1.test.ts` and `sender/app/test/support/node-database.ts`;
+    - `test_begin_initial_snapshot_1.py` and `run_begin_initial_snapshot_1.sh`;
+    - `sender/scripts/gradle.sh` and the module's `android/build.gradle`.
