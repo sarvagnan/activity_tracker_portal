@@ -71,7 +71,9 @@ Tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_m
 
 The superseded attempt is retained, with `abandonedAtMs` set to that same reading. The new attempt is current, and it survives reopening the database.
 
-Tests: `begin_commits_a_reconciliation_and_supersedes_the_named_attempt`, `the_reconciliation_survives_reopening`, `the_identity_is_the_generated_uuid`.
+`now()` is read exactly once. Other record types' attempts are untouched.
+
+Tests: `begin_commits_a_reconciliation_and_supersedes_the_named_attempt`, `the_reconciliation_survives_reopening`, `the_identity_is_the_generated_uuid`, `the_commit_time_dates_both_changes`.
 
 ### R3 — Preconditions, checked before the token request
 
@@ -80,7 +82,7 @@ The request must satisfy three conditions, or it is refused with nothing written
 - **Same installation.** The current attempt must belong to the request's Sender Installation. Otherwise the result is `installation-mismatch`.
 - **An established page chain.** The current attempt must be one of these:
   - an attempt whose snapshot page chain `stage-outbox-batch@1` reports as finished;
-  - an unfinished Reconciliation Snapshot, which is a reread restarted before it finished.
+  - an unfinished Reconciliation Snapshot, which is a reread restarted before it finished. That holds whether or not any of its pages were staged.
 
   An unfinished Initial Snapshot is `baseline-unfinished`. For that case, `coordinate-sender-sync` restarts the Initial Snapshot through `begin-initial-snapshot` instead.
 
@@ -109,9 +111,9 @@ Tests: `a_bad_uuid_source_is_a_caller_error`.
 
 ### R6 — The commit rechecks
 
-Inside the commit transaction, R3's checks run again before `now()` is read. Then the attempt is committed through `commitSnapshotAttempt`.
+Inside the commit transaction, R3's checks run again before `now()` is read, so a refused recheck reads no clock. Then the attempt is committed through `commitSnapshotAttempt`.
 
-If the current attempt changed meanwhile, for example because another begin or reconciliation landed, the result is that check's refusal. The issued token is discarded, and nothing is written.
+If the current attempt changed meanwhile, for example because another reconciliation or an Initial restart landed, the result is that check's refusal. The issued token is discarded, and nothing is written.
 
 Tests: `the_commit_rechecks_the_preconditions`.
 
@@ -127,7 +129,7 @@ Tests: `storage_errors_roll_back_everything`, `refusals_write_nothing`.
 ### R8 — Interplay with staging
 
 After a reconciliation begins:
-- staging any page of the superseded attempt's cycles is `cycle-not-current` in `stage-outbox-batch@1`;
+- staging the next page of a Change Cycle that was open under the superseded attempt is `cycle-not-current` in `stage-outbox-batch@1`;
 - the new attempt's first snapshot page stages as a `reconciliation-snapshot` cycle;
 - `changeOrigin` reports the new pre-read token.
 
@@ -174,8 +176,30 @@ Not mechanically provable here: the production UUID source is a cryptographicall
 
 ## Freeze prerequisites
 
-After Operator approval, the executable pack adds:
-- the TypeScript suite, about 25 tests;
+The Operator approved the draft. The executable pack adds:
+- the TypeScript suite, 22 tests;
 - the Python contract suite, 2 tests;
 - the self-verifying runner;
-- the Interface stub.
+- the Interface stub `sender/app/src/snapshot/begin-reconciliation-snapshot.ts`.
+
+The suite drives the published `begin-initial-snapshot@2` and `stage-outbox-batch@1` with the production migration list, which has Sender schema version 2. Its issuer is scripted, and it records issuer calls and UUID and clock reads.
+
+**Reference check.** A throwaway reference implementation passed all 22 tests and typechecked. Six mutants of it each failed at least one test:
+- allowing an unfinished Initial Snapshot;
+- requiring a finished chain for reconciliations too;
+- skipping the installation check;
+- skipping the in-transaction recheck;
+- reading the clock before the recheck;
+- requesting the token before the pre-checks.
+
+**Against the stub:**
+- every TypeScript test fails, because the stub throws;
+- the two Python tests pass, because they check the contract.
+
+**The binding:**
+- Spec files: the contract and this pack.
+- Test files:
+  - `begin-reconciliation-snapshot-1.test.ts`;
+  - its 3ug substitutes, `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`;
+  - `test_begin_reconciliation_snapshot_1.py`;
+  - the runner.
