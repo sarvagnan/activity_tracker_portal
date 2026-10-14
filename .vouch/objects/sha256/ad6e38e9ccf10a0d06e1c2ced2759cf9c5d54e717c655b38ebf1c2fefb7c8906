@@ -1,0 +1,1 @@
+{"actor":"operator:sarvagnan","event":"DeviationAmended","pack_digest":"","payload":{"amendment_version":"stage-outbox-batch-pack/2","deviation_id":"DEV-sob-01","impact_set":["stage-outbox-batch"],"release_impact_set":[]},"prev":"8c02a667f60e2079f137c20e2b21f3c515ad48253de4ccc7c78691e7662830eb","recorded_at":"2026-10-14T12:54:42+00:00","revision":128,"run_id":""}
