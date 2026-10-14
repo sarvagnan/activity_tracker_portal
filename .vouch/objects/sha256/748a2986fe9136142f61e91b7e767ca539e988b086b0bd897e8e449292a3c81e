@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_stage_outbox_batch_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"3692fc0c504630dabf156283ce7f2aa639a94c1cab12f1128dcc98fd1341aadd","parent":"GENESIS","recorded_at":"2026-10-14T12:36:23+00:00","sequence":1,"unit":{"name":"stage-outbox-batch","version":"1"}}

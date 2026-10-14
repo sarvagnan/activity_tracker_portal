@@ -1,3 +1,4 @@
+import { outboxMigration } from "../outbox/stage-outbox-batch.ts";
 import { snapshotAttemptsMigration } from "../snapshot/begin-initial-snapshot.ts";
 import type { SenderDatabase } from "./database.ts";
 
@@ -9,8 +10,8 @@ export type MigrationResult =
   | { status: "ready"; version: number }
   | { status: "frozen"; version: number; reason: "migration-failed" | "newer-schema" };
 
-/** Governed units append their own migrations; this first one is begin-initial-snapshot@1's. */
-export const senderMigrations: readonly Migration[] = Object.freeze([snapshotAttemptsMigration]);
+/** Governed units append migrations: snapshot attempts first, then the Sender Outbox and cycle progress. */
+export const senderMigrations: readonly Migration[] = Object.freeze([snapshotAttemptsMigration, outboxMigration]);
 
 export async function migrate(
   database: SenderDatabase,

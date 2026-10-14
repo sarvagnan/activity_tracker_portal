@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"DeviationOpened","pack_digest":"","payload":{"deviation_id":"DEV-sob-01","deviation_type":"pack-defect","unit":{"name":"stage-outbox-batch","version":"1"}},"prev":"81b61017ea2fbc945a79c184e049c8c8f5523824fbb60d9576d4e014c4e1a316","recorded_at":"2026-10-14T12:54:41+00:00","revision":126,"run_id":""}
