@@ -60,6 +60,8 @@ jobs:
         run: tests/acceptance/run_read_snapshot_page_1.sh
       - name: Run read-change-page@1 acceptance
         run: tests/acceptance/run_read_change_page_1.sh
+      - name: Run begin-initial-snapshot@1 acceptance
+        run: tests/acceptance/run_begin_initial_snapshot_1.sh
 
   vouch:
     needs: [test, sender]
