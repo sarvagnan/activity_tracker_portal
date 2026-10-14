@@ -1,0 +1,69 @@
+{
+  "contract_schema": 1,
+  "scope": "begin-reconciliation-snapshot",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Start a race-closed full reread of one record type after its established baseline loses change-token continuity: request a fresh pre-read changes token, then durably commit it with a new Reconciliation Snapshot identity through begin-initial-snapshot@2's primitive, superseding and retaining the attempt the caller names, before any page is read, or begin nothing.",
+  "inputs": [
+    { "name": "record_type", "mode": "pure", "description": "One record type name from project-source-record's PROJECTION_SCHEMA_VERSIONS; the caller selects a supported type, and this unit checks only the Wire Protocol record-type pattern, as begin-initial-snapshot does." },
+    { "name": "sender_installation", "mode": "pure", "description": "The lowercase UUID of the Sender's own active Sender Installation, supplied by the caller." },
+    { "name": "superseding", "mode": "pure", "description": "The identity of the record type's current snapshot attempt, whose change-token continuity the caller has found lost." },
+    { "name": "snapshot_identity_source", "mode": "volatile", "description": "A source of random lowercase version 4 UUIDs, one of which becomes the new Reconciliation Snapshot identity." },
+    { "name": "current_time", "mode": "volatile", "description": "The commit time, read once inside the commit transaction after its recheck." },
+    { "name": "health_connect_token", "mode": "volatile", "description": "The changes token and unread-since instant begin-initial-snapshot's Kotlin issuer reports for the record type, including its permission and failure classification." },
+    { "name": "sender_storage", "mode": "effectful", "description": "The Sender's SQLite database: the record type's current snapshot attempt and that attempt's page-chain progress, read before the token request and again inside the commit transaction." }
+  ],
+  "outputs": [
+    { "name": "reconciliation_begun", "description": "The new Reconciliation Snapshot identity, record type, fresh changes token, and unread-since instant committed durably as the record type's current attempt with empty page-chain state, with the superseded attempt retained and marked abandoned." },
+    { "name": "refusal", "description": "A named reason the current attempt cannot be superseded by a reconciliation, with nothing written. A refusal found before the token request requests no token, and one found by the commit's recheck discards the token it was issued." },
+    { "name": "not_permitted", "description": "Which required permission was missing, read or history, or that Health Connect denied the request, with nothing written." },
+    { "name": "read_failure", "description": "One named Health Connect failure with no exception text and nothing written." },
+    { "name": "storage_failure", "description": "A read or the commit failed and rolled back, so nothing was begun." }
+  ],
+  "named_failures": [
+    { "name": "attempt-mismatch", "outcome": "refusal" },
+    { "name": "installation-mismatch", "outcome": "refusal" },
+    { "name": "baseline-unfinished", "outcome": "refusal" },
+    { "name": "read-permission-missing", "outcome": "not-permitted" },
+    { "name": "history-permission-missing", "outcome": "not-permitted" },
+    { "name": "read-denied", "outcome": "not-permitted" },
+    { "name": "health-connect-unavailable", "outcome": "read-failure" },
+    { "name": "health-connect-io-failure", "outcome": "read-failure" },
+    { "name": "health-connect-request-rejected", "outcome": "read-failure" },
+    { "name": "unexpected-read-failure", "outcome": "read-failure" },
+    { "name": "source-contract-violation", "outcome": "read-failure" },
+    { "name": "storage-failed", "outcome": "storage-failure" }
+  ],
+  "observable_effects": [
+    { "name": "health-connect-token-request", "description": "Requests one changes token through begin-initial-snapshot's issuer only after the pre-checks pass; never reads records or changes." },
+    { "name": "sender-storage-write", "description": "Commits the new Reconciliation Snapshot attempt, its current pointer, and the superseded attempt's abandonment in one SQLite transaction through begin-initial-snapshot@2's primitive, or not at all; owns no table and no migration." }
+  ],
+  "authority": {
+    "owns": [
+      "the preconditions for beginning a Reconciliation Snapshot: the caller names the current attempt, it belongs to the same Sender Installation, and the record type has an established page chain",
+      "the Reconciliation Snapshot's pre-read changes token and unread-since instant, and its identity issuance",
+      "classification of the token issuer's outcomes and storage failures into the named failures for a reconciliation"
+    ],
+    "does_not_own": [
+      "the snapshot-attempt tables, the one-current-attempt rule, and supersession, which belong to begin-initial-snapshot",
+      "deciding that change-token continuity was lost or that the Portal holds an established baseline, which belongs to coordinate-sender-sync",
+      "the Kotlin token request and its permission checks, which belong to begin-initial-snapshot",
+      "reading pages, page-chain progress, and Outbox Messages, which belong to read-snapshot-page and stage-outbox-batch",
+      "Reconciliation Snapshot completion and cutover, which belong to stage-sync-completion and complete-reconciliation-snapshot",
+      "the Expo bridge between Kotlin and TypeScript"
+    ]
+  },
+  "dependencies": [
+    { "scope": "begin-initial-snapshot", "version": "2" },
+    { "scope": "stage-outbox-batch", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/begin-reconciliation-snapshot-1.spec.md",
+    "executable_tests": {
+      "typescript": "sender/app/test/begin-reconciliation-snapshot-1.test.ts",
+      "python": "tests/acceptance/test_begin_reconciliation_snapshot_1.py"
+    },
+    "runner": "tests/acceptance/run_begin_reconciliation_snapshot_1.sh",
+    "languages": ["python", "typescript"]
+  }
+}
