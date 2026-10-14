@@ -1,5 +1,5 @@
 import type { StagingContext, ChangeItem } from "../outbox/stage-outbox-batch.ts";
-import type { SenderSyncOptions, TriggerRequest, SnapshotRead, ChangeRead } from "./coordinate-sender-sync.ts";
+import type { SenderSyncOptions, TriggerRequest, SnapshotRead, ChangeRead, SyncConditions } from "./coordinate-sender-sync.ts";
 
 const RECORD_TYPE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -50,6 +50,12 @@ export function checkInstant(value: number): void {
   if (!Number.isSafeInteger(value) || value < -62_167_219_200_000 || value >= 253_402_300_800_000) {
     throw new TypeError("Invalid protocol instant");
   }
+}
+
+export function checkConditions(value: unknown): asserts value is SyncConditions {
+  if (!object(value) || Array.isArray(value) ||
+      ["collectionEnabled", "secureLock", "deliveryBlocked", "storagePressure"]
+        .some((field) => typeof value[field] !== "boolean")) throw new TypeError("Invalid sync conditions");
 }
 
 export function checkContext(context: StagingContext, types: readonly string[], versions: Readonly<Record<string, number>>): void {
@@ -108,7 +114,7 @@ export function validateRead(value: unknown, source: "snapshot" | "change", sche
         nextUnreadSinceMs: value.nextUnreadSinceMs, hasMore: value.hasMore };
     }
     if (typeof value.failure !== "string") return failed;
-    if (value.outcome === "projection-refused" && PROJECTION_FAILURE.has(value.failure) && typeof value.path === "string" && PATH.exec(value.path)?.[0] === value.path) {
+    if (value.outcome === "projection-refused" && PROJECTION_FAILURE.has(value.failure) && typeof value.path === "string" && (value.path === "" || PATH.exec(value.path)?.[0] === value.path)) {
       return { outcome: "projection-refused", failure: value.failure, path: value.path };
     }
     if (value.outcome === "not-permitted" && PERMISSION.has(value.failure)) return { outcome: "not-permitted", failure: value.failure };

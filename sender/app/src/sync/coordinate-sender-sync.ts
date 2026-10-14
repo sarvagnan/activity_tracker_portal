@@ -12,8 +12,8 @@ import type { CycleProgress, ObservedPage } from "../outbox/stage-outbox-batch.t
 import { stageSyncCompletion, cycleCompletion } from "../outbox/stage-sync-completion.ts";
 import { stageSyncCheckpoint, runCheckpoint } from "../outbox/stage-sync-checkpoint.ts";
 import type { OutcomeReason, RecordTypeOutcome } from "../outbox/stage-sync-checkpoint.ts";
-import { storageLane, serializedDatabase } from "./sync-storage.ts";
-import { checkOptions, checkContext, checkTrigger, checkInstant, validateRead, utf8 } from "./sync-validation.ts";
+import { storageLane, storageDatabase, serializedDatabase } from "./sync-storage.ts";
+import { checkOptions, checkContext, checkConditions, checkTrigger, checkInstant, validateRead, utf8 } from "./sync-validation.ts";
 import type { Migration } from "../storage/migrations.ts";
 
 /** One snapshot page request, as read-snapshot-page@1 takes it (coordinate-sender-sync@1). */
@@ -192,11 +192,12 @@ interface PendingRun {
 /** Create the Sender's one synchronization module. */
 export function createSenderSync(options: SenderSyncOptions): SenderSync {
   checkOptions(options);
-  const { database, cipher } = options;
-  const lane = storageLane(database);
+  const { cipher } = options;
+  const database = storageDatabase(options.database);
+  const lane = storageLane(options.database);
   // Begins release the lane during issuance. Staging holds it across its full
   // optimistic operation, so our own concurrent turns never compete to stage.
-  const beginDatabase = serializedDatabase(database);
+  const beginDatabase = serializedDatabase(options.database);
   const types = [...options.recordTypes].sort();
   const managed = new Set(types);
   const projection = { implementationVersion: options.projection.implementationVersion,
@@ -245,10 +246,23 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
     const installationId = context.installationId;
     let startMono = options.monotonicNow();
     let failure: string | null = null;
+    let callerError: TypeError | null = null;
+    const stopped = () => failure !== null || callerError !== null;
     const running = new Map<string, Promise<void>>();
     const states = new Map(types.map((type) => [type, {
       work: false, onlyEmptyChanges: true, caughtUp: false, stopped: false, expired: false,
     } as TypeRun]));
+
+    function randomUUID(): string {
+      try {
+        const value = options.randomUUID();
+        if (typeof value !== "string" ||
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.exec(value)?.[0] !== value) {
+          throw new TypeError("Invalid sync identity");
+        }
+        return value;
+      } catch (error) { if (error instanceof TypeError) callerError ??= error; throw error; }
+    }
 
     async function stageInRun<T extends { outcome: string; failure?: string }>(
       call: () => Promise<T>, after?: (result: T) => Promise<void>,
@@ -261,19 +275,32 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
       });
     }
 
-    async function guard(state: TypeRun, owedCompletion = false): Promise<boolean> {
-      if (failure !== null) return false;
+    function canStart(state: TypeRun, owedCompletion = false): boolean {
+      if (stopped()) return false;
       if (!owedCompletion && request.budgetMs !== undefined && options.monotonicNow() >= startMono + request.budgetMs) {
         state.reason = "time-budget-reached";
         state.stopped = true;
         return false;
       }
-      const conditions = await options.conditions();
-      if (failure !== null) return false;
-      const reason = !conditions.secureLock ? "screen-lock-removed" : conditions.storagePressure ? "storage-pressure"
-        : conditions.deliveryBlocked ? "delivery-blocked" : !conditions.collectionEnabled ? "collection-disabled" : undefined;
-      if (reason !== undefined) { state.reason = reason; state.stopped = true; return false; }
       return true;
+    }
+
+    async function guard(state: TypeRun, owedCompletion = false): Promise<boolean> {
+      try {
+        if (!canStart(state, owedCompletion)) return false;
+        const conditions = await options.conditions();
+        checkConditions(conditions);
+        if (!canStart(state, owedCompletion)) return false;
+        const reason = !conditions.secureLock ? "screen-lock-removed" : conditions.storagePressure ? "storage-pressure"
+          : conditions.deliveryBlocked ? "delivery-blocked" : !conditions.collectionEnabled ? "collection-disabled" : undefined;
+        if (reason !== undefined) { state.reason = reason; state.stopped = true; return false; }
+        return true;
+      } catch (error) {
+        // The begin units catch issuer errors; retain caller errors here so they
+        // still stop the pool and reject the trigger after in-flight steps settle.
+        if (error instanceof TypeError) callerError ??= error;
+        throw error;
+      }
     }
 
     async function savedStep(recordType: string): Promise<SavedStep> {
@@ -321,7 +348,7 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
           return false;
         }
       }
-      return failure === null;
+      return !stopped();
     }
 
     async function block(recordType: string, state: TypeRun, step: SavedStep, cause: BlockCause, name: string, path: string | null) {
@@ -339,15 +366,19 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
       // The published begin units check storage before calling the issuer. Check
       // again at the actual source boundary, after any wait for that storage.
       const issuer: ChangesTokenIssuer = { issue: async (type) => {
-        if (!await guard(state)) throw new Error("Source call paused");
+        if (!await guard(state) || !canStart(state)) throw new Error("Source call paused");
         return options.sources.issue(type);
       } };
-      const clocks = { randomUUID: options.randomUUID, now: () => { const now = options.now(); checkInstant(now); return now; } };
+      const clocks = { randomUUID, now: () => {
+        try { const now = options.now(); checkInstant(now); return now; }
+        catch (error) { if (error instanceof TypeError) callerError ??= error; throw error; }
+      } };
       const result = step.attempt && step.established
         ? await beginReconciliationSnapshot(beginDatabase, issuer,
           { recordType, installationId, superseding: step.attempt.snapshotId }, clocks)
         : await beginInitialSnapshot(beginDatabase, issuer,
           { recordType, installationId, ...(step.attempt ? { abandoning: step.attempt.snapshotId } : {}) }, clocks);
+      if (callerError !== null) throw callerError;
       failure ??= dependencyFailure(result);
       if (result.outcome === "begun") {
         state.work = true;
@@ -363,7 +394,7 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
     async function complete(recordType: string, state: TypeRun, step: SavedStep, owed = false): Promise<void> {
       if (!await guard(state, owed)) return;
       const result = await stageInRun(() => {
-        if (failure !== null) throw new Error("Run already failed");
+        if (stopped()) throw new Error("Run already failed");
         return stageSyncCompletion(database, cipher, context, { recordType, cycleId: step.cycleId! });
       });
       failure ??= dependencyFailure(result);
@@ -387,10 +418,7 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
         if (step.completion) { await complete(recordType, state, step); return; }
         if (!await guard(state)) return;
         if (step.source === "change" && step.cycleId === null) {
-          step.cycleId = options.randomUUID();
-          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(step.cycleId)) {
-            throw new TypeError("Invalid Change Cycle identity");
-          }
+          step.cycleId = randomUUID();
           await lane(() => database.execute(
             "UPDATE sync_types SET change_cycle_id = ?, change_snapshot_id = ? WHERE record_type = ?",
             [step.cycleId, step.attempt!.snapshotId, recordType]));
@@ -401,6 +429,8 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
           [installationId, runSequence, recordType, step.cycleId, step.progress?.recordCount ?? 0])));
         if (!await guard(state)) return;
         let payload: unknown;
+        // guard itself yields; check again in the source call's own turn.
+        if (!canStart(state)) return;
         try {
           payload = step.source === "snapshot"
             ? await options.sources.readSnapshotPage({ recordType, snapshotId: step.attempt.snapshotId, position: step.position })
@@ -451,8 +481,9 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
         if (stagedPage.progress.finished) {
           await complete(recordType, state, { ...step, progress: stagedPage.progress, completion: true }, true);
         }
-      } catch {
-        failure ??= "storage-failed";
+      } catch (error) {
+        if (error instanceof TypeError) callerError ??= error;
+        else failure ??= "storage-failed";
       }
     }
 
@@ -496,7 +527,7 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
       }));
       const priority = [...new Set(request.priority ?? [])];
       while (true) {
-        while (failure === null && running.size < (options.concurrency ?? 2)) {
+        while (!stopped() && running.size < (options.concurrency ?? 2)) {
           const ring = await lane(() => database.query("SELECT record_type FROM sync_types ORDER BY ring_order"));
           const candidates = [...priority, ...ring.map((row) => row.record_type as string)];
           let selected: string | undefined;
@@ -507,7 +538,7 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
             if (index >= 0) priority.splice(index, 1);
             if (await eligible(type, state)) { selected = type; break; }
           }
-          if (selected === undefined || failure !== null) break;
+          if (selected === undefined || stopped()) break;
           const type = selected;
           const pending = turn(type).finally(() => { running.delete(type); });
           running.set(type, pending);
@@ -515,6 +546,7 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
         if (running.size === 0) break;
         await Promise.race(running.values());
       }
+      if (callerError !== null) throw callerError;
       if (failure !== null) return { outcome: "failed", failure };
       const recordTypes = await lane(async () => {
         const entries: RecordTypeOutcome[] = [];
@@ -541,6 +573,7 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
     } catch (error) {
       failure ??= "storage-failed";
       await Promise.all(running.values());
+      if (callerError !== null) throw callerError;
       if (error instanceof TypeError) throw error;
       return { outcome: "failed", failure };
     }
