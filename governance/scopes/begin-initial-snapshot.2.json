@@ -1,0 +1,176 @@
+{
+  "contract_schema": 1,
+  "scope": "begin-initial-snapshot",
+  "version": "2",
+  "kind": "leaf",
+  "purpose": "Close the race between one record type's baseline reading and later source changes: obtain a Health Connect changes token with the instant read before requesting it, then durably commit it with a new Initial Snapshot identity in Sender storage before any page is read, abandoning only an attempt the caller names, or begin nothing. It also gives every snapshot unit one in-transaction primitive that commits a new attempt of either kind and supersedes the named current attempt, so the one-current-attempt rule stays with the tables' owner.",
+  "inputs": [
+    {
+      "name": "record_type",
+      "mode": "pure",
+      "description": "One record type name from project-source-record's PROJECTION_SCHEMA_VERSIONS, such as steps."
+    },
+    {
+      "name": "sender_installation",
+      "mode": "pure",
+      "description": "The lowercase UUID of the Sender's own active Sender Installation, supplied by the caller."
+    },
+    {
+      "name": "abandoning",
+      "mode": "pure",
+      "description": "Absent, or the identity of the record type's current snapshot attempt, which the caller has decided to abandon before first publication."
+    },
+    {
+      "name": "attempt_commit",
+      "mode": "pure",
+      "description": "For the primitive: a caller's complete new attempt (identity, record type, kind, installation, changes token, and unread-since and begun-at instants) and the identity of the current attempt it supersedes, if any."
+    },
+    {
+      "name": "snapshot_identity_source",
+      "mode": "volatile",
+      "description": "A source of random lowercase version 4 UUIDs, one of which becomes the new snapshot identity."
+    },
+    {
+      "name": "current_time",
+      "mode": "volatile",
+      "description": "The time read once from the supplied clock before any Health Connect call, and the commit time."
+    },
+    {
+      "name": "permission_state",
+      "mode": "volatile",
+      "description": "The Health Connect permissions granted to the Sender, read immediately before and immediately after the token request."
+    },
+    {
+      "name": "health_connect_token",
+      "mode": "volatile",
+      "description": "The changes token Health Connect issues for the one record type and every data origin."
+    },
+    {
+      "name": "sender_storage",
+      "mode": "effectful",
+      "description": "The Sender's SQLite database: the record type's current snapshot attempt, read before the token request and again inside the commit transaction, or inside the primitive caller's transaction."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "snapshot_begun",
+      "description": "The new snapshot identity, record type, changes token, and unread-since instant, committed durably as the record type's current Initial Snapshot attempt with empty page-chain state."
+    },
+    {
+      "name": "attempt_committed",
+      "description": "Through the primitive, inside the caller's transaction: the new attempt of either kind committed and made current, with the attempt it supersedes retained and marked abandoned at the new attempt's begin time; or a refusal with nothing written. The primitive opens no transaction of its own, so a caller's rollback undoes it."
+    },
+    {
+      "name": "refusal",
+      "description": "A named reason the record type's current attempt prevents beginning, with nothing written. A refusal found before the token request requests no token, and one found by the commit's recheck discards the token it was issued."
+    },
+    {
+      "name": "not_permitted",
+      "description": "Which required permission was missing, read or history, or that Health Connect denied the request, with nothing written."
+    },
+    {
+      "name": "read_failure",
+      "description": "One named Health Connect failure with no exception text and nothing written, retried on a later run."
+    },
+    {
+      "name": "storage_failure",
+      "description": "The commit failed and rolled back, so nothing was begun; the issued token is discarded and the attempt is retried on a later run."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "attempt-open",
+      "outcome": "refusal"
+    },
+    {
+      "name": "attempt-mismatch",
+      "outcome": "refusal"
+    },
+    {
+      "name": "read-permission-missing",
+      "outcome": "not-permitted"
+    },
+    {
+      "name": "history-permission-missing",
+      "outcome": "not-permitted"
+    },
+    {
+      "name": "read-denied",
+      "outcome": "not-permitted"
+    },
+    {
+      "name": "health-connect-unavailable",
+      "outcome": "read-failure"
+    },
+    {
+      "name": "health-connect-io-failure",
+      "outcome": "read-failure"
+    },
+    {
+      "name": "health-connect-request-rejected",
+      "outcome": "read-failure"
+    },
+    {
+      "name": "unexpected-read-failure",
+      "outcome": "read-failure"
+    },
+    {
+      "name": "source-contract-violation",
+      "outcome": "read-failure"
+    },
+    {
+      "name": "storage-failed",
+      "outcome": "storage-failure"
+    }
+  ],
+  "observable_effects": [
+    {
+      "name": "health-connect-token-request",
+      "description": "Reads granted permissions twice and requests one changes token for one record type and every data origin; never reads records or changes, writes Health Connect data, or requests a permission."
+    },
+    {
+      "name": "sender-storage-write",
+      "description": "Applies this unit's Sender schema migration, and commits the new attempt, its current-attempt pointer, and any named abandonment in one SQLite transaction or not at all; the primitive writes only inside its caller's transaction."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the changes-token request for an Initial Snapshot and the unread-since instant recorded with it",
+      "the full-history and read permission requirements for beginning a snapshot",
+      "snapshot identity issuance for Initial Snapshots",
+      "the Sender's snapshot-attempt tables, their migration, and the rule of one current attempt per record type",
+      "the in-transaction primitive through which every snapshot unit commits a new attempt and supersedes the current one",
+      "abandoning a named current attempt atomically with beginning its replacement",
+      "classification of Health Connect and storage failures into the named failures"
+    ],
+    "does_not_own": [
+      "deciding when to begin, or that an attempt is to be abandoned before first publication, which belong to coordinate-sender-sync",
+      "when and why a Reconciliation Snapshot begins, its token request, and its preconditions, which belong to begin-reconciliation-snapshot",
+      "reading pages, which belongs to read-snapshot-page and read-change-page",
+      "page progress, positions, counts, chains after the empty initial state, and Outbox Messages, which belong to stage-outbox-batch",
+      "snapshot completion, which belongs to stage-sync-completion",
+      "the Sender's own installation identity and lifecycle, which belong to manage-sender-enrollment",
+      "requesting permissions, background-read eligibility, and the Expo bridge between Kotlin and TypeScript"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "project-source-record",
+      "version": "1"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/begin-initial-snapshot-2.spec.md",
+    "executable_tests": {
+      "kotlin": "sender/app/modules/health-connect/android/src/test/java/org/activitytracker/healthconnect/token/IssueChangesToken1Test.kt",
+      "typescript": "sender/app/test/begin-initial-snapshot-2.test.ts",
+      "python": "tests/acceptance/test_begin_initial_snapshot_2.py"
+    },
+    "runner": "tests/acceptance/run_begin_initial_snapshot_2.sh",
+    "languages": [
+      "kotlin",
+      "python",
+      "typescript"
+    ]
+  }
+}
