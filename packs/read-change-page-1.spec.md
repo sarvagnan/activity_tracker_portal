@@ -24,12 +24,12 @@ The pinned SDK is `androidx.health.connect:connect-client:1.1.0` on Android 14 o
 
 Kotlin, package `org.activitytracker.healthconnect.changes` in the project-owned Health Connect module, depending only on the access seam and `org.activitytracker.healthconnect.projection`:
 
-- The existing `HealthConnectAccess` seam gains `suspend fun getChanges(changesToken: String): ChangesResponse`, matching the SDK's `HealthConnectClient`. The reader calls only `getGrantedPermissions` and `getChanges` on it.
+- A new seam, `HealthConnectChangeAccess`, declares `suspend fun getGrantedPermissions(): Set<String>` and `suspend fun getChanges(changesToken: String): ChangesResponse`, matching the SDK's `PermissionController` and `HealthConnectClient`. The reader calls nothing else. `HealthConnectAccess` stays unchanged because the published `read-snapshot-page@1` binds a fake that implements it; a production adapter implements both.
 - `ChangePageRequest(recordType: String, cycleId: String, changesToken: String, unreadSince: Instant, context: ProjectionContext)`. Construction throws `IllegalArgumentException` in any of these cases, because each is a caller error rather than an outcome:
   - `recordType` is not a key of `PROJECTION_SCHEMA_VERSIONS`;
   - `cycleId` does not match the Wire Protocol `uuid` pattern;
   - `changesToken` is empty.
-- `suspend fun readChangePage(access: HealthConnectAccess, clock: Clock, request: ChangePageRequest): ChangePageResult`, where `ChangePageResult` is one of:
+- `suspend fun readChangePage(access: HealthConnectChangeAccess, clock: Clock, request: ChangePageRequest): ChangePageResult`, where `ChangePageResult` is one of:
   - `ChangePageResult.Page(recordType: String, cycleId: String, projectionSchemaVersion: Int, items: List<ChangeItem>, nextChangesToken: String, nextUnreadSince: Instant, hasMore: Boolean)`
   - `ChangePageResult.TokenExpired(failure: String)`
   - `ChangePageResult.ProjectionRefused(refusal: ProjectionResult.Refused)`
@@ -40,19 +40,19 @@ Kotlin, package `org.activitytracker.healthconnect.changes` in the project-owned
 
 ## Requirements
 
-Each requirement will be bound to named executable tests before freeze. Kotlin JVM tests in `ReadChangePage1Test` drive the reader through a synthetic fake, `ChangeHealthConnect`, that models Health Connect's change log, and the Python suite `tests/acceptance/test_read_change_page_1.py` checks the contract. The runner `tests/acceptance/run_read_change_page_1.sh` runs both. No fixture contains real health data, Device identifiers, or credentials.
+Each requirement is bound to named executable tests. Kotlin JVM tests in `ReadChangePage1Test` drive the reader through a synthetic fake, `ChangeHealthConnect`, that models Health Connect's change log, and the Python suite `tests/acceptance/test_read_change_page_1.py` checks the contract. The runner `tests/acceptance/run_read_change_page_1.sh` runs both. No fixture contains real health data, Device identifiers, or credentials.
 
 ### R1 — Governed Scope contract
 
 The contract names the scope, version, kind, purpose, inputs with their modes, outputs, every named failure with one of the outcome classes `token-expired`, `projection-refusal`, `not-permitted`, or `read-failure`, the Health Connect read effect, authority, the `project-source-record@1` dependency, and the acceptance oracle. It does not contradict the `read-change-page` scope-map row.
 
-Proposed tests: `test_governed_scope_contract_has_required_shape`, `test_scope_map_row_does_not_contradict_contract` (Python).
+Tests: `test_governed_scope_contract_has_required_shape`, `test_scope_map_row_does_not_contradict_contract` (Python).
 
 ### R2 — Request validation
 
 A request names a record type from `PROJECTION_SCHEMA_VERSIONS`, a lowercase UUID Change Cycle identity, and a non-empty token. Anything else throws `IllegalArgumentException` before any Health Connect call.
 
-Proposed tests: `unknown_record_type_is_a_caller_error`, `malformed_cycle_identity_is_a_caller_error`, `empty_changes_token_is_a_caller_error`.
+Tests: `unknown_record_type_is_a_caller_error`, `malformed_cycle_identity_is_a_caller_error`, `empty_changes_token_is_a_caller_error`.
 
 ### R3 — Token age
 
@@ -64,7 +64,7 @@ An age of exactly 30 days is too old. A clock up to one day behind `unreadSince`
 
 The fake deletes change-log rows and token requests 32 days after they were written, and never deletes a next-page token, as Health Connect does. One test shows that the fake silently drops changes behind a stale next-page token, so the age limit is the only protection.
 
-Proposed tests: `a_token_at_the_age_limit_is_refused_without_reading`, `a_token_under_the_age_limit_is_read`, `a_clock_behind_the_token_beyond_tolerance_is_refused_without_reading`, `a_clock_behind_the_token_within_tolerance_is_read`, `the_fake_drops_changes_behind_a_stale_next_page_token`.
+Tests: `a_token_at_the_age_limit_is_refused_without_reading`, `a_token_under_the_age_limit_is_read`, `a_clock_behind_the_token_beyond_tolerance_is_refused_without_reading`, `a_clock_behind_the_token_within_tolerance_is_read`, `the_fake_drops_changes_behind_a_stale_next_page_token`.
 
 ### R4 — Full-history permission, checked around the read
 
@@ -78,13 +78,13 @@ Immediately before and immediately after the change read, the reader reads the g
 
 In every case the outcome is `NotPermitted`, with no page and no token.
 
-Proposed tests: `missing_read_permission_reads_no_changes`, `missing_history_permission_reads_no_changes`, `permissions_are_read_before_and_after_the_changes`, `permission_lost_during_the_read_discards_the_page`, `security_exception_is_read_denied`.
+Tests: `missing_read_permission_reads_no_changes`, `missing_history_permission_reads_no_changes`, `permissions_are_read_before_and_after_the_changes`, `permission_lost_during_the_read_discards_the_page`, `security_exception_is_read_denied`.
 
 ### R5 — The read and its expiry
 
 Every page is one `getChanges` call with the request's token. A response reporting `changesTokenExpired` is `TokenExpired("changes-token-expired")`, whatever else it carries. Because the SDK reports every invalid-argument error as expiry, an unknown or corrupt token reads as expired too.
 
-Proposed tests: `one_change_read_uses_the_request_token`, `health_connect_expiry_is_token_expired`, `expiry_wins_over_other_response_fields`, `an_unknown_token_reads_as_expired`.
+Tests: `one_change_read_uses_the_request_token`, `health_connect_expiry_is_token_expired`, `expiry_wins_over_other_response_fields`, `an_unknown_token_reads_as_expired`.
 
 ### R6 — Items and their order
 
@@ -96,7 +96,7 @@ An identifier both deleted and upserted on one page is retracted, then projected
 
 If any upserted record refuses, the result is `ProjectionRefused` with the first refusal in projection order, and no token is returned. A page may be empty.
 
-Proposed tests: `retractions_precede_projections`, `each_kind_keeps_health_connect_order`, `repeated_deletions_retract_once`, `a_reused_identifier_is_retracted_then_projected`, `projection_bytes_equal_the_shared_projection`, `one_unprojectable_record_refuses_the_whole_page`, `refusal_is_the_first_in_projection_order`.
+Tests: `retractions_precede_projections`, `each_kind_keeps_health_connect_order`, `repeated_deletions_retract_once`, `a_reused_identifier_is_retracted_then_projected`, `projection_bytes_equal_the_shared_projection`, `one_unprojectable_record_refuses_the_whole_page`, `refusal_is_the_first_in_projection_order`.
 
 ### R7 — Next token, continuation, and unread-since
 
@@ -106,19 +106,19 @@ Proposed tests: `retractions_precede_projections`, `each_kind_keeps_health_conne
 
 The reader persists nothing. Re-reading a token against unchanged Health Connect data returns the same items, byte for byte. Health Connect stores a new next token for each read, so the token string may differ. A token with no changes since returns an empty page with no more pages remaining and the same token.
 
-Proposed tests: `next_token_and_continuation_come_from_health_connect`, `unread_since_carries_through_a_cycle`, `unread_since_restarts_when_no_page_remains`, `rereading_a_token_returns_identical_items`, `no_change_returns_an_empty_final_page`.
+Tests: `next_token_and_continuation_come_from_health_connect`, `unread_since_carries_through_a_cycle`, `unread_since_restarts_when_no_page_remains`, `rereading_a_token_returns_identical_items`, `no_change_returns_an_empty_final_page`.
 
 ### R8 — Convergence
 
-Apply a Change Cycle's pages in order to a replica of the type's records, starting from the records present when the token was issued: a retraction removes its identifier, and a projection sets it. The cycle runs while records are inserted, updated, deleted, and written again under a reused identifier, between reads and during them. After a cycle whose final read saw no concurrent change, the replica holds exactly the projections of the records Health Connect then holds. The randomized test runs cycles of one page and cycles of many pages.
+Apply a Change Cycle's pages in order to a replica of the type's records, starting from the records present when the token was issued: a retraction removes its identifier, and a projection sets it. The cycle runs while records are inserted, updated, deleted, and written again under a reused identifier, between reads and during them. After a cycle whose final read saw no concurrent change, the replica holds exactly the projections of the records Health Connect then holds. The randomized test runs twelve seeds: eight with small changes, and four that begin with a 1,200-record write so their cycles span pages.
 
-Proposed tests: `replica_converges_under_concurrent_change`, `a_record_deleted_after_its_upsert_is_only_retracted`.
+Tests: `replica_converges_under_concurrent_change`, `a_record_deleted_after_its_upsert_is_only_retracted`.
 
 ### R9 — Page size
 
 Health Connect sizes pages; the reader sets no record limit (Decision 5). A page can hold more than 1,000 items. A page can also hold no items while more pages remain, when the records upserted on it were deleted after the page's rows were logged; the reader returns it as an ordinary page, and the cycle continues.
 
-Proposed tests: `a_page_may_exceed_one_thousand_items`, `an_empty_page_with_more_remaining_is_a_page`.
+Tests: `a_page_may_exceed_one_thousand_items`, `an_empty_page_with_more_remaining_is_a_page`.
 
 ### R10 — Response validation
 
@@ -130,7 +130,7 @@ The reader trusts Health Connect only as far as these rules. A response that bre
 - its next token is empty;
 - it reports more pages but returns the request's own token, which would never progress.
 
-Proposed tests: `upserted_records_of_another_type_are_violations`, `duplicate_upserted_identifiers_are_violations`, `deleted_identifiers_outside_the_source_identity_form_are_violations`, `unknown_change_kinds_are_violations`, `empty_next_tokens_are_violations`, `more_pages_without_a_new_token_are_violations`.
+Tests: `upserted_records_of_another_type_are_violations`, `duplicate_upserted_identifiers_are_violations`, `deleted_identifiers_outside_the_source_identity_form_are_violations`, `unknown_change_kinds_are_violations`, `empty_next_tokens_are_violations`, `more_pages_without_a_new_token_are_violations`.
 
 ### R11 — Failure classification
 
@@ -146,7 +146,7 @@ An exception from any of the three seam calls (the permission read before, the c
 
 The SDK reports rate limiting, an internal provider error, and data sync in progress as `IllegalStateException`. A `CancellationException` always propagates as the same instance, and so does a `Throwable` that is not an `Exception`. Because `java.util.concurrent.CancellationException` is an `IllegalStateException`, it must be recognized first. Only exceptions from seam calls are classified; the approver confirms in implementation review that the reader's own defects are not turned into read failures.
 
-Proposed tests: `each_exception_class_maps_to_one_named_failure`, `cancellation_propagates`.
+Tests: `each_exception_class_maps_to_one_named_failure`, `cancellation_propagates`.
 
 ### R12 — Health-data-free outcomes
 
@@ -154,7 +154,7 @@ Proposed tests: `each_exception_class_maps_to_one_named_failure`, `cancellation_
 
 Every named failure in the contract is reachable, and the reader returns no failure the contract does not name.
 
-Proposed tests: `non_page_outcomes_carry_only_named_failures`, `every_named_failure_is_reachable_and_in_the_contract`.
+Tests: `non_page_outcomes_carry_only_named_failures`, `every_named_failure_is_reachable_and_in_the_contract`.
 
 ### R13 — Order of checks
 
@@ -168,7 +168,7 @@ When several outcomes apply, the first in this order wins:
 7. Response validation (R10).
 8. Projection of the page (R6).
 
-Proposed tests: `failures_follow_the_documented_order`.
+Tests: `failures_follow_the_documented_order`.
 
 ## Decisions for the Operator
 
@@ -185,7 +185,7 @@ Proposed tests: `failures_follow_the_documented_order`.
 
 ## Ground rules
 
-- Kotlin JVM tests construct SDK records through the SDK's constructors with synthetic values and identifiers, and run with no Android device, emulator, or Context. The SDK keeps `Metadata`'s full constructor internal, so the tests reach it through Kotlin reflection, as `read-snapshot-page@1` does. `ChangesResponse`, `UpsertionChange`, and `DeletionChange` have public constructors.
+- Kotlin JVM tests construct SDK records through the SDK's constructors with synthetic values and identifiers, and run with no Android device, emulator, or Context. The SDK keeps `Metadata`'s full constructor internal, so the tests reach it through Kotlin reflection, as `read-snapshot-page@1` does. `ChangesResponse`, `UpsertionChange`, and `DeletionChange` have public constructors, and `Change` is an open interface, so the tests also build a change of neither kind.
 - The synthetic fake models the Health Connect change log this pack relies on:
   - change-log rows of up to 1,000 identifiers per write;
   - pages that collect 1,000 identifiers and mint a new token at their last row;
@@ -201,10 +201,14 @@ Proposed tests: `failures_follow_the_documented_order`.
 
 ## Freeze prerequisites
 
-The Operator approves this draft. The executable pack then adds:
+The Operator approved the draft. The executable pack adds:
 - the Kotlin acceptance suite and its synthetic fake;
 - the Python contract suite;
-- the runner `tests/acceptance/run_read_change_page_1.sh`;
-- the Interface stubs, including the seam's change read and the existing `SyntheticHealthConnect`'s implementation of it.
+- the runner;
+- the Interface stub `changes/ChangePage.kt` and the seam `HealthConnectChangeAccess`.
 
-It also obtains the implementer's read-only implementability review, shows genuine RED, and presents the binding for the approver's freeze decision.
+Against the stub, every Kotlin test fails. Forty fail with the stub's `NotImplementedError`, the three request-validation tests fail because the stub does not validate, and the cancellation test fails because cancellation meets the stub's error. The two Python tests pass, because they check the contract.
+
+The binding is:
+- spec files: the contract and this pack;
+- test files: `ReadChangePage1Test.kt`, `ChangeHealthConnect.kt`, `test_read_change_page_1.py`, and the runner.
