@@ -74,7 +74,7 @@ The staged message is exactly `ingest-protocol@1`'s `encodeMessage` of the follo
 
 The message decodes under the protocol library. It holds no position, changes token, or unread-since instant. Its counts and chain equal what the Portal's delivery evaluation accumulates from the cycle's fragments.
 
-Tests: `a_snapshot_completion_matches_the_protocol`, `a_reconciliation_completion_carries_its_kind`, `a_change_completion_matches_the_protocol`, `the_completion_carries_no_cursor_or_token`.
+Tests: `a_snapshot_completion_matches_the_protocol`, `a_reconciliation_completion_carries_its_kind`, `a_change_completion_matches_the_protocol`, `completion_fields_come_from_context_and_progress`, `the_completion_carries_no_cursor_or_token`.
 
 ### R3 — Sealed and appended after every fragment
 
@@ -90,8 +90,9 @@ Each condition below, when it fails, gives a refusal with nothing written and no
 - **`cycle-not-current`:**
   - the cycle has no progress and is not the record type's current snapshot attempt;
   - the cycle belongs to another record type;
-  - the cycle's snapshot attempt is no longer current, because it was abandoned or superseded.
-- **`installation-mismatch`:** the cycle was staged under another Sender Installation than the context's.
+  - the cycle's snapshot attempt is no longer current, because it was abandoned or superseded;
+  - the cycle's progress kind does not match its attempt. The attempt's own cycle must be `initial-snapshot` for an Initial attempt and `reconciliation-snapshot` for a Reconciliation attempt, and any other cycle under it must be a `change-cycle`.
+- **`installation-mismatch`:** the cycle was staged under another Sender Installation than the context's. This applies only once progress exists. For the current attempt's own cycle with no page staged, the result is `chain-incomplete`, whatever the attempt's installation.
 - **`chain-incomplete`:**
   - the cycle is not finished;
   - the cycle is the current attempt's own snapshot cycle, but no page has been staged yet.
@@ -186,20 +187,30 @@ Not mechanically provable here; the approver confirms it in implementation revie
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the TypeScript suite, 24 tests;
+- the TypeScript suite, 25 tests;
 - the Python contract suite, 2 tests;
 - the self-verifying runner;
 - the Interface stub `sender/app/src/outbox/stage-sync-completion.ts`.
 
 The suite's fixture migrates explicitly with `[snapshotAttemptsMigration, outboxMigration, completionMigration]` to version 3. It drives the published `begin-initial-snapshot@2`, `begin-reconciliation-snapshot@1`, and `stage-outbox-batch@1`, and guards the cipher against any key creation, deletion, or opening.
 
-A throwaway reference implementation passes all 24 tests and typechecks. Six mutants of it each fail at least one test:
+The implementer's read-only implementability review found nothing blocking. Its four clarifications are added:
+- exact bytes that vary the installation, record type, generation, and counts, including an empty one-page cycle;
+- transaction-entry changes to each count;
+- a progress kind that does not match its attempt is `cycle-not-current`;
+- the installation check applies only once progress exists, and `cycle-not-current` takes precedence over it.
+
+A throwaway reference implementation passes all 25 tests and typechecks. Ten mutants of it each fail at least one test:
 - `page_count` taken from the fragment count;
 - `snapshot_kind` fixed as `initial`;
 - no attempt-currency check;
 - no exactly-once check;
 - the recheck run outside the transaction;
-- the completion record written outside the Outbox transaction.
+- the completion record written outside the Outbox transaction;
+- no progress-kind check;
+- `page_count` fixed at 2;
+- a recheck that ignores count changes;
+- the generation hard-coded.
 
 Against the stub:
 - every TypeScript test fails, because the stub's migration throws and the static check finds no `appendOutboxMessages` call;

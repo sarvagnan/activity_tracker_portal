@@ -285,6 +285,23 @@ test("a_change_completion_matches_the_protocol", async (t) => {
   assert.deepEqual((await opened(f.database, f.cipher)).at(-1)!.bytes, expected);
 });
 
+test("completion_fields_come_from_context_and_progress", async (t) => {
+  const f = await fixture(t);
+  // Another installation, record type, and generation, and an empty one-page cycle.
+  const other = context({ installationId: OTHER_INSTALLATION, generation: { generation: 9, maxRecordCount: 2, maxMessageBytes: 65_536, projectionSchemas: { "heart-rate": [1] } } });
+  const attempt = await initial(f.database, uuid(0xd1), { recordType: "heart-rate", installationId: OTHER_INSTALLATION });
+  await stage(f, snapshotPage(attempt, 1, 0, true), other);
+  const progress = (await cycleProgress(f.database, uuid(0xd1)))!;
+  const completion = staged(await complete(f, { recordType: "heart-rate", cycleId: uuid(0xd1) }, { context: other }));
+  assert.deepEqual(completion, { cycleId: uuid(0xd1), recordType: "heart-rate", kind: "snapshot-completion", installationId: OTHER_INSTALLATION, sequence: 2 });
+  const rows = await opened(f.database, f.cipher, OTHER_INSTALLATION);
+  assert.deepEqual(rows.at(-1)!.bytes, encodeMessage({
+    wire_version: 1, kind: "snapshot-completion", sender_installation: OTHER_INSTALLATION, sequence: 2, capability_generation: 9,
+    snapshot_kind: "initial", record_type: "heart-rate", cycle_id: uuid(0xd1), page_count: 1, fragment_count: 1, record_count: 0, final_chain: progress.chain,
+  }));
+  assert.equal(await lastOutboxSequence(f.database, INSTALLATION), 0, "the other installation's sequences are untouched");
+});
+
 test("the_completion_carries_no_cursor_or_token", async (t) => {
   const f = await fixture(t);
   const attempt = await initial(f.database, uuid(0xa1));
@@ -375,6 +392,9 @@ test("an_unknown_cycle_is_refused", async (t) => {
   assert.deepEqual(await complete(f, { recordType: "weight", cycleId: uuid(0xa1) }), refused("cycle-not-current"), "another record type's cycle");
   assert.deepEqual(await complete(f, { recordType: "heart-rate", cycleId: uuid(0xa1) }), refused("cycle-not-current"), "a type with no attempt");
   assert.deepEqual(await complete(f, { recordType: "weight", cycleId: uuid(0xb1) }), refused("chain-incomplete"), "the current attempt before any page");
+  // Progress whose kind does not match its attempt is not this attempt's cycle.
+  await f.database.execute("UPDATE cycle_progress SET cycle_kind = 'reconciliation-snapshot' WHERE cycle_id = ?", [uuid(0xa1)]);
+  assert.deepEqual(await complete(f, { recordType: "steps", cycleId: uuid(0xa1) }), refused("cycle-not-current"), "an incompatible progress kind");
 });
 
 // R5 — Exactly once
@@ -435,6 +455,9 @@ test("the_recheck_runs_inside_the_commit_transaction", async (t) => {
   for (const change of [
     "UPDATE cycle_progress SET finished = 0 WHERE cycle_id = ?",
     "UPDATE cycle_progress SET chain = 'synthetic-chain-moved' WHERE cycle_id = ?",
+    "UPDATE cycle_progress SET pages_staged = pages_staged + 1 WHERE cycle_id = ?",
+    "UPDATE cycle_progress SET fragment_count = fragment_count + 1 WHERE cycle_id = ?",
+    "UPDATE cycle_progress SET record_count = record_count + 1 WHERE cycle_id = ?",
     "INSERT INTO cycle_completions (cycle_id, record_type, kind, installation_id, sequence) VALUES (?, 'steps', 'snapshot-completion', '00000000-0000-4000-8000-000000000001', 999)",
   ]) {
     const f = await fixture(t);
@@ -646,6 +669,11 @@ test("checks_follow_the_documented_order", async (t) => {
   await stage(f, snapshotPage(steps, 2, 1, true), context({ installationId: OTHER_INSTALLATION }));
   staged(await complete(f, { recordType: "steps", cycleId: uuid(0xa1) }, { context: context({ installationId: OTHER_INSTALLATION }) }));
   assert.deepEqual(await complete(f, { recordType: "steps", cycleId: uuid(0xa1) }, { cipher: spy }), refused("installation-mismatch"), "installation before already staged");
+  // A superseded, finished cycle under another installation is not current before it is foreign.
+  const old = await initial(f.database, uuid(0xd1), { recordType: "heart-rate", installationId: OTHER_INSTALLATION });
+  await finishedSnapshot(f, old, context({ installationId: OTHER_INSTALLATION }));
+  await initial(f.database, uuid(0xd2), { recordType: "heart-rate", installationId: OTHER_INSTALLATION, abandoning: uuid(0xd1) });
+  assert.deepEqual(await complete(f, { recordType: "heart-rate", cycleId: uuid(0xd1) }, { cipher: spy }), refused("cycle-not-current"));
   assert.equal(spy.seals.length, 0);
   // 3. Sealing before the commit, and 4. the commit last.
   const weight = await initial(f.database, uuid(0xb1), { recordType: "weight" });
