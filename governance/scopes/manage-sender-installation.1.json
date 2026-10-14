@@ -80,8 +80,7 @@
     { "name": "loss-not-acknowledged", "outcome": "refusal" },
     { "name": "no-capability-generation", "outcome": "refusal" },
     { "name": "pending-installation-exists", "outcome": "refusal" },
-    { "name": "store-busy", "outcome": "retryable" },
-    { "name": "storage-reserve-exhausted", "outcome": "retryable" }
+    { "name": "store-busy", "outcome": "retryable" }
   ],
   "observable_effects": [
     {

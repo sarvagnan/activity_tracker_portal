@@ -40,7 +40,7 @@ Operator intents raise `InstallationRefusal` or `InstallationRetryable`. `answer
 
 ## Requirements
 
-Each requirement will be bound to named executable tests before freeze. The Python suite `tests/acceptance/test_manage_sender_installation_1.py` drives the module against a real `operational-store@1` database in a temporary directory. It builds messages with `ingest-protocol@1`, and injects the random source, the times, the store's free-space reader, and lock contention. The runner `tests/acceptance/run_manage_sender_installation_1.sh` runs it. Fixtures are synthetic: UUIDs start with `00000000-0000-4000-8000-`, and Portal hosts end in `.invalid`.
+Each requirement is bound to named executable tests. The Python suite `tests/acceptance/test_manage_sender_installation_1.py` drives the module against a real `operational-store@1` database in a temporary directory. It builds messages with `ingest-protocol@1`, and injects the random source, the times, the store's free-space reader, and lock contention. The runner `tests/acceptance/run_manage_sender_installation_1.sh` runs it. Fixtures are synthetic: UUIDs start with `00000000-0000-4000-8000-`, and Portal hosts end in `.invalid`.
 
 ### R1 — Governed Scope contract
 
@@ -57,7 +57,7 @@ The contract names:
 
 It does not contradict the `manage-sender-installation` scope-map row. The scope map also carries the `manage-sender-enrollment` row for the Sender side, which depends on `ingest-protocol`.
 
-Proposed tests: `test_governed_scope_contract_has_required_shape`, `test_scope_map_rows_do_not_contradict_contract` (Python).
+Tests: `test_governed_scope_contract_has_required_shape`, `test_scope_map_rows_do_not_contradict_contract` (Python).
 
 ### R2 — Caller errors
 
@@ -68,7 +68,7 @@ The following raise `ValueError` before any store read or write, because they ar
 - a negative `final_sequence`;
 - a random source that does not return exactly 10 bytes.
 
-Proposed tests: `test_naive_times_are_caller_errors`, `test_invalid_portal_url_is_a_caller_error`, `test_invalid_capabilities_are_caller_errors`, `test_negative_final_sequence_is_a_caller_error`, `test_wrong_length_random_source_is_a_caller_error`.
+Tests: `test_naive_times_are_caller_errors`, `test_invalid_portal_url_is_a_caller_error`, `test_invalid_capabilities_are_caller_errors`, `test_negative_final_sequence_is_a_caller_error`, `test_wrong_length_random_source_is_a_caller_error`.
 
 ### R3 — Enrollment offers
 
@@ -81,7 +81,7 @@ The offer's fields:
 
 The store records only the SHA-256 of the code's ASCII bytes and the expiry (`operational-store@1` R4). A code already offered raises `enrollment-code-exists`. Several offers may be outstanding at once, and each expires independently.
 
-Proposed tests: `test_offer_code_is_base32_of_ten_random_bytes`, `test_offer_records_only_the_code_digest_and_expiry`, `test_offer_message_is_canonical_and_expires_after_ten_minutes`, `test_offer_requires_an_honored_generation`, `test_repeated_code_is_refused`, `test_outstanding_offers_are_independent`.
+Tests: `test_offer_code_is_base32_of_ten_random_bytes`, `test_offer_records_only_the_code_digest_and_expiry`, `test_offer_message_is_canonical_and_expires_after_ten_minutes`, `test_offer_requires_an_honored_generation`, `test_repeated_code_is_refused`, `test_outstanding_offers_are_independent`.
 
 ### R4 — Answering enrollment confirmations
 
@@ -93,11 +93,11 @@ Proposed tests: `test_offer_code_is_base32_of_ten_random_bytes`, `test_offer_rec
   - a message of another kind: `malformed-message`;
   - `no-capability-generation`, checked before anything is enrolled;
   - `enrollment-code-unknown`, `enrollment-code-consumed`, or `enrollment-code-expired`.
-- **Retryable:** a transient store condition. The response body is the canonical retryable-failure message: `temporarily-unavailable` for `store-busy`, and `storage-reserve-exhausted` for `storage-reserve-exhausted`.
+- **Retryable:** `store-busy`, when another writer holds the store past its busy timeout. The response body is the canonical retryable-failure message `temporarily-unavailable`. The store enforces its storage reserve only when archiving messages, so no lifecycle write here can exhaust it.
 
 A code is usable while `now` is earlier than its expiry. The Portal ingress shell turns a refused response into a transport-level refusal. The Sender treats every response that is neither a capability advertisement nor a retryable failure as refused (Decision 1).
 
-Proposed tests: `test_confirmation_returns_the_current_advertisement_bytes`, `test_confirmation_creates_a_pending_installation`, `test_undecodable_confirmations_are_refused_without_a_body`, `test_other_message_kinds_are_malformed`, `test_unknown_consumed_and_expired_codes_are_refused`, `test_code_is_usable_until_its_expiry`, `test_confirmation_without_a_generation_is_refused_before_enrolling`, `test_transient_store_conditions_are_retryable_responses`.
+Tests: `test_confirmation_returns_the_current_advertisement_bytes`, `test_confirmation_creates_a_pending_installation`, `test_undecodable_confirmations_are_refused_without_a_body`, `test_other_message_kinds_are_malformed`, `test_unknown_consumed_and_expired_codes_are_refused`, `test_code_is_usable_until_its_expiry`, `test_confirmation_without_a_generation_is_refused_before_enrolling`, `test_transient_store_conditions_are_retryable_responses`.
 
 ### R5 — Retried confirmations
 
@@ -106,7 +106,7 @@ A Sender that lost the response resends identical bytes, but its code is now con
 - An identity whose installation is `retired` or `withdrawn` is refused as `installation-ended`. An ended identity never enrolls again.
 - A new identity presenting a consumed code is `enrollment-code-consumed`.
 
-Proposed tests: `test_retried_confirmation_returns_the_advertisement_without_writing`, `test_ended_identity_never_enrolls_again`, `test_consumed_code_refuses_a_new_identity`.
+Tests: `test_retried_confirmation_returns_the_advertisement_without_writing`, `test_ended_identity_never_enrolls_again`, `test_consumed_code_refuses_a_new_identity`.
 
 ### R6 — Operator confirmation and withdrawal
 
@@ -116,7 +116,7 @@ It activates a pending installation only when no installation is active or drain
 
 `withdraw_installation` ends a pending installation. Confirming or withdrawing an installation that is not pending is `installation-transition-invalid`.
 
-Proposed tests: `test_confirming_requires_the_compared_fingerprint`, `test_confirmation_activates_only_without_a_delivering_installation`, `test_other_pending_installations_stay_pending`, `test_pending_installation_can_be_withdrawn`, `test_only_pending_installations_can_be_confirmed_or_withdrawn`.
+Tests: `test_confirming_requires_the_compared_fingerprint`, `test_confirmation_activates_only_without_a_delivering_installation`, `test_other_pending_installations_stay_pending`, `test_pending_installation_can_be_withdrawn`, `test_only_pending_installations_can_be_confirmed_or_withdrawn`.
 
 ### R7 — Draining and retirement
 
@@ -130,7 +130,7 @@ Proposed tests: `test_confirming_requires_the_compared_fingerprint`, `test_confi
 
 Any other source state is `installation-transition-invalid`.
 
-Proposed tests: `test_draining_starts_only_from_active`, `test_drained_retirement_requires_the_final_sequence`, `test_drained_retirement_refuses_sequence_gaps`, `test_never_delivering_installation_drains_at_sequence_zero`, `test_destructive_retirement_requires_acknowledged_loss`, `test_destructive_retirement_from_active_or_draining`.
+Tests: `test_draining_starts_only_from_active`, `test_drained_retirement_requires_the_final_sequence`, `test_drained_retirement_refuses_sequence_gaps`, `test_never_delivering_installation_drains_at_sequence_zero`, `test_destructive_retirement_requires_acknowledged_loss`, `test_destructive_retirement_from_active_or_draining`.
 
 ### R8 — Replacement, unlinking, and loss
 
@@ -141,7 +141,7 @@ The intents compose into the ADR 0009 flows:
 
 After replacement, the new active installation has no Last Delivery and no checkpoint, so its Polling Freshness is never-reported, however much the retired installation delivered.
 
-Proposed tests: `test_replacement_starts_with_no_operational_state`, `test_unlink_leaves_no_delivering_installation`, `test_lost_phone_is_replaced_after_destructive_retirement`.
+Tests: `test_replacement_starts_with_no_operational_state`, `test_unlink_leaves_no_delivering_installation`, `test_lost_phone_is_replaced_after_destructive_retirement`.
 
 ### R9 — Capability generations
 
@@ -149,11 +149,11 @@ Proposed tests: `test_replacement_starts_with_no_operational_state`, `test_unlin
 - When the content differs from the highest honored generation's, it uses the next generation number (1 when there is none) and honors those exact canonical bytes.
 - When the content is unchanged, it returns the existing generation without writing.
 
-`stop_superseded_generations` stops every honored generation below the latest acknowledged one, which `ingest-protocol@1` R10 permits. It stops nothing when no acknowledgement exists. It raises `pending-installation-exists` while any installation is pending, because a pending Sender may hold an older advertisement it has not yet acknowledged (Decision 6).
+`stop_superseded_generations` stops every honored generation below the latest acknowledged one, which `ingest-protocol@1` R10 permits. It stops them lowest first, one store transaction each, because the store stops one generation at a time. It stops nothing when no acknowledgement exists. It raises `pending-installation-exists` while any installation is pending, because a pending Sender may hold an older advertisement it has not yet acknowledged (Decision 6).
 
 `current_advertisement` returns the highest honored generation's exact bytes, or raises `no-capability-generation`.
 
-Proposed tests: `test_configured_capabilities_get_the_next_generation`, `test_unchanged_capabilities_keep_their_generation`, `test_advertisement_bytes_are_exact_and_canonical`, `test_superseded_generations_stop_only_below_the_latest_acknowledgement`, `test_generations_are_kept_while_an_installation_is_pending`, `test_current_advertisement_is_the_highest_generation`.
+Tests: `test_configured_capabilities_get_the_next_generation`, `test_unchanged_capabilities_keep_their_generation`, `test_advertisement_bytes_are_exact_and_canonical`, `test_superseded_generations_stop_only_below_the_latest_acknowledgement`, `test_generations_are_kept_while_an_installation_is_pending`, `test_current_advertisement_is_the_highest_generation`.
 
 ### R10 — Refusals change nothing
 
@@ -161,7 +161,9 @@ The store is left exactly as it was, as compared by SQLite's `iterdump` before a
 - an Operator intent raises `InstallationRefusal` or `InstallationRetryable`;
 - a confirmation is answered `refused` or `retryable`.
 
-Proposed tests: `test_every_refusal_leaves_the_store_unchanged`, `test_retryable_conditions_leave_the_store_unchanged`.
+The one exception is `stop_superseded_generations`. A retryable condition partway through leaves the generations it already stopped stopped; they were superseded, and repeating the intent stops the rest.
+
+Tests: `test_every_refusal_leaves_the_store_unchanged`, `test_retryable_conditions_leave_the_store_unchanged`.
 
 ### R11 — Health-data-free outcomes
 
@@ -169,7 +171,7 @@ Refusals, retryable outcomes, and refused or retryable confirmation responses ca
 
 Every named failure in the contract is reachable, and the module produces no failure the contract does not name.
 
-Proposed tests: `test_outcomes_carry_only_named_failures`, `test_every_named_failure_is_reachable_and_in_the_contract`.
+Tests: `test_outcomes_carry_only_named_failures`, `test_every_named_failure_is_reachable_and_in_the_contract`.
 
 ### R12 — Order of checks
 
@@ -186,7 +188,7 @@ When several outcomes apply, the first listed for the operation wins. Caller err
 | `stop_superseded_generations` | `pending-installation-exists` |
 | `current_advertisement` | `no-capability-generation` |
 
-Proposed tests: `test_checks_follow_the_documented_order`.
+Tests: `test_checks_follow_the_documented_order`.
 
 ## Decisions for the Operator
 
@@ -211,21 +213,29 @@ Proposed tests: `test_checks_follow_the_documented_order`.
 ## Ground rules
 
 - The module uses only the standard library and the published `operational_store` and `ingest_protocol` modules. It reads the store only through `StoreView` and writes only through the store's lifecycle and generation methods (ADR 0023).
-- Tests use a real store on a temporary database. They inject `free_bytes` for the reserve, create lock contention with an external `BEGIN IMMEDIATE` and a short busy timeout, and use fixed timezone-aware times and fixed random bytes.
+- Tests use a real store on a temporary database. They create lock contention with an external `BEGIN IMMEDIATE` and a short busy timeout, and use fixed timezone-aware times and fixed random bytes.
 - Tests archive capability acknowledgements and other Outbox Messages through the store, from `ingest-protocol@1`-encoded synthetic envelopes, to create delivery history, gaps, and acknowledgements.
+- The runner does not trust a test command's exit status. It loads the bound suite itself and passes only when every `test_` method of the suite was loaded and ran, with none failed, errored, skipped, or expected to fail.
+- The trusted toolchain boundary is `uv`, the pinned CPython, `pyproject.toml` and `uv.lock`, and the standard library's `unittest`.
 - Not mechanically provable here; the approver confirms these in implementation review:
   - the default random source is `secrets.token_bytes`;
+  - the implementation changes nothing in the trusted toolchain boundary and does not alter test machinery;
   - nothing logs or returns codes, confirmation bytes, or identities in refusals;
   - every effect goes through the store.
 
 ## Freeze prerequisites
 
-The Operator approves this draft. The executable pack then adds:
-- the Python acceptance suite;
-- the runner `tests/acceptance/run_manage_sender_installation_1.sh`, which verifies its own test report rather than trusting an exit status, as `read-change-page@1`'s does;
+The Operator approved the draft. The executable pack adds:
+- the Python acceptance suite, with 49 tests;
+- the runner, which verifies that every test method ran and passed;
 - the Interface stub `src/activity_tracker_portal/sender_installation.py`.
 
-The pack then:
-- obtains the implementer's read-only implementability review;
-- shows genuine RED;
-- presents the binding for the approver's freeze decision.
+It also makes two refinements:
+- **Retryable outcomes.** The draft listed `storage-reserve-exhausted` as a retryable outcome. The store enforces its reserve only when archiving messages, so no lifecycle write can exhaust it, and the contract names `store-busy` alone.
+- **Stopping generations.** `stop_superseded_generations` stops generations one store transaction each (R9, R10).
+
+Against the stub, the two R1 contract tests pass, and the other 47 tests error with the stub's `NotImplementedError`.
+
+The binding is:
+- spec files: the contract and this pack;
+- test files: `test_manage_sender_installation_1.py` and the runner.
