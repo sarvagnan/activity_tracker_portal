@@ -248,11 +248,12 @@ test("safe integer limits match protocol numbers exactly and reject larger or fr
   await assert.rejects(database.query("SELECT 1.5 AS value"), TypeError);
 });
 
-test("production migration creates only begin-initial-snapshot version one tables and indexes", async (t) => {
+test("production migrations create only snapshot attempt and outbox version two tables and indexes", async (t) => {
   const { snapshotAttemptsMigration } = await import("../src/snapshot/begin-initial-snapshot.ts");
+  const { outboxMigration } = await import("../src/outbox/stage-outbox-batch.ts");
   const { database } = await fixture(t);
-  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration]);
-  assert.deepEqual(await migrate(database), { status: "ready", version: 1 });
+  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration]);
+  assert.deepEqual(await migrate(database), { status: "ready", version: 2 });
   const schema = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name");
   const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
   assert.deepEqual(schema.map((row) => ({ ...row, sql: typeof row.sql === "string" ? normalize(row.sql) : row.sql })), [
@@ -261,6 +262,36 @@ test("production migration creates only begin-initial-snapshot version one table
       sql: normalize(`CREATE TABLE current_snapshot_attempts (
         record_type TEXT PRIMARY KEY NOT NULL, snapshot_id TEXT NOT NULL UNIQUE,
         FOREIGN KEY (snapshot_id, record_type) REFERENCES snapshot_attempts (snapshot_id, record_type)) STRICT`),
+    },
+    {
+      type: "table", name: "cycle_progress", tbl_name: "cycle_progress",
+      sql: normalize(`CREATE TABLE cycle_progress (
+  cycle_id TEXT PRIMARY KEY NOT NULL, record_type TEXT NOT NULL,
+  cycle_kind TEXT NOT NULL CHECK (cycle_kind IN ('initial-snapshot', 'reconciliation-snapshot', 'change-cycle')),
+  snapshot_id TEXT NOT NULL, lineage INTEGER NOT NULL CHECK (lineage >= 0), installation_id TEXT NOT NULL,
+  pages_staged INTEGER NOT NULL CHECK (pages_staged > 0), fragment_count INTEGER NOT NULL CHECK (fragment_count > 0),
+  record_count INTEGER NOT NULL CHECK (record_count >= 0), chain TEXT NOT NULL,
+  position BLOB, changes_token TEXT, unread_since_ms INTEGER, finished INTEGER NOT NULL CHECK (finished IN (0, 1)),
+  UNIQUE (snapshot_id, lineage),
+  FOREIGN KEY (snapshot_id, record_type) REFERENCES snapshot_attempts (snapshot_id, record_type),
+  CHECK ((cycle_kind = 'change-cycle') = (lineage > 0)),
+  CHECK ((lineage = 0) = (cycle_id = snapshot_id)),
+  CHECK (CASE WHEN cycle_kind = 'change-cycle'
+    THEN position IS NULL AND changes_token IS NOT NULL AND unread_since_ms IS NOT NULL
+    ELSE position IS NOT NULL AND changes_token IS NULL AND unread_since_ms IS NULL END)) STRICT`),
+    },
+    {
+      type: "table", name: "outbox_high_water", tbl_name: "outbox_high_water",
+      sql: normalize(`CREATE TABLE outbox_high_water (
+  installation_id TEXT PRIMARY KEY NOT NULL, last_sequence INTEGER NOT NULL CHECK (last_sequence > 0)) STRICT`),
+    },
+    {
+      type: "table", name: "outbox_messages", tbl_name: "outbox_messages",
+      sql: normalize(`CREATE TABLE outbox_messages (
+  installation_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0),
+  kind TEXT NOT NULL CHECK (kind IN ('capability-acknowledgement', 'ingest-batch', 'snapshot-completion', 'change-completion', 'sync-checkpoint')),
+  sealed BLOB NOT NULL, message_bytes INTEGER NOT NULL CHECK (message_bytes > 0),
+  PRIMARY KEY (installation_id, sequence)) STRICT`),
     },
     {
       type: "table", name: "snapshot_attempts", tbl_name: "snapshot_attempts",
@@ -272,6 +303,10 @@ test("production migration creates only begin-initial-snapshot version one table
     },
     { type: "index", name: "sqlite_autoindex_current_snapshot_attempts_1", tbl_name: "current_snapshot_attempts", sql: null },
     { type: "index", name: "sqlite_autoindex_current_snapshot_attempts_2", tbl_name: "current_snapshot_attempts", sql: null },
+    { type: "index", name: "sqlite_autoindex_cycle_progress_1", tbl_name: "cycle_progress", sql: null },
+    { type: "index", name: "sqlite_autoindex_cycle_progress_2", tbl_name: "cycle_progress", sql: null },
+    { type: "index", name: "sqlite_autoindex_outbox_high_water_1", tbl_name: "outbox_high_water", sql: null },
+    { type: "index", name: "sqlite_autoindex_outbox_messages_1", tbl_name: "outbox_messages", sql: null },
     { type: "index", name: "sqlite_autoindex_snapshot_attempts_1", tbl_name: "snapshot_attempts", sql: null },
     { type: "index", name: "sqlite_autoindex_snapshot_attempts_2", tbl_name: "snapshot_attempts", sql: null },
   ]);
