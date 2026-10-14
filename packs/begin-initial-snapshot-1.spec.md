@@ -54,7 +54,7 @@ On Android 14 or later, the pinned SDK's `getChangesToken` calls the platform's 
 
 ## Requirements
 
-Each requirement will be bound to named executable tests before freeze:
+Each requirement is bound to named executable tests:
 - **Kotlin:** JVM tests in `IssueChangesToken1Test` use a synthetic Health Connect.
 - **TypeScript:** `node:test` suites in `begin-initial-snapshot-1.test.ts` use the `node:sqlite` `SenderDatabase` substitute from the 3ug test support, and a scripted issuer.
 - **Python:** `tests/acceptance/test_begin_initial_snapshot_1.py` checks the contract.
@@ -75,7 +75,7 @@ The contract names:
 
 It does not contradict the `begin-initial-snapshot` scope-map row, which now names that dependency.
 
-Proposed tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_map_row_does_not_contradict_contract`.
+Tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_map_row_does_not_contradict_contract`.
 
 ### R2 — Token request (Kotlin)
 
@@ -86,7 +86,7 @@ Proposed tests (Python): `test_governed_scope_contract_has_required_shape`, `tes
 
 `unreadSince` is the clock reading truncated down to whole milliseconds. Truncating makes it earlier, which keeps `read-change-page@1`'s age check conservative. An unknown `recordType` throws `IllegalArgumentException` before any seam call.
 
-Proposed tests: `the_clock_is_read_once_before_any_call`, `one_token_is_requested_for_the_type_and_every_origin`, `unread_since_is_truncated_to_milliseconds`, `unknown_record_type_is_a_caller_error`.
+Tests: `the_clock_is_read_once_before_any_call`, `one_token_is_requested_for_the_type_and_every_origin`, `every_supported_type_requests_its_sdk_class`, `unread_since_is_truncated_to_milliseconds`, `unknown_record_type_is_a_caller_error`.
 
 ### R3 — Full-history permission (Kotlin)
 
@@ -97,7 +97,7 @@ Both permission reads must include the type's read permission and `PERMISSION_RE
 - A missing permission after it discards the token.
 - A `SecurityException` is `read-denied`.
 
-Proposed tests: `missing_read_permission_requests_no_token`, `missing_history_permission_requests_no_token`, `permission_lost_during_the_request_discards_the_token`, `security_exception_is_read_denied`.
+Tests: `missing_read_permission_requests_no_token`, `missing_history_permission_requests_no_token`, `permission_lost_during_the_request_discards_the_token`, `security_exception_is_read_denied`.
 
 ### R4 — Failure classification and validation (Kotlin)
 
@@ -113,7 +113,7 @@ An exception from any of the three seam calls maps to exactly one failure, as in
 
 `CancellationException` and any non-`Exception` `Throwable` propagate as the same instance. An empty token is `source-contract-violation`.
 
-Proposed tests: `each_exception_class_maps_to_one_named_failure`, `cancellation_propagates`, `an_empty_token_is_a_violation`.
+Tests: `each_exception_class_maps_to_one_named_failure`, `cancellation_propagates`, `an_empty_token_is_a_violation`.
 
 ### R5 — Beginning a snapshot (TypeScript)
 
@@ -125,7 +125,7 @@ Proposed tests: `each_exception_class_maps_to_one_named_failure`, `cancellation_
 
 The empty page-chain state is the attempt alone. `stage-outbox-batch` starts from the first page, with zero counts and the Wire Protocol chain start of `snapshotId`, until it commits progress.
 
-Proposed tests: `begin_commits_the_attempt_and_makes_it_current`, `the_attempt_survives_reopening`, `the_snapshot_identity_is_the_generated_uuid`, `begin_records_the_issued_token_and_unread_since`.
+Tests: `begin_commits_the_attempt_and_makes_it_current`, `the_attempt_survives_reopening`, `the_snapshot_identity_is_the_generated_uuid`, `begin_records_the_issued_token_and_unread_since`, `reading_an_unknown_attempt_returns_null`.
 
 ### R6 — One current attempt per record type (TypeScript)
 
@@ -136,7 +136,7 @@ A record type has at most one current attempt, and attempts of other types are i
 
 These checks run once before the token is requested, so a refused begin requests no token. They run again inside the commit transaction, so a concurrent begin cannot leave two current attempts.
 
-Proposed tests: `a_current_attempt_refuses_a_new_begin`, `abandoning_must_name_the_current_attempt`, `a_named_attempt_is_abandoned_and_retained`, `refused_begins_request_no_token`, `types_are_independent`, `the_commit_rechecks_the_current_attempt`.
+Tests: `a_current_attempt_refuses_a_new_begin`, `abandoning_must_name_the_current_attempt`, `a_named_attempt_is_abandoned_and_retained`, `refused_begins_request_no_token`, `types_are_independent`, `the_commit_rechecks_the_current_attempt`.
 
 ### R7 — Nothing begun on failure (TypeScript)
 
@@ -146,21 +146,32 @@ None of the following writes anything:
 - an issuer that throws;
 - an issuer result that is malformed.
 
-If the issuer throws, the result is `read-failed` with `unexpected-read-failure`. A malformed result, such as an empty token or an `unreadSinceMs` that is not a safe integer, is `read-failed` with `source-contract-violation`.
+If the issuer throws, the result is `read-failed` with `unexpected-read-failure`. A malformed result is `read-failed` with `source-contract-violation`. That covers an empty or non-string token, an `unreadSinceMs` that is not a safe integer, an unknown outcome, and a failure name the contract does not give that outcome class.
 
 A database error at any point is `storage-failed`. Inside the transaction, it rolls back everything, including a named abandonment, and the issued token is discarded. The database is compared before and after each of these cases.
 
-Proposed tests: `issuer_failures_write_nothing`, `a_throwing_issuer_is_an_unexpected_read_failure`, `malformed_issuances_are_violations`, `storage_errors_roll_back_everything`, `refusals_write_nothing`.
+Tests: `issuer_failures_write_nothing`, `a_throwing_issuer_is_an_unexpected_read_failure`, `malformed_issuances_are_violations`, `storage_errors_roll_back_everything`, `refusals_write_nothing`.
 
 ### R8 — The Sender's first schema migration (TypeScript)
 
 `snapshotAttemptsMigration` is Sender schema version 1, applied by the 3ug `migrate` runner. It creates this unit's tables, and nothing reads or writes them except this module.
 - **On an empty database,** `migrate([snapshotAttemptsMigration])` reaches version 1.
-- **The schema itself** enforces one current attempt per record type, and rejects an attempt whose `kind` is not `initial` or `reconciliation`.
+- **The schema itself** enforces one current attempt per record type. A current attempt must exist and be of that record type, and no attempt is current for two types. The schema also rejects an attempt whose `kind` is not `initial` or `reconciliation`. The tables are:
+
+  ```sql
+  CREATE TABLE snapshot_attempts (
+    snapshot_id TEXT PRIMARY KEY NOT NULL, record_type TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('initial', 'reconciliation')), installation_id TEXT NOT NULL,
+    changes_token TEXT NOT NULL, unread_since_ms INTEGER NOT NULL, begun_at_ms INTEGER NOT NULL,
+    abandoned_at_ms INTEGER, UNIQUE (snapshot_id, record_type)) STRICT;
+  CREATE TABLE current_snapshot_attempts (
+    record_type TEXT PRIMARY KEY NOT NULL, snapshot_id TEXT NOT NULL UNIQUE,
+    FOREIGN KEY (snapshot_id, record_type) REFERENCES snapshot_attempts (snapshot_id, record_type)) STRICT;
+  ```
 - **On a database already at version 1,** migration changes nothing.
 - **Later units** append their own migrations after it.
 
-Proposed tests: `migration_creates_version_one`, `the_schema_enforces_one_current_attempt`, `migration_is_idempotent`.
+Tests: `migration_creates_version_one`, `the_schema_enforces_one_current_attempt`, `migration_is_idempotent`.
 
 ### R9 — Caller errors (TypeScript)
 
@@ -170,7 +181,7 @@ The following throw `TypeError` before any database or issuer call:
 
 `randomUUID` is called after the issuer succeeds and before the commit.
 
-Proposed tests: `malformed_requests_are_caller_errors`, `a_bad_uuid_source_is_a_caller_error`.
+Tests: `malformed_requests_are_caller_errors`, `a_bad_uuid_source_is_a_caller_error`.
 
 ### R10 — Health-data-free outcomes
 
@@ -178,7 +189,7 @@ The following carry only a named failure: every non-`begun` result, `TokenIssuan
 
 Every named failure is reachable, and no other failure is produced.
 
-Proposed tests: `non_issued_outcomes_carry_only_named_failures` (Kotlin), `non_begun_results_carry_only_named_failures`, `every_named_failure_is_reachable_and_in_the_contract` (TypeScript, with the Kotlin failures reached through the scripted issuer and in the Kotlin suite).
+Tests: `non_issued_outcomes_carry_only_named_failures` and `every_kotlin_failure_is_reachable_and_in_the_contract` (Kotlin); `non_begun_results_carry_only_named_failures` and `every_named_failure_is_reachable_and_in_the_contract` (TypeScript, which reaches the Kotlin failures through the scripted issuer).
 
 ### R11 — Order of checks
 
@@ -198,7 +209,7 @@ Within each part, the first applicable check in this order wins.
 4. the UUID source;
 5. the commit, with its recheck and storage failure.
 
-Proposed tests: `kotlin_checks_follow_the_documented_order`, `typescript_checks_follow_the_documented_order`.
+Tests: `kotlin_checks_follow_the_documented_order`, `typescript_checks_follow_the_documented_order`.
 
 ## Decisions for the Operator
 
@@ -217,18 +228,40 @@ Proposed tests: `kotlin_checks_follow_the_documented_order`, `typescript_checks_
 ## Ground rules
 
 - Kotlin JVM tests use a synthetic Health Connect implementing `HealthConnectAccess`. It records calls, holds a granted-permission set, and scripts tokens and exceptions. It runs with no device or Context.
-- TypeScript tests use the 3ug `node:sqlite` `SenderDatabase` substitute in temporary files, a scripted issuer, and injected UUID and time sources. They inject database failures through a wrapping `SenderDatabase`.
+- TypeScript tests use the 3ug `node:sqlite` `SenderDatabase` substitute in temporary files, a scripted issuer, and injected UUID and time sources. They inject database failures through a wrapping `SenderDatabase`, which fails each mutating statement in turn, or every read.
+- The runner does not trust exit statuses. It passes the TypeScript and Kotlin suites only when fresh JUnit reports list exactly the bound suites' tests, none failed, errored, or skipped.
+- The trusted toolchain boundary is:
+  - Node 26.11.1, pinned by `.node-version`;
+  - `uv` and the pinned CPython;
+  - the checksum-verified JDK;
+  - the generated `sender/app/android` project and its Gradle wrapper;
+  - Gradle and its plugins;
+  - the 3ug storage seam in `sender/app/src/storage/`, which the implementation uses and registers its migration in.
 - Not mechanically provable here; the approver confirms these in implementation review:
   - the Kotlin part reads no records or changes and writes nothing to Health Connect;
-  - the production UUID source is a cryptographically random version 4 generator.
+  - the production UUID source is a cryptographically random version 4 generator;
+  - the implementation registers `snapshotAttemptsMigration` as the first entry of the production migration list, and changes nothing in the trusted toolchain boundary or the 3ug storage seam's behavior.
 
 ## Freeze prerequisites
 
-The Operator approves this draft. The executable pack then adds:
-- the Kotlin suite and its fake;
-- the TypeScript suite;
-- the Python contract suite;
+The Operator approved the draft. The executable pack adds:
+- the Kotlin suite, 15 tests, and its synthetic `TokenHealthConnect`;
+- the TypeScript suite, 24 tests;
+- the Python contract suite, 2 tests;
 - the self-verifying runner;
-- Interface stubs in both languages.
+- the Interface stubs `token/IssueChangesToken.kt` and `sender/app/src/snapshot/begin-initial-snapshot.ts`.
 
-It also obtains the implementer's read-only implementability review, shows genuine RED, and presents the binding for the approver's freeze decision. The binding includes the execution-control files the runner relies on.
+It pins the table layout in R8, which the schema test relies on, and the validation of issuer failure names in R7.
+
+Against the stubs:
+- every Kotlin test fails, 12 with `NotImplementedError`, and the 2 caller-error and ordering tests and the cancellation test because the stub's error comes first;
+- every TypeScript test fails, because the stub's migration throws and the 3ug runner reports `frozen`, which the fixture asserts against;
+- the two Python tests pass, because they check the contract.
+
+The binding is:
+- spec files: the contract and this pack;
+- test files:
+  - `IssueChangesToken1Test.kt` and `TokenHealthConnect.kt`;
+  - `begin-initial-snapshot-1.test.ts` and its database substitute `sender/app/test/support/node-database.ts`;
+  - `test_begin_initial_snapshot_1.py` and the runner;
+  - `sender/scripts/gradle.sh` and the module's `android/build.gradle`.
