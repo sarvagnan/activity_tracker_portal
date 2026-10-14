@@ -467,7 +467,11 @@ function validateInputs(context: StagingContext, page: ObservedPage): void {
         if (typeof item.sourceIdentity !== "string") throw new TypeError("Invalid Source Identity");
         let length = 0;
         for (const char of item.sourceIdentity) {
-          if (char.codePointAt(0)! < 0x20) throw new TypeError("Invalid Source Identity");
+          const codePoint = char.codePointAt(0)!;
+          // Iteration combines valid pairs; surrogate code points here are unpaired.
+          if (codePoint < 0x20 || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+            throw new TypeError("Invalid Source Identity");
+          }
           length++;
         }
         if (length < 1 || length > 256) throw new TypeError("Invalid Source Identity");
