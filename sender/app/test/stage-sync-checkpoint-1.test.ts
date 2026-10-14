@@ -101,13 +101,17 @@ async function checkpoints(database: SenderDatabase, cipher: InstallationCipher,
   return result;
 }
 
+/**
+ * The whole database: the schema version, every schema object, and every row of every table,
+ * including sealed bytes, so no unexpected table or write can go unnoticed.
+ */
 async function contents(database: SenderDatabase) {
-  return {
-    version: await database.query("PRAGMA user_version"),
-    outbox: await database.query("SELECT installation_id, sequence, kind, message_bytes FROM outbox_messages ORDER BY installation_id, sequence"),
-    highWater: await database.query("SELECT * FROM outbox_high_water ORDER BY installation_id"),
-    checkpoints: await database.query("SELECT * FROM run_checkpoints ORDER BY installation_id, run_sequence"),
-  };
+  const schema = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name");
+  const tables: Record<string, unknown> = {};
+  for (const { name } of schema.filter((row) => row.type === "table")) {
+    tables[name as string] = await database.query(`SELECT * FROM "${name as string}" ORDER BY rowid`);
+  }
+  return { version: await database.query("PRAGMA user_version"), schema, tables };
 }
 
 function guarded(inner: InstallationCipher): { cipher: InstallationCipher; forbidden: string[] } {
@@ -483,11 +487,18 @@ test("migration_creates_version_four", async (t) => {
   t.after(async () => { await database.close(); rmSync(directory, { recursive: true, force: true }); });
   assert.equal(checkpointMigration.version, 4);
   assert.deepEqual(await migrate(database, MIGRATIONS.slice(0, 3)), { status: "ready", version: 3 });
+  const key = (row: Record<string, unknown>) => `${row.type}:${row.name}`;
+  const before = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name");
   assert.deepEqual(await migrate(database, MIGRATIONS), { status: "ready", version: 4 });
-  const [table] = await database.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'run_checkpoints'");
+  const after = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name");
+  // Version 4 leaves every earlier schema object unchanged and adds only run_checkpoints and its automatic indexes.
+  assert.deepEqual(after.filter((row) => before.some((old) => key(old) === key(row))), before);
+  const added = after.filter((row) => !before.some((old) => key(old) === key(row)));
+  assert.deepEqual(added.filter((row) => row.type === "table").map((row) => row.name), ["run_checkpoints"]);
+  assert.ok(added.every((row) => row.tbl_name === "run_checkpoints" && (row.type === "table" || (row.type === "index" && row.sql === null))),
+    JSON.stringify(added));
+  const [table] = added.filter((row) => row.type === "table");
   assert.equal(compact(table.sql as string), compact(CHECKPOINT_DDL));
-  const created = await database.query("SELECT type, sql FROM sqlite_master WHERE tbl_name = 'run_checkpoints'");
-  assert.ok(created.every((row) => row.type === "table" || row.sql === null), "only automatic indexes");
   const insert = (installationId: string, runSequence: number, sequence: number) =>
     database.execute("INSERT INTO run_checkpoints (installation_id, run_sequence, sequence) VALUES (?, ?, ?)", [installationId, runSequence, sequence]);
   await insert(INSTALLATION, 1, 1);

@@ -114,13 +114,13 @@ Tests: `interleaved_staging_conflicts_without_writing`, `the_recheck_runs_inside
 
 ### R7 — Nothing staged on failure
 
-Cipher failures are classified as in `stage-outbox-batch@1` R9. A database error at any point is `storage-failed`. The database is compared before and after.
+Cipher failures are classified as in `stage-outbox-batch@1` R9. A database error at any point is `storage-failed`. The whole database is compared before and after, with every schema object and every row of every table, including sealed bytes.
 
 Tests: `cipher_failures_write_nothing`, `storage_errors_roll_back_everything`.
 
 ### R8 — The Sender schema migration
 
-`checkpointMigration` is Sender schema version 4, registered after `stage-sync-completion@1`'s version 3. It references no other unit's table. It creates exactly this table, which is compared token by token with whitespace ignored, and nothing else besides its automatic indexes:
+`checkpointMigration` is Sender schema version 4, registered after `stage-sync-completion@1`'s version 3. It references no other unit's table, and leaves every earlier schema object unchanged. It creates exactly this table, which is compared token by token with whitespace ignored, and nothing else besides its automatic indexes:
 
 ```sql
 CREATE TABLE run_checkpoints (
@@ -183,7 +183,13 @@ The implementer's read-only implementability review found nothing blocking. Its 
 - `every_outcome_and_reason_is_staged` stages every outcome and every reason;
 - the caller errors add NaN, infinite, and unsafe-integer values, and the cipher guard also flags `keyStatus` and `isDeviceSecure`.
 
-A throwaway reference implementation passes all 24 tests and typechecks. Nine mutants of it each fail at least one test:
+The approver's first Gate B review required two corrections, and both are made:
+- the before-and-after comparisons now cover the whole database, with every schema object and every row of every table, including sealed bytes;
+- the migration test compares the whole schema before and after version 4.
+
+A mutant that creates an extra table and writes to it before returning `staging-conflict` now fails, and so does one whose migration adds an extra table.
+
+A throwaway reference implementation passes all 24 tests and typechecks. Eleven mutants of it each fail at least one test:
 - every installation's rows are counted;
 - sealed sizes are counted;
 - record types are left unsorted;
@@ -192,7 +198,9 @@ A throwaway reference implementation passes all 24 tests and typechecks. Nine mu
 - the checkpoint counts itself;
 - the recheck runs outside the transaction;
 - the recheck ignores byte counts;
-- reason-required outcomes are rejected outright.
+- reason-required outcomes are rejected outright;
+- an extra table is written on conflict;
+- the migration adds an extra table.
 
 Against the stub:
 - every TypeScript test fails, because the stub's migration throws and the static check finds no `appendOutboxMessages` call;
