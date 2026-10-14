@@ -61,7 +61,7 @@ Tests: `test_governed_scope_contract_has_required_shape`, `test_scope_map_rows_d
 
 ### R2 — Caller errors
 
-The following raise `ValueError` before any store read or write, because they are configuration or programming errors rather than outcomes:
+The following raise `ValueError` before the store is used at all, because they are configuration or programming errors rather than outcomes. The tests pass a stand-in store that fails on any use:
 - a naive `now`;
 - a `portal_url` that the enrollment-offer schema rejects;
 - `Capabilities` that the capability-advertisement schema rejects;
@@ -135,9 +135,9 @@ Tests: `test_draining_starts_only_from_active`, `test_drained_retirement_require
 ### R8 — Replacement, unlinking, and loss
 
 The intents compose into the ADR 0009 flows:
-- **Replacement:** offer, then confirm the new installation, which stays pending. Then drain and retire the old one, and confirm the new one.
+- **Replacement:** offer, then answer the new Sender's confirmation (`answer_enrollment_confirmation`), which leaves it pending. Then drain and retire the old installation, and the Operator activates the new one (`confirm_installation`).
 - **Unlinking:** drain, then retire, with no successor.
-- **Replacing a lost phone:** retire the old installation destructively, then confirm the new one.
+- **Replacing a lost phone:** retire the old installation destructively, then activate the new one (`confirm_installation`).
 
 After replacement, the new active installation has no Last Delivery and no checkpoint, so its Polling Freshness is never-reported, however much the retired installation delivered.
 
@@ -149,11 +149,11 @@ Tests: `test_replacement_starts_with_no_operational_state`, `test_unlink_leaves_
 - When the content differs from the highest honored generation's, it uses the next generation number (1 when there is none) and honors those exact canonical bytes.
 - When the content is unchanged, it returns the existing generation without writing.
 
-`stop_superseded_generations` stops every honored generation below the latest acknowledged one, which `ingest-protocol@1` R10 permits. It stops them lowest first, one store transaction each, because the store stops one generation at a time. It stops nothing when no acknowledgement exists. It raises `pending-installation-exists` while any installation is pending, because a pending Sender may hold an older advertisement it has not yet acknowledged (Decision 6).
+`stop_superseded_generations` stops every honored generation below the latest acknowledged one, which the store reports as the highest acknowledged generation rather than the most recently received, which `ingest-protocol@1` R10 permits. It stops them lowest first, one store transaction each, because the store stops one generation at a time. It stops nothing when no acknowledgement exists. It raises `pending-installation-exists` while any installation is pending, because a pending Sender may hold an older advertisement it has not yet acknowledged (Decision 6).
 
 `current_advertisement` returns the highest honored generation's exact bytes, or raises `no-capability-generation`.
 
-Tests: `test_configured_capabilities_get_the_next_generation`, `test_unchanged_capabilities_keep_their_generation`, `test_advertisement_bytes_are_exact_and_canonical`, `test_superseded_generations_stop_only_below_the_latest_acknowledgement`, `test_generations_are_kept_while_an_installation_is_pending`, `test_current_advertisement_is_the_highest_generation`.
+Tests: `test_configured_capabilities_get_the_next_generation`, `test_unchanged_capabilities_keep_their_generation`, `test_advertisement_bytes_are_exact_and_canonical`, `test_superseded_generations_stop_only_below_the_latest_acknowledgement`, `test_latest_acknowledgement_is_the_highest_not_the_newest`, `test_generations_are_kept_while_an_installation_is_pending`, `test_current_advertisement_is_the_highest_generation`.
 
 ### R10 — Refusals change nothing
 
@@ -163,7 +163,7 @@ The store is left exactly as it was, as compared by SQLite's `iterdump` before a
 
 The one exception is `stop_superseded_generations`. A retryable condition partway through leaves the generations it already stopped stopped; they were superseded, and repeating the intent stops the rest.
 
-Tests: `test_every_refusal_leaves_the_store_unchanged`, `test_retryable_conditions_leave_the_store_unchanged`.
+Tests: `test_every_refusal_leaves_the_store_unchanged`, `test_retryable_conditions_leave_the_store_unchanged`, `test_stopping_resumes_after_a_transient_failure`.
 
 ### R11 — Health-data-free outcomes
 
@@ -212,6 +212,7 @@ Tests: `test_checks_follow_the_documented_order`.
 
 ## Ground rules
 
+- Callers serialize the store-writing operations that share one Operational Store: the lifecycle intents, confirmation answers, generation changes here, and the `accept-*` units' archival. This unit's checks read a `StoreView` snapshot and then write in a separate store transaction. The `retire_drained` sequence and gap checks and the `stop_superseded_generations` pending check therefore hold only while no other write runs in between. The Portal process that hosts these operations provides that serialization, and making the checks atomic without it would need a conditional store operation in a later `operational-store` version.
 - The module uses only the standard library and the published `operational_store` and `ingest_protocol` modules. It reads the store only through `StoreView` and writes only through the store's lifecycle and generation methods (ADR 0023).
 - Tests use a real store on a temporary database. They create lock contention with an external `BEGIN IMMEDIATE` and a short busy timeout, and use fixed timezone-aware times and fixed random bytes.
 - Tests archive capability acknowledgements and other Outbox Messages through the store, from `ingest-protocol@1`-encoded synthetic envelopes, to create delivery history, gaps, and acknowledgements.
@@ -226,7 +227,7 @@ Tests: `test_checks_follow_the_documented_order`.
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the Python acceptance suite, with 49 tests;
+- the Python acceptance suite, with 51 tests;
 - the runner, which verifies that every test method ran and passed;
 - the Interface stub `src/activity_tracker_portal/sender_installation.py`.
 
@@ -234,7 +235,14 @@ It also makes two refinements:
 - **Retryable outcomes.** The draft listed `storage-reserve-exhausted` as a retryable outcome. The store enforces its reserve only when archiving messages, so no lifecycle write can exhaust it, and the contract names `store-busy` alone.
 - **Stopping generations.** `stop_superseded_generations` stops generations one store transaction each (R9, R10).
 
-Against the stub, the two R1 contract tests pass, and the other 47 tests error with the stub's `NotImplementedError`.
+Against the stub, the two R1 contract tests pass, and the other 49 tests error with the stub's `NotImplementedError`.
+
+The implementer's read-only implementability review found nothing blocking. Its six clarifications are reflected in:
+- R2's stand-in store;
+- R8's naming of the two confirmation steps;
+- R9's test that the latest acknowledgement is the highest, not the newest;
+- R10's per-call retryable outcomes and its resumed partial stop;
+- the serialization boundary in the ground rules and the contract.
 
 The binding is:
 - spec files: the contract and this pack;

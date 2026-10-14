@@ -103,6 +103,7 @@
       "the Sender's identity, key, confirmation, capability adoption, drain mode, and local destruction, which belong to manage-sender-enrollment",
       "accepting deliveries from pending, draining, retired, or withdrawn installations, which belongs to the accept-* units",
       "HTTP routes and Authorized Ingress, which belong to the Portal ingress shell",
+      "serializing store-writing operations across lifecycle intents, confirmation answers, generation changes, and archival, which belongs to the Portal process that hosts them",
       "Operations page and portal command presentation, including how fingerprints and offers are displayed"
     ]
   },

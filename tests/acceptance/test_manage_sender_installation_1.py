@@ -104,6 +104,16 @@ def code_digest(code: str) -> str:
     return hashlib.sha256(code.encode("ascii")).hexdigest()
 
 
+class Untouchable:
+    """A store stand-in that fails the test on any use, showing a caller error came first."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(f"the store was used ({name}) before the caller error")
+
+
+UNTOUCHABLE: Any = Untouchable()
+
+
 class Randomness:
     """A random source that returns the given chunks in order and records each request."""
 
@@ -274,29 +284,25 @@ class R2CallerErrors(Case):
     def test_naive_times_are_caller_errors(self) -> None:
         naive = datetime(2026, 10, 14, 9, 0)
         calls: list[Callable[[], object]] = [
-            lambda: offer_enrollment(self.store, URL, naive, random_bytes=self.random()),
-            lambda: answer_enrollment_confirmation(self.store, confirmation(SECRET_CODE, A), naive),
-            lambda: confirm_installation(self.store, A, installation_fingerprint(A), naive),
-            lambda: withdraw_installation(self.store, A, naive),
-            lambda: begin_draining(self.store, A, naive),
-            lambda: retire_drained(self.store, A, 0, naive),
-            lambda: retire_destructively(self.store, A, naive, acknowledge_possible_loss=True),
-            lambda: honor_capabilities(self.store, CAPABILITIES, naive),
-            lambda: stop_superseded_generations(self.store, naive),
+            lambda: offer_enrollment(UNTOUCHABLE, URL, naive, random_bytes=self.random()),
+            lambda: answer_enrollment_confirmation(UNTOUCHABLE, confirmation(SECRET_CODE, A), naive),
+            lambda: confirm_installation(UNTOUCHABLE, A, installation_fingerprint(A), naive),
+            lambda: withdraw_installation(UNTOUCHABLE, A, naive),
+            lambda: begin_draining(UNTOUCHABLE, A, naive),
+            lambda: retire_drained(UNTOUCHABLE, A, 0, naive),
+            lambda: retire_destructively(UNTOUCHABLE, A, naive, acknowledge_possible_loss=True),
+            lambda: honor_capabilities(UNTOUCHABLE, CAPABILITIES, naive),
+            lambda: stop_superseded_generations(UNTOUCHABLE, naive),
         ]
-        before = self.dump()
         for call in calls:
             with self.assertRaises(ValueError):
                 call()
-        self.assertEqual(before, self.dump())
 
     def test_invalid_portal_url_is_a_caller_error(self) -> None:
-        self.honor()
-        before = self.dump()
         for url in ("", "ftp://portal.invalid", "http://Portal.invalid", "http://portal.invalid/", "portal.invalid", "http://portal.invalid:8443/enroll"):
             with self.assertRaises(ValueError, msg=url):
-                offer_enrollment(self.store, url, T0, random_bytes=self.random())
-        self.assertEqual(before, self.dump())
+                offer_enrollment(UNTOUCHABLE, url, T0, random_bytes=self.random())
+        self.honor()
         offer_enrollment(self.store, "https://portal.invalid", T0, random_bytes=self.random())
 
     def test_invalid_capabilities_are_caller_errors(self) -> None:
@@ -311,25 +317,16 @@ class R2CallerErrors(Case):
         ]
         for capabilities in invalid:
             with self.assertRaises(ValueError, msg=repr(capabilities)):
-                honor_capabilities(self.store, capabilities, T0)
-        self.assertEqual([], self.honored())
+                honor_capabilities(UNTOUCHABLE, capabilities, T0)
 
     def test_negative_final_sequence_is_a_caller_error(self) -> None:
-        self.honor()
-        self.activate(A)
-        begin_draining(self.store, A, at(1))
-        before = self.dump()
         with self.assertRaises(ValueError):
-            retire_drained(self.store, A, -1, at(2))
-        self.assertEqual(before, self.dump())
+            retire_drained(UNTOUCHABLE, A, -1, at(2))
 
     def test_wrong_length_random_source_is_a_caller_error(self) -> None:
-        self.honor()
-        before = self.dump()
         for chunk in (bytes(9), bytes(11), b""):
             with self.assertRaises(ValueError, msg=len(chunk)):
-                offer_enrollment(self.store, URL, T0, random_bytes=Randomness(chunk))
-        self.assertEqual(before, self.dump())
+                offer_enrollment(UNTOUCHABLE, URL, T0, random_bytes=Randomness(chunk))
 
 
 class R3EnrollmentOffers(Case):
@@ -697,6 +694,16 @@ class R9CapabilityGenerations(Case):
         self.assertEqual((2,), stop_superseded_generations(self.store, at(8)))
         self.assertEqual([3], self.honored())
 
+    def test_latest_acknowledgement_is_the_highest_not_the_newest(self) -> None:
+        self.honor(CAPABILITIES)
+        self.honor(LATER, 1)
+        self.honor(LATEST, 2)
+        self.activate(A, 3)
+        self.deliver(A, 1, generation=3, minutes=4)
+        self.deliver(A, 2, generation=2, minutes=5)
+        self.assertEqual((1, 2), stop_superseded_generations(self.store, at(6)))
+        self.assertEqual([3], self.honored())
+
     def test_generations_are_kept_while_an_installation_is_pending(self) -> None:
         self.honor(CAPABILITIES)
         self.honor(LATER, 1)
@@ -786,19 +793,52 @@ class R10RefusalsChangeNothing(Case):
         begin_draining(self.store, A, at(8))
         before = self.dump()
         blocker = self.blocked()
-        for call in (
-            lambda: retire_drained(self.store, A, 2, at(9)),
-            lambda: stop_superseded_generations(self.store, at(9)),
-            lambda: confirm_installation(self.store, D, installation_fingerprint(D), at(9)),
-        ):
-            with self.assertRaises((InstallationRetryable, InstallationRefusal)) as caught:
+        for call in (lambda: retire_drained(self.store, A, 2, at(9)), lambda: stop_superseded_generations(self.store, at(9))):
+            with self.assertRaises(InstallationRetryable) as busy:
                 call()
-            if isinstance(caught.exception, InstallationRefusal):
-                self.assertEqual("installation-unknown", caught.exception.failure)
-            else:
-                self.assertEqual("store-busy", caught.exception.failure)
+            self.assertEqual("store-busy", busy.exception.failure)
+        # A read-only refusal needs no write, so it is the same under contention.
+        with self.assertRaises(InstallationRefusal) as unknown:
+            confirm_installation(self.store, D, installation_fingerprint(D), at(9))
+        self.assertEqual("installation-unknown", unknown.exception.failure)
         blocker.rollback()
         self.assertEqual(before, self.dump())
+
+
+    def test_stopping_resumes_after_a_transient_failure(self) -> None:
+        self.honor(CAPABILITIES)
+        self.honor(LATER, 1)
+        self.honor(LATEST, 2)
+        self.activate(A, 3)
+        self.deliver(A, 1, generation=3, minutes=4)
+        case = self
+
+        class BusyOnSecondStop:
+            """The real store, made busy just before the second generation is stopped."""
+
+            def __init__(self, store: Any) -> None:
+                self.store = store
+                self.stops = 0
+                self.blocker: sqlite3.Connection | None = None
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self.store, name)
+
+            def stop_honoring_generation(self, generation: int, at: datetime) -> None:
+                self.stops += 1
+                if self.stops == 2:
+                    self.blocker = case.blocked()
+                self.store.stop_honoring_generation(generation, at)
+
+        proxy = BusyOnSecondStop(self.store)
+        with self.assertRaises(InstallationRetryable) as caught:
+            stop_superseded_generations(proxy, at(5))
+        self.assertEqual("store-busy", caught.exception.failure)
+        assert proxy.blocker is not None
+        proxy.blocker.rollback()
+        self.assertEqual([2, 3], self.honored())
+        self.assertEqual((2,), stop_superseded_generations(self.store, at(6)))
+        self.assertEqual([3], self.honored())
 
 
 class R11HealthDataFreeOutcomes(Case):
