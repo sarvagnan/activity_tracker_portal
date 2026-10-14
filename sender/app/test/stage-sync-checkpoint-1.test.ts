@@ -116,8 +116,8 @@ function guarded(inner: InstallationCipher): { cipher: InstallationCipher; forbi
     forbidden,
     cipher: {
       seal: (alias, plaintext, aad) => inner.seal(alias, plaintext, aad),
-      keyStatus: (alias) => inner.keyStatus(alias),
-      isDeviceSecure: () => inner.isDeviceSecure(),
+      keyStatus: (alias) => { forbidden.push("keyStatus"); return inner.keyStatus(alias); },
+      isDeviceSecure: () => { forbidden.push("isDeviceSecure"); return inner.isDeviceSecure(); },
       create: (alias) => { forbidden.push("create"); return inner.create(alias); },
       delete: (alias) => { forbidden.push("delete"); return inner.delete(alias); },
       open: (alias, sealed, aad) => { forbidden.push("open"); return inner.open(alias, sealed, aad); },
@@ -243,6 +243,36 @@ test("optional_fields_appear_only_when_supplied", async (t) => {
   assert.deepEqual(second.message.record_types, [{ record_type: "steps", outcome: "interrupted", source_data_staged: false }]);
 });
 
+test("every_outcome_and_reason_is_staged", async (t) => {
+  const f = await fixture(t);
+  const reasons = ["collection-disabled", "projection-refusal", "record-too-large", "permission-missing", "delivery-blocked",
+    "storage-pressure", "screen-lock-removed", "changes-token-expired", "time-budget-reached", "read-failed"] as const;
+  const runs: RecordTypeOutcome[][] = [
+    [
+      { recordType: "a", outcome: "not-due", sourceDataStaged: false },
+      { recordType: "b", outcome: "no-change", sourceDataStaged: false },
+      { recordType: "c", outcome: "completed", sourceDataStaged: true },
+      { recordType: "d", outcome: "not-permitted", sourceDataStaged: false },
+      { recordType: "e", outcome: "progressed", sourceDataStaged: true },
+      { recordType: "f", outcome: "interrupted", sourceDataStaged: true },
+    ],
+    ...reasons.map((reason, i) => [
+      { recordType: "deferred", outcome: "deferred", reason, sourceDataStaged: false },
+      { recordType: "blocked", outcome: "blocked", reason: reasons[(i + 1) % reasons.length], sourceDataStaged: false },
+      { recordType: "failed", outcome: "failed", reason: reasons[(i + 2) % reasons.length], sourceDataStaged: i % 2 === 0 },
+    ] as RecordTypeOutcome[]),
+  ];
+  for (const [index, recordTypes] of runs.entries()) staged(await checkpoint(f, summary({ runSequence: index + 1, recordTypes })));
+  const rows = await checkpoints(f.database, f.cipher);
+  assert.equal(rows.length, runs.length);
+  for (const [index, row] of rows.entries()) {
+    const expected = [...runs[index]].sort((a, b) => a.recordType < b.recordType ? -1 : 1).map((entry) => ({
+      record_type: entry.recordType, outcome: entry.outcome, ...(entry.reason ? { reason: entry.reason } : {}), source_data_staged: entry.sourceDataStaged,
+    }));
+    assert.deepEqual(row.message.record_types, expected);
+  }
+});
+
 test("an_empty_run_is_checkpointed", async (t) => {
   const f = await fixture(t);
   staged(await checkpoint(f, summary({ recordTypes: [], trigger: "manual", backgroundScheduling: "unregistered" })));
@@ -356,11 +386,19 @@ test("the_checkpoint_record_survives_reopening", async (t) => {
 test("interleaved_staging_conflicts_without_writing", async (t) => {
   const f = await fixture(t);
   const conflict = { outcome: "conflict", failure: "staging-conflict" };
-  const appending = new SpyCipher(f.cipher, { 1: { before: async () => { await queue(f.database, INSTALLATION, ["ingest-batch", 25]); } } });
+  let afterCompetitor: Awaited<ReturnType<typeof contents>> | undefined;
+  const appending = new SpyCipher(f.cipher, { 1: { before: async () => {
+    await queue(f.database, INSTALLATION, ["ingest-batch", 25]);
+    afterCompetitor = await contents(f.database);
+  } } });
   assert.deepEqual(await checkpoint(f, summary(), { cipher: appending }), conflict);
-  assert.equal(await runCheckpoint(f.database, INSTALLATION, 1), null);
-  const racing = new SpyCipher(f.cipher, { 1: { before: async () => { staged(await checkpoint(f, summary())); } } });
+  assert.deepEqual(await contents(f.database), afterCompetitor, "only the competitor's change remains");
+  const racing = new SpyCipher(f.cipher, { 1: { before: async () => {
+    staged(await checkpoint(f, summary()));
+    afterCompetitor = await contents(f.database);
+  } } });
   assert.deepEqual(await checkpoint(f, summary(), { cipher: racing }), conflict);
+  assert.deepEqual(await contents(f.database), afterCompetitor, "only the competing checkpoint remains");
   assert.equal((await checkpoints(f.database, f.cipher)).length, 1);
 });
 
@@ -374,8 +412,10 @@ test("the_recheck_runs_inside_the_commit_transaction", async (t) => {
   ] as const) {
     const f = await fixture(t);
     await queue(f.database, INSTALLATION, ["ingest-batch", 100], ["ingest-batch", 200]);
-    const database = beforeTransaction(f.database, async () => { await change(f.database); });
+    let afterChange: Awaited<ReturnType<typeof contents>> | undefined;
+    const database = beforeTransaction(f.database, async () => { await change(f.database); afterChange = await contents(f.database); });
     assert.deepEqual(await checkpoint(f, summary(), { database }), conflict, label);
+    assert.deepEqual(await contents(f.database), afterChange, label);
     assert.equal((await checkpoints(f.database, f.cipher)).length, 0, label);
   }
 });
@@ -489,6 +529,12 @@ test("malformed_summaries_are_caller_errors", async (t) => {
     [context(), summary({ endedAtMs: 253_402_300_800_000 })],
     [context(), summary({ elapsedMs: -1 })],
     [context(), summary({ elapsedMs: 2.5 })],
+    [context(), summary({ runSequence: Number.NaN })],
+    [context(), summary({ runSequence: Number.MAX_SAFE_INTEGER + 1 })],
+    [context(), summary({ startedAtMs: Number.POSITIVE_INFINITY })],
+    [context(), summary({ endedAtMs: Number.NaN })],
+    [context(), summary({ elapsedMs: Number.POSITIVE_INFINITY })],
+    [context(), summary({ elapsedMs: Number.MAX_SAFE_INTEGER + 1 })],
     [context(), summary({ recordTypes: [entry({ recordType: "Steps" })] })],
     [context(), summary({ recordTypes: [entry({}), entry({})] })],
     [context(), summary({ recordTypes: [entry({ outcome: "skipped" as RecordTypeOutcome["outcome"] })] })],

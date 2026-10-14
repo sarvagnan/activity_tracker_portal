@@ -84,6 +84,7 @@ Tests:
 - `a_checkpoint_matches_the_protocol`
 - `record_types_are_sorted`
 - `optional_fields_appear_only_when_supplied`
+- `every_outcome_and_reason_is_staged`
 - `an_empty_run_is_checkpointed`
 - `instants_become_protocol_timestamps`
 
@@ -107,7 +108,7 @@ Tests: `a_run_is_checkpointed_once`, `the_checkpoint_record_survives_reopening`.
 
 ### R6 — Recheck inside the commit
 
-The queued counts, the high-water mark, and the checkpoint record are read before sealing and again inside the commit transaction. Any change is `conflict` with `staging-conflict`, and nothing is written. That includes a change landing just before the transaction opens.
+The queued counts, the high-water mark, and the checkpoint record are read before sealing and again inside the commit transaction. Any change is `conflict` with `staging-conflict`, and nothing is written. Afterwards the database holds exactly the competing change. That includes a change landing just before the transaction opens.
 
 Tests: `interleaved_staging_conflicts_without_writing`, `the_recheck_runs_inside_the_commit_transaction`.
 
@@ -170,14 +171,19 @@ Not mechanically provable here; the approver confirms these in implementation re
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the TypeScript suite, 23 tests;
+- the TypeScript suite, 24 tests;
 - the Python contract suite, 2 tests;
 - the self-verifying runner;
 - the Interface stub `sender/app/src/outbox/stage-sync-checkpoint.ts`.
 
 The suite migrates with the explicit list `[snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration]` to version 4. It fills the Outbox through `appendOutboxMessages`, and it guards the cipher against any key creation, deletion, or opening.
 
-A throwaway reference implementation passes all 23 tests and typechecks. Eight mutants of it each fail at least one test:
+The implementer's read-only implementability review found nothing blocking. Its three clarifications are added:
+- the conflict tests now compare the whole database with its state after the competing change;
+- `every_outcome_and_reason_is_staged` stages every outcome and every reason;
+- the caller errors add NaN, infinite, and unsafe-integer values, and the cipher guard also flags `keyStatus` and `isDeviceSecure`.
+
+A throwaway reference implementation passes all 24 tests and typechecks. Nine mutants of it each fail at least one test:
 - every installation's rows are counted;
 - sealed sizes are counted;
 - record types are left unsorted;
@@ -185,7 +191,8 @@ A throwaway reference implementation passes all 23 tests and typechecks. Eight m
 - there is no exactly-once check;
 - the checkpoint counts itself;
 - the recheck runs outside the transaction;
-- the recheck ignores byte counts.
+- the recheck ignores byte counts;
+- reason-required outcomes are rejected outright.
 
 Against the stub:
 - every TypeScript test fails, because the stub's migration throws and the static check finds no `appendOutboxMessages` call;
