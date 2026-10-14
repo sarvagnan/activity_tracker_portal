@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"UnitSpecified","pack_digest":"","payload":{"depends_on":["ingest-protocol","operational-store"],"name":"manage-sender-installation","version":"1"},"prev":"460038950ff9e25408fe5f82147577dc33e5cf581a61498599e15886fe9ab8cc","recorded_at":"2026-10-14T04:14:03+00:00","revision":80,"run_id":""}
