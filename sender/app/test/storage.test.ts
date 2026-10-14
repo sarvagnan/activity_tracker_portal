@@ -248,12 +248,13 @@ test("safe integer limits match protocol numbers exactly and reject larger or fr
   await assert.rejects(database.query("SELECT 1.5 AS value"), TypeError);
 });
 
-test("production migrations create only snapshot attempt and outbox version two tables and indexes", async (t) => {
+test("production migrations create only the six version three tables and automatic indexes", async (t) => {
   const { snapshotAttemptsMigration } = await import("../src/snapshot/begin-initial-snapshot.ts");
   const { outboxMigration } = await import("../src/outbox/stage-outbox-batch.ts");
+  const { completionMigration } = await import("../src/outbox/stage-sync-completion.ts");
   const { database } = await fixture(t);
-  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration]);
-  assert.deepEqual(await migrate(database), { status: "ready", version: 2 });
+  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration]);
+  assert.deepEqual(await migrate(database), { status: "ready", version: 3 });
   const schema = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name");
   const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
   assert.deepEqual(schema.map((row) => ({ ...row, sql: typeof row.sql === "string" ? normalize(row.sql) : row.sql })), [
@@ -262,6 +263,14 @@ test("production migrations create only snapshot attempt and outbox version two 
       sql: normalize(`CREATE TABLE current_snapshot_attempts (
         record_type TEXT PRIMARY KEY NOT NULL, snapshot_id TEXT NOT NULL UNIQUE,
         FOREIGN KEY (snapshot_id, record_type) REFERENCES snapshot_attempts (snapshot_id, record_type)) STRICT`),
+    },
+    {
+      type: "table", name: "cycle_completions", tbl_name: "cycle_completions",
+      sql: normalize(`CREATE TABLE cycle_completions (
+  cycle_id TEXT PRIMARY KEY NOT NULL, record_type TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('snapshot-completion', 'change-completion')),
+  installation_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0),
+  UNIQUE (installation_id, sequence)) STRICT`),
     },
     {
       type: "table", name: "cycle_progress", tbl_name: "cycle_progress",
@@ -303,6 +312,8 @@ test("production migrations create only snapshot attempt and outbox version two 
     },
     { type: "index", name: "sqlite_autoindex_current_snapshot_attempts_1", tbl_name: "current_snapshot_attempts", sql: null },
     { type: "index", name: "sqlite_autoindex_current_snapshot_attempts_2", tbl_name: "current_snapshot_attempts", sql: null },
+    { type: "index", name: "sqlite_autoindex_cycle_completions_1", tbl_name: "cycle_completions", sql: null },
+    { type: "index", name: "sqlite_autoindex_cycle_completions_2", tbl_name: "cycle_completions", sql: null },
     { type: "index", name: "sqlite_autoindex_cycle_progress_1", tbl_name: "cycle_progress", sql: null },
     { type: "index", name: "sqlite_autoindex_cycle_progress_2", tbl_name: "cycle_progress", sql: null },
     { type: "index", name: "sqlite_autoindex_outbox_high_water_1", tbl_name: "outbox_high_water", sql: null },

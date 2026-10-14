@@ -7,9 +7,9 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { decodeMessage } from "@activity-tracker-portal/ingest-protocol";
 import type { InstallationCipher } from "../src/installation-cipher.ts";
-import { outboxAad, outboxMessages, stageOutboxBatch } from "../src/outbox/stage-outbox-batch.ts";
+import { outboxAad, outboxMessages, outboxMigration, stageOutboxBatch } from "../src/outbox/stage-outbox-batch.ts";
 import type { ChangePage, StagingContext } from "../src/outbox/stage-outbox-batch.ts";
-import { beginInitialSnapshot } from "../src/snapshot/begin-initial-snapshot.ts";
+import { beginInitialSnapshot, snapshotAttemptsMigration } from "../src/snapshot/begin-initial-snapshot.ts";
 import type { SenderDatabase } from "../src/storage/database.ts";
 import { migrate } from "../src/storage/migrations.ts";
 import { openNodeDatabase } from "./support/node-database.ts";
@@ -28,7 +28,7 @@ async function fixture(t: TestContext) {
   const path = join(directory, "synthetic.sqlite");
   const database = await openNodeDatabase(path);
   t.after(async () => { await database.close(); rmSync(directory, { recursive: true, force: true }); });
-  assert.deepEqual(await migrate(database), { status: "ready", version: 2 });
+  assert.deepEqual(await migrate(database, [snapshotAttemptsMigration, outboxMigration]), { status: "ready", version: 2 });
   const cipher = new NodeInstallationCipher();
   assert.equal((await cipher.create(CONTEXT.keyAlias)).status, "ok");
   const begun = await beginInitialSnapshot(

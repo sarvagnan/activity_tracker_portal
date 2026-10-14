@@ -1,0 +1,67 @@
+{
+  "contract_schema": 1,
+  "scope": "stage-sync-completion",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Make one Initial Snapshot, Reconciliation Snapshot, or Change Cycle's completion proof durable only after its entire local page chain is staged: build the byte-stable Snapshot Completion or Change Completion from the cycle's own page, fragment, and record counts and final chain, seal it, and append it to the Sender Outbox after every fragment, exactly once, or stage nothing.",
+  "inputs": [
+    { "name": "completed_cycle", "mode": "pure", "description": "The record type and identity of one cycle the caller believes finished: a snapshot attempt's own cycle or one of its Change Cycles." },
+    { "name": "staging_context", "mode": "pure", "description": "The Sender's active Sender Installation, its installation key alias, and the capability generation to stage under, as stage-outbox-batch uses." },
+    { "name": "installation_cipher", "mode": "effectful", "description": "The 3ug InstallationCipher seam, which seals the completion with AES-256-GCM under the installation key." },
+    { "name": "sender_storage", "mode": "effectful", "description": "The Sender's SQLite database: the record type's current snapshot attempt, the cycle's page-chain progress, the Sender Outbox high-water mark, and this unit's completion records, read before sealing and again inside the commit transaction." }
+  ],
+  "outputs": [
+    { "name": "completion_staged", "description": "One sealed Snapshot Completion, with an explicit initial or reconciliation kind, or Change Completion, appended to the Sender Outbox under the next sequence after every fragment of its cycle, recorded as the cycle's only completion in the same transaction. It carries no source cursor or token." },
+    { "name": "refusal", "description": "A named reason the cycle cannot be completed now, such as an incomplete local chain or a completion already staged, with nothing written." },
+    { "name": "conflict", "description": "The cycle, its attempt, the completion record, or the Outbox sequence changed while the completion was being sealed, so nothing was written and the completion can be staged again." },
+    { "name": "cipher_failure", "description": "The installation key was missing, unusable, or unavailable, or the cipher failed unexpectedly, with nothing written." },
+    { "name": "storage_failure", "description": "A database read or the commit failed and rolled back, so nothing was staged." }
+  ],
+  "named_failures": [
+    { "name": "cycle-not-current", "outcome": "refusal" },
+    { "name": "installation-mismatch", "outcome": "refusal" },
+    { "name": "chain-incomplete", "outcome": "refusal" },
+    { "name": "completion-already-staged", "outcome": "refusal" },
+    { "name": "staging-conflict", "outcome": "conflict" },
+    { "name": "installation-key-missing", "outcome": "cipher-failure" },
+    { "name": "installation-key-unusable", "outcome": "cipher-failure" },
+    { "name": "keystore-unavailable", "outcome": "cipher-failure" },
+    { "name": "unexpected-cipher-failure", "outcome": "cipher-failure" },
+    { "name": "storage-failed", "outcome": "storage-failure" }
+  ],
+  "observable_effects": [
+    { "name": "installation-key-seal", "description": "Seals the completion once through the installation cipher with stage-outbox-batch's authenticated data for its installation and sequence; never creates, deletes, or opens with the key." },
+    { "name": "sender-storage-write", "description": "Applies this unit's Sender schema migration, and commits the sealed completion through stage-outbox-batch's Outbox primitive with this unit's completion record in one SQLite transaction or not at all." }
+  ],
+  "authority": {
+    "owns": [
+      "building the Snapshot Completion and Change Completion messages from a finished cycle's own progress",
+      "the rule that a cycle is completed at most once, only after its whole local chain is staged, and only while its snapshot attempt is current",
+      "the Sender's completion records and their schema migration",
+      "classification of cipher and storage failures into the named failures for a completion"
+    ],
+    "does_not_own": [
+      "the Sender Outbox, its sequence high-water mark, and its sealing format, which belong to stage-outbox-batch",
+      "page-chain progress and when a chain is finished, which belong to stage-outbox-batch",
+      "snapshot attempts and their currency, which belong to begin-initial-snapshot",
+      "deciding when to complete a cycle, or when the catch-up Change Cycle may begin after an acknowledged Snapshot Completion, which belong to coordinate-sender-sync",
+      "delivery and receipt-bound removal, which belong to send-outbox-message",
+      "the Wire Protocol message format, which belongs to ingest-protocol",
+      "the Expo bridge between Kotlin and TypeScript"
+    ]
+  },
+  "dependencies": [
+    { "scope": "begin-initial-snapshot", "version": "2" },
+    { "scope": "ingest-protocol", "version": "1" },
+    { "scope": "stage-outbox-batch", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/stage-sync-completion-1.spec.md",
+    "executable_tests": {
+      "typescript": "sender/app/test/stage-sync-completion-1.test.ts",
+      "python": "tests/acceptance/test_stage_sync_completion_1.py"
+    },
+    "runner": "tests/acceptance/run_stage_sync_completion_1.sh",
+    "languages": ["python", "typescript"]
+  }
+}

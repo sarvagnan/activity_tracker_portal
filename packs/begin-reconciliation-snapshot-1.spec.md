@@ -189,7 +189,7 @@ The Operator approved the draft. The executable pack adds:
 - the self-verifying runner;
 - the Interface stub `sender/app/src/snapshot/begin-reconciliation-snapshot.ts`.
 
-The suite drives the published `begin-initial-snapshot@2` and `stage-outbox-batch@1` with the production migration list, which has Sender schema version 2. Its issuer is scripted, and it records issuer calls and UUID and clock reads.
+The suite drives the published `begin-initial-snapshot@2` and `stage-outbox-batch@1`. It migrates with the explicit list `[snapshotAttemptsMigration, outboxMigration]` to Sender schema version 2. Its issuer is scripted, and it records issuer calls and UUID and clock reads.
 
 **Implementability review.** The implementer's read-only review found one blocking ambiguity. `cycleProgress` looks up a cycle by identity alone, so an Initial attempt reusing an unrelated finished cycle's identity looked finished. R3 now requires the attempt's own `initial-snapshot` progress, with a new test. Its non-blocking findings are added too:
 - issuer failures with extra fields;
@@ -225,3 +225,9 @@ The suite drives the published `begin-initial-snapshot@2` and `stage-outbox-batc
   - its 3ug substitutes, `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`;
   - `test_begin_reconciliation_snapshot_1.py`;
   - the runner.
+
+## Rebind after publication
+
+On the Operator's decision of 2026-10-14, this pack was rebound after publication. The suite had migrated with the default production migration list and asserted version 2. That pinned a Sender-wide count that later units grow: `stage-sync-completion@1` adds version 3.
+
+The rebind changes only how the fixture migrates. The suite now uses the explicit list `[snapshotAttemptsMigration, outboxMigration]` and still asserts version 2. Every requirement, decision, test name, and assertion about this unit's behavior is unchanged.
