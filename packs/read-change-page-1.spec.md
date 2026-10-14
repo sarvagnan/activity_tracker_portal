@@ -12,10 +12,10 @@ The reader receives the token and the Change Cycle identity but issues neither. 
 
 The pinned SDK is `androidx.health.connect:connect-client:1.1.0` on Android 14 or later, where `getChanges` delegates to the platform Health Connect service. The facts below come from the Android Open Source Project's HealthFitness module (`ChangeLogsHelper`, `ChangeLogsRequestHelper`, `DailyCleanupJob`, `RecordHelper`, `StorageUtils`, and `HealthConnectServiceImpl.getChangeLogs`) and from the pinned SDK's `HealthConnectClientUpsideDownImpl.getChanges`. They shape Decisions 1 to 4, and physical-device qualification confirms them (ADR 0036).
 
-1. **Pages.** A token names a stored request: record types, an origin filter, and a position in Health Connect's change log. A page reads the change-log rows after that position until it has collected 1,000 record identifiers, the SDK's fixed page size. Because one row holds up to 1,000 identifiers and the count is checked before a row is added, a page can carry up to 1,999 identifiers. Health Connect stores a new token at the page's last row and reports whether more rows remain. A page that reads no rows returns the request's own token.
+1. **Pages.** A token names a stored request: record types, an origin filter, and a position in Health Connect's change log. Each write logs rows per record type and writing app, of up to 1,000 identifiers each. A page reads the change-log rows after that position until it has collected 1,000 record identifiers, the SDK's fixed page size. Because one row holds up to 1,000 identifiers and the count is checked before a row is added, a page can carry up to 1,999 identifiers. Health Connect stores a new token at the page's last row and reports whether more rows remain. A page that reads no rows returns the request's own token.
 2. **Expiry.** Health Connect's daily cleanup deletes change-log rows and token requests 32 days after they were written. A next-page token is stored without a time, so cleanup never deletes it. Reading a next-page token more than 32 days after the changes behind it were logged therefore silently skips the deleted rows, with no expiry reported. Only a token Health Connect cannot find reads as expired.
 3. **Expiry reporting.** The SDK reports every invalid-argument error from `getChangeLogs` as `changesTokenExpired`, with no changes and an empty next token. That includes an unknown token, a deleted one, and one issued to another package.
-4. **Contents.** A page's upsertions are the records Health Connect holds for the upserted identifiers in its rows *when the page is read*: their current state, in no defined order, each once, and absent when deleted since. Its deletions are the deleted identifiers in its rows, repeated when deleted repeatedly. The SDK lists every upsertion, then every deletion. Deletions carry only the identifier.
+4. **Contents.** A page's upsertions are the records Health Connect holds for the upserted identifiers in its rows *when the page is read*: their current state, in no defined order, each once, and absent when deleted since. Its deletions are the deleted identifiers in its rows, grouped by writing app in no defined order, and repeated when deleted repeatedly. The SDK lists every upsertion, then every deletion. Deletions carry only the identifier.
 5. **Identifiers.** A record written with a client record ID gets an identifier derived from its app, record type, and client record ID. An app that deletes a record and writes it again under the same client record ID reuses the identifier.
 6. **History.** Without `PERMISSION_READ_HEALTH_DATA_HISTORY`, Health Connect silently omits upserted records that start more than 30 days before the first grant. Deletions are not filtered.
 7. **Background.** In the background, `getChangeLogs` requires `READ_HEALTH_DATA_IN_BACKGROUND`, and is a `SecurityException` without it.
@@ -64,7 +64,7 @@ An age of exactly 30 days is too old. A clock up to one day behind `unreadSince`
 
 The fake deletes change-log rows and token requests 32 days after they were written, and never deletes a next-page token, as Health Connect does. One test shows that the fake silently drops changes behind a stale next-page token, so the age limit is the only protection.
 
-Tests: `a_token_at_the_age_limit_is_refused_without_reading`, `a_token_under_the_age_limit_is_read`, `a_clock_behind_the_token_beyond_tolerance_is_refused_without_reading`, `a_clock_behind_the_token_within_tolerance_is_read`, `the_fake_drops_changes_behind_a_stale_next_page_token`.
+Tests: `the_clock_is_read_once_before_health_connect`, `a_token_at_the_age_limit_is_refused_without_reading`, `a_token_under_the_age_limit_is_read`, `a_clock_behind_the_token_beyond_tolerance_is_refused_without_reading`, `a_clock_behind_the_token_within_tolerance_is_read`, `the_fake_drops_changes_behind_a_stale_next_page_token`.
 
 ### R4 — Full-history permission, checked around the read
 
@@ -104,7 +104,7 @@ Tests: `retractions_precede_projections`, `each_kind_keeps_health_connect_order`
 - If more pages remain, it is the request's `unreadSince`. The changes still behind the next token may have been logged before this read, so the age keeps counting from the start of the cycle.
 - If no page remains, it is the clock time the reader read before its Health Connect calls. Every change after the next token was then logged after that time.
 
-The reader persists nothing. Re-reading a token against unchanged Health Connect data returns the same items, byte for byte. Health Connect stores a new next token for each read, so the token string may differ. A token with no changes since returns an empty page with no more pages remaining and the same token.
+The reader persists nothing. Re-reading a token against unchanged Health Connect data returns the same items, byte for byte, whenever Health Connect answers in the same order. It defines no upsertion order, so a reread answered in another order keeps that order (R6). Health Connect stores a new next token for each read, so the token string may differ. A token with no changes since returns an empty page with no more pages remaining and the same token.
 
 Tests: `next_token_and_continuation_come_from_health_connect`, `unread_since_carries_through_a_cycle`, `unread_since_restarts_when_no_page_remains`, `rereading_a_token_returns_identical_items`, `no_change_returns_an_empty_final_page`.
 
@@ -187,14 +187,14 @@ Tests: `failures_follow_the_documented_order`.
 
 - Kotlin JVM tests construct SDK records through the SDK's constructors with synthetic values and identifiers, and run with no Android device, emulator, or Context. The SDK keeps `Metadata`'s full constructor internal, so the tests reach it through Kotlin reflection, as `read-snapshot-page@1` does. `ChangesResponse`, `UpsertionChange`, and `DeletionChange` have public constructors, and `Change` is an open interface, so the tests also build a change of neither kind.
 - The synthetic fake models the Health Connect change log this pack relies on:
-  - change-log rows of up to 1,000 identifiers per write;
+  - change-log rows of up to 1,000 identifiers per write, record type, and writing app, taken to be the record's data origin;
   - pages that collect 1,000 identifiers and mint a new token at their last row;
-  - upsertions read at the time of the read, then deletions with repeats;
+  - upsertions read at the time of the read, then deletions grouped by writing app, with repeats;
   - cleanup after 32 days that spares next-page tokens;
   - expiry reported through the SDK's invalid-argument conversion;
-  - the granted permission set, including the history filter;
+  - the granted permission set, including the history filter's strict comparison in milliseconds;
   - scripted mutations and exceptions between and during calls.
-- The fake returns upsertions in a scrambled but deterministic order, so a reader that relies on Health Connect's upsertion order fails.
+- The fake returns upsertions and groups of deletions in a scrambled but deterministic order, so a reader that relies on an order Health Connect does not define fails.
 - Not mechanically provable here; the approver confirms these in implementation review:
   - the reader never writes to Health Connect, requests a changes token or a permission, or reads anything besides permissions and changes;
   - Health Connect's real paging, cleanup, and expiry behavior matches the fake, which physical-device qualification checks on the Operator's phone.
@@ -207,7 +207,9 @@ The Operator approved the draft. The executable pack adds:
 - the runner;
 - the Interface stub `changes/ChangePage.kt` and the seam `HealthConnectChangeAccess`.
 
-Against the stub, every Kotlin test fails. Forty fail with the stub's `NotImplementedError`, the three request-validation tests fail because the stub does not validate, and the cancellation test fails because cancellation meets the stub's error. The two Python tests pass, because they check the contract.
+Against the stub, every Kotlin test fails. Forty-one fail with the stub's `NotImplementedError`, the three request-validation tests fail because the stub does not validate, and the cancellation test fails because cancellation meets the stub's error. The two Python tests pass, because they check the contract.
+
+The implementer's read-only implementability review found nothing blocking. Its five clarifications are reflected in R3 (the clock is read once, before any Health Connect call), R6 (a second projection context), R7 (a reread keeps each answer's order), and the fake (rows and deletion groups by writing app, and the history filter's strict comparison).
 
 The binding is:
 - spec files: the contract and this pack;

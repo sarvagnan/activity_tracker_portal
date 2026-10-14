@@ -18,6 +18,7 @@ import java.io.IOException
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
@@ -134,6 +135,22 @@ class ReadChangePage1Test {
             start.hc.upsert(steps("a", T0))
             assertEquals(behind.toString(), listOf("project a"), describe(start.read(at = start.unreadSince - behind).page().items))
         }
+    }
+
+    @Test
+    fun the_clock_is_read_once_before_health_connect() {
+        val start = connect()
+        start.hc.upsert(steps("a", T0))
+        val clock = CountingClock(start.hc, start.unreadSince + DAY)
+        val page = runSuspending { readChangePage(start.hc, clock, ChangePageRequest("steps", CYCLE, start.token, start.unreadSince, CONTEXT)) }.page()
+        assertFalse(page.hasMore)
+        assertEquals("seam calls made before each clock read", listOf(0), clock.reads)
+        assertEquals(start.unreadSince + DAY, page.nextUnreadSince)
+        val old = connect()
+        val oldClock = CountingClock(old.hc, old.unreadSince + CHANGES_TOKEN_MAX_AGE)
+        val refused = runSuspending { readChangePage(old.hc, oldClock, ChangePageRequest("steps", CYCLE, old.token, old.unreadSince, CONTEXT)) }
+        assertEquals(TokenExpired("changes-token-too-old"), refused)
+        assertEquals(listOf(0), oldClock.reads)
     }
 
     @Test
@@ -288,13 +305,18 @@ class ReadChangePage1Test {
             listOf("retract d-2", "retract d-3", "retract d-1", "project p-3", "project p-1", "project p-2"),
             describe(scripted.read().page().items),
         )
-        // The fake scrambles upsertions; the page keeps whatever order Health Connect gave.
-        val scrambled = connect()
+        // The fake scrambles upsertions and groups deletions by writing app; the page keeps Health Connect's order.
+        val baseline = (0 until 6).map { steps("old-$it", T0 + minutes(it), origin = if (it % 2 == 0) ALPHA else BETA) }
+        val scrambled = connect(*baseline.toTypedArray())
         scrambled.hc.upsert(*distinctSteps(40).toTypedArray())
+        scrambled.hc.delete(*baseline.map { it.metadata.id }.toTypedArray())
         val page = scrambled.read().page()
-        val answered = scrambled.hc.answers.single().changes.map { "project " + (it as UpsertionChange).record.metadata.id }
-        assertNotEquals(answered.sorted(), answered)
-        assertEquals(answered, describe(page.items))
+        val answered = scrambled.hc.answers.single().changes
+        val projections = answered.filterIsInstance<UpsertionChange>().map { "project " + it.record.metadata.id }
+        val retractions = answered.filterIsInstance<DeletionChange>().map { "retract " + it.recordId }
+        assertNotEquals(projections.sorted(), projections)
+        assertNotEquals(baseline.map { "retract " + it.metadata.id }, retractions)
+        assertEquals(retractions + projections, describe(page.items))
     }
 
     @Test
@@ -338,6 +360,9 @@ class ReadChangePage1Test {
         assertEquals(CYCLE, page.cycleId)
         assertEquals(PROJECTION_SCHEMA_VERSIONS.getValue("steps"), page.projectionSchemaVersion)
         assertProjects(records, page.items)
+        val withOtherContext = read(start.hc, start.token, start.unreadSince, context = OTHER_CONTEXT).page()
+        assertProjects(records, withOtherContext.items, OTHER_CONTEXT)
+        assertFalse(projected(records[0]).contentEquals(projected(records[0], OTHER_CONTEXT)))
         for ((type, record) in listOf("weight" to weight("w", T0), "heart-rate" to heartRate("h", T0))) {
             val hc = ChangeHealthConnect().apply { granted = fullAccess(record::class) }
             val since = hc.now
@@ -440,6 +465,13 @@ class ReadChangePage1Test {
         assertEquals(describe(first.items), describe(second.items))
         first.items.zip(second.items).forEach { (x, y) -> if (x is Projection) assertArrayEquals(x.bytes, (y as Projection).bytes) }
         assertEquals(first.hasMore, second.hasMore)
+        // Health Connect defines no upsertion order; a reread answered in another order keeps that order.
+        val reordered = connect()
+        reordered.hc.upsert(*distinctSteps(10).toTypedArray())
+        reordered.hc.respond = { _, r -> if (reordered.hc.answers.isEmpty()) r else r.with(r.changes.reversed()) }
+        val inOrder = reordered.read().page()
+        val reversed = reordered.read().page()
+        assertEquals(describe(inOrder.items).reversed(), describe(reversed.items))
     }
 
     @Test
@@ -546,6 +578,12 @@ class ReadChangePage1Test {
         val page = start.read().page()
         assertEquals(1999, page.items.size)
         assertFalse(page.hasMore)
+        // One write from two apps logs a row per app, so both rows land on one page.
+        val mixed = connect()
+        mixed.hc.upsert(*(0 until 1200).map { steps(id(it), T0 + minutes(it), origin = if (it < 600) ALPHA else BETA) }.toTypedArray())
+        val both = mixed.read().page()
+        assertEquals(1200, both.items.size)
+        assertFalse(both.hasMore)
     }
 
     @Test
@@ -751,10 +789,10 @@ class ReadChangePage1Test {
         is Page -> throw AssertionError("expected a failure, got a page")
     }
 
-    private fun assertProjects(records: List<Record>, items: List<ChangeItem>) {
+    private fun assertProjects(records: List<Record>, items: List<ChangeItem>, context: ProjectionContext = CONTEXT) {
         val bytes = items.map { (it as Projection).bytes }.associateBy(::projectionId)
         assertEquals(records.map { it.metadata.id }.toSet(), bytes.keys)
-        for (record in records) assertArrayEquals(projected(record), bytes.getValue(record.metadata.id))
+        for (record in records) assertArrayEquals(projected(record, context), bytes.getValue(record.metadata.id))
     }
 }
 
@@ -764,6 +802,7 @@ private class Start(val hc: ChangeHealthConnect, val token: String, val unreadSi
 }
 
 private val CONTEXT = ProjectionContext("synthetic-implementation-1", "synthetic-provider-1")
+private val OTHER_CONTEXT = ProjectionContext("synthetic-implementation-2", "synthetic-provider-2")
 private const val CYCLE = "00000000-0000-4000-8000-00000000c001"
 private const val OTHER_CYCLE = "00000000-0000-4000-8000-00000000c002"
 private const val SENTINEL = "SENTINEL"
@@ -818,8 +857,8 @@ private fun minutes(count: Int): Duration = Duration.ofMinutes(count.toLong())
 
 private fun distinctSteps(count: Int) = (0 until count).map { steps(id(it), T0 + minutes(it)) }
 
-private fun projected(record: Record): ByteArray =
-    (projectSourceRecord(record, CONTEXT) as ProjectionResult.Projected).bytes
+private fun projected(record: Record, context: ProjectionContext = CONTEXT): ByteArray =
+    (projectSourceRecord(record, context) as ProjectionResult.Projected).bytes
 
 private fun refused(record: Record): ProjectionResult.Refused =
     projectSourceRecord(record, CONTEXT) as ProjectionResult.Refused
@@ -860,8 +899,23 @@ private fun read(
     at: Instant = hc.now,
     type: String = "steps",
     cycle: String = CYCLE,
+    context: ProjectionContext = CONTEXT,
 ): ChangePageResult = runSuspending {
-    readChangePage(hc, Clock.fixed(at, ZoneOffset.UTC), ChangePageRequest(type, cycle, token, unreadSince, CONTEXT))
+    readChangePage(hc, Clock.fixed(at, ZoneOffset.UTC), ChangePageRequest(type, cycle, token, unreadSince, context))
+}
+
+/** A clock that moves one second per read and records how many seam calls preceded each read. */
+private class CountingClock(private val hc: ChangeHealthConnect, private val start: Instant) : Clock() {
+    val reads = mutableListOf<Int>()
+
+    override fun instant(): Instant {
+        reads += hc.calls.size
+        return start + Duration.ofSeconds(reads.size - 1L)
+    }
+
+    override fun getZone(): ZoneId = ZoneOffset.UTC
+
+    override fun withZone(zone: ZoneId): Clock = this
 }
 
 /** Runs a suspending call to completion on any thread the implementation chooses. */

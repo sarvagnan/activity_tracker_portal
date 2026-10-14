@@ -16,20 +16,23 @@ import org.activitytracker.healthconnect.HealthConnectChangeAccess
  * It models the platform semantics read-change-page@1 relies on, from AOSP HealthFitness
  * (ChangeLogsHelper, ChangeLogsRequestHelper, DailyCleanupJob, RecordHelper) and the pinned
  * SDK's HealthConnectClientUpsideDownImpl.getChanges:
- * - one write logs rows of up to 1,000 identifiers of one record type;
+ * - one write logs rows of up to 1,000 identifiers per record type and writing app, which the
+ *   fake takes to be the record's data origin;
  * - a token is a stored request: a record type, a log position, and the time it was issued;
  * - a page collects the type's rows after the position until it holds 1,000 identifiers, so it
  *   may hold up to 1,999, stores a new token without a time at its last row, and reports whether
  *   rows remain; a page that reads no rows returns the request's own token;
  * - upsertions are the records held for the page's upserted identifiers when it is read, each
- *   once; deletions are the page's deleted identifiers, with repeats; upsertions come first;
+ *   once; deletions are the page's deleted identifiers, with repeats, grouped by writing app;
+ *   upsertions come first;
  * - cleanup deletes rows and timed tokens 32 days after they were written, sparing untimed ones;
  * - an unknown token is an invalid argument, which the SDK reports as an expired token;
  * - reading without the type's read permission is a SecurityException;
- * - without the history permission, upserted records starting more than 30 days before the
- *   first grant are silently omitted.
+ * - without the history permission, upserted records starting no later than 30 days before the
+ *   first grant, compared in milliseconds, are silently omitted.
  *
- * Health Connect defines no upsertion order, so the fake scrambles it deterministically.
+ * Health Connect orders neither upsertions nor its groups of deletions, so the fake scrambles
+ * both deterministically.
  */
 class ChangeHealthConnect : HealthConnectChangeAccess {
     sealed interface Call {
@@ -37,7 +40,7 @@ class ChangeHealthConnect : HealthConnectChangeAccess {
         data class Changes(val token: String) : Call
     }
 
-    private class Row(val row: Long, val type: KClass<out Record>, val upsert: Boolean, val ids: List<String>, val time: Instant)
+    private class Row(val row: Long, val type: KClass<out Record>, val origin: String, val upsert: Boolean, val ids: List<String>, val time: Instant)
 
     private class Token(val type: KClass<out Record>, val position: Long, val time: Instant?)
 
@@ -81,13 +84,12 @@ class ChangeHealthConnect : HealthConnectChangeAccess {
     /** One write that inserts or updates every record, logging their identifiers as upserted. */
     fun upsert(vararg records: Record) {
         records.forEach { this.records[it.metadata.id] = it }
-        logWrite(records.groupBy({ it::class }, { it.metadata.id }), upsert = true)
+        logWrite(records.toList(), upsert = true)
     }
 
     /** One write that deletes every identifier, logging them as deleted. */
     fun delete(vararg ids: String) {
-        val byType = ids.groupBy { id -> records.remove(id)?.let { it::class } ?: error("no synthetic record $id") }
-        logWrite(byType, upsert = false)
+        logWrite(ids.map { id -> records.remove(id) ?: error("no synthetic record $id") }, upsert = false)
     }
 
     fun contains(id: String) = id in records
@@ -119,7 +121,7 @@ class ChangeHealthConnect : HealthConnectChangeAccess {
             throw SecurityException("synthetic read permission missing")
         }
         val upserted = LinkedHashSet<String>()
-        val deleted = mutableListOf<String>()
+        val deleted = LinkedHashMap<String, MutableList<String>>()
         var count = 0
         var last: Long? = null
         var hasMore = false
@@ -129,7 +131,7 @@ class ChangeHealthConnect : HealthConnectChangeAccess {
                 hasMore = true
                 break
             }
-            if (row.upsert) upserted += row.ids else deleted += row.ids
+            if (row.upsert) upserted += row.ids else deleted.getOrPut(row.origin) { mutableListOf() } += row.ids
             count += row.ids.size
             last = row.row
         }
@@ -140,9 +142,10 @@ class ChangeHealthConnect : HealthConnectChangeAccess {
             else firstGrant - Duration.ofDays(30)
         val upsertions = upserted
             .mapNotNull { records[it] }
-            .filter { token.type.isInstance(it) && (historyFloor == null || startOf(it) >= historyFloor) }
-            .sortedWith(compareBy({ Integer.reverse(it.metadata.id.hashCode()) }, { it.metadata.id }))
-        val changes = upsertions.map(::UpsertionChange) + deleted.map(::DeletionChange)
+            .filter { token.type.isInstance(it) && (historyFloor == null || startOf(it).toEpochMilli() > historyFloor.toEpochMilli()) }
+            .sortedWith(compareBy({ scramble(it.metadata.id) }, { it.metadata.id }))
+        val deletions = deleted.entries.sortedWith(compareBy({ scramble(it.key) }, { it.key })).flatMap { it.value }
+        val changes = upsertions.map(::UpsertionChange) + deletions.map(::DeletionChange)
         return answer(changesToken, ChangesResponse(changes, next, hasMore, false), read)
     }
 
@@ -155,11 +158,13 @@ class ChangeHealthConnect : HealthConnectChangeAccess {
 
     private fun store(token: Token): String = (nextToken++).toString().also { tokens[it] = token }
 
-    private fun logWrite(idsByType: Map<out KClass<out Record>, List<String>>, upsert: Boolean) {
-        for ((type, ids) in idsByType) {
-            for (chunk in ids.chunked(PAGE_SIZE)) log += Row(nextRow++, type, upsert, chunk, now)
+    private fun logWrite(records: List<Record>, upsert: Boolean) {
+        for ((key, ids) in records.groupBy({ it::class to it.metadata.dataOrigin.packageName }, { it.metadata.id })) {
+            for (chunk in ids.chunked(PAGE_SIZE)) log += Row(nextRow++, key.first, key.second, upsert, chunk, now)
         }
     }
+
+    private fun scramble(key: String) = Integer.reverse(key.hashCode())
 
     companion object {
         /** The SDK's fixed change page size, in identifiers; also the largest row a write logs. */
