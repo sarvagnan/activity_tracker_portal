@@ -207,5 +207,55 @@ export async function commitSnapshotAttempt(
   attempt: NewSnapshotAttempt,
   superseding: string | null,
 ): Promise<CommitAttemptResult> {
-  throw new Error("begin-initial-snapshot@2 is not implemented");
+  if (attempt === null || typeof attempt !== "object") {
+    throw new TypeError("Invalid snapshot attempt");
+  }
+  const { snapshotId, recordType, kind, installationId, changesToken, unreadSinceMs, begunAtMs } = attempt;
+  if (typeof snapshotId !== "string" || UUID_V4.exec(snapshotId)?.[0] !== snapshotId) {
+    throw new TypeError("Invalid snapshot UUID");
+  }
+  if (typeof recordType !== "string" || recordType.length > 64 || RECORD_TYPE.exec(recordType)?.[0] !== recordType) {
+    throw new TypeError("Invalid record type");
+  }
+  if (kind !== "initial" && kind !== "reconciliation") {
+    throw new TypeError("Invalid snapshot kind");
+  }
+  if (typeof installationId !== "string" || UUID.exec(installationId)?.[0] !== installationId) {
+    throw new TypeError("Invalid installation UUID");
+  }
+  if (typeof changesToken !== "string" || changesToken.length === 0) {
+    throw new TypeError("Invalid changes token");
+  }
+  if (!Number.isSafeInteger(unreadSinceMs) || !Number.isSafeInteger(begunAtMs)) {
+    throw new TypeError("Invalid snapshot instant");
+  }
+  if (superseding !== null && (typeof superseding !== "string" || UUID.exec(superseding)?.[0] !== superseding)) {
+    throw new TypeError("Invalid superseding UUID");
+  }
+
+  const current = await currentSnapshotAttempt(transaction, recordType);
+  if (superseding === null) {
+    if (current !== null) return { outcome: "refused", failure: "attempt-open" };
+  } else if (current?.snapshotId !== superseding) {
+    return { outcome: "refused", failure: "attempt-mismatch" };
+  }
+
+  if (current !== null) {
+    await transaction.execute("UPDATE snapshot_attempts SET abandoned_at_ms = ? WHERE snapshot_id = ?", [begunAtMs, current.snapshotId]);
+  }
+  await transaction.execute(
+    `INSERT INTO snapshot_attempts
+      (snapshot_id, record_type, kind, installation_id, changes_token, unread_since_ms, begun_at_ms, abandoned_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [snapshotId, recordType, kind, installationId, changesToken, unreadSinceMs, begunAtMs, null],
+  );
+  await transaction.execute(
+    `INSERT INTO current_snapshot_attempts (record_type, snapshot_id) VALUES (?, ?)
+      ON CONFLICT (record_type) DO UPDATE SET snapshot_id = excluded.snapshot_id`,
+    [recordType, snapshotId],
+  );
+  return {
+    outcome: "committed",
+    attempt: { snapshotId, recordType, kind, installationId, changesToken, unreadSinceMs, begunAtMs, abandonedAtMs: null },
+  };
 }
