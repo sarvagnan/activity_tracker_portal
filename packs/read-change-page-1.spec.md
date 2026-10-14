@@ -195,8 +195,11 @@ Tests: `failures_follow_the_documented_order`.
   - the granted permission set, including the history filter's strict comparison in milliseconds;
   - scripted mutations and exceptions between and during calls.
 - The fake returns upsertions and groups of deletions in a scrambled but deterministic order, so a reader that relies on an order Health Connect does not define fails.
+- The runner does not trust Gradle's exit status. It deletes the suite's JUnit report, runs Gradle, and passes the Kotlin suite only when a fresh report lists exactly the bound suite's `@Test` methods, none failed, errored, or skipped. The pack also binds the execution-control files the runner relies on, `sender/scripts/gradle.sh` and the module's `android/build.gradle`, so changing either goes through Vouch like any bound file.
+- The trusted toolchain boundary is the checksum-verified JDK from `sender/scripts/jdk.sh`, the generated `sender/app/android` project and its Gradle wrapper, Gradle, the Android Gradle and Expo plugins, and the dependencies they resolve.
 - Not mechanically provable here; the approver confirms these in implementation review:
   - the reader never writes to Health Connect, requests a changes token or a permission, or reads anything besides permissions and changes;
+  - the implementation changes nothing in the trusted toolchain boundary;
   - Health Connect's real paging, cleanup, and expiry behavior matches the fake, which physical-device qualification checks on the Operator's phone.
 
 ## Freeze prerequisites
@@ -209,8 +212,8 @@ The Operator approved the draft. The executable pack adds:
 
 Against the stub, every Kotlin test fails. Forty-one fail with the stub's `NotImplementedError`, the three request-validation tests fail because the stub does not validate, and the cancellation test fails because cancellation meets the stub's error. The two Python tests pass, because they check the contract.
 
-The implementer's read-only implementability review found nothing blocking. Its five clarifications are reflected in R3 (the clock is read once, before any Health Connect call), R6 (a second projection context), R7 (a reread keeps each answer's order), and the fake (rows and deletion groups by writing app, and the history filter's strict comparison).
+The implementer's read-only implementability review found nothing blocking. Its five clarifications are reflected in R3 (the clock is read once, before any Health Connect call), R6 (a second projection context), R7 (a reread keeps each answer's order), and the fake (rows and deletion groups by writing app, and the history filter's strict comparison). The approver's first Gate B review found that the runner trusted unbound execution-control files; the runner now verifies a fresh JUnit report, and those files are bound.
 
 The binding is:
 - spec files: the contract and this pack;
-- test files: `ReadChangePage1Test.kt`, `ChangeHealthConnect.kt`, `test_read_change_page_1.py`, and the runner.
+- test files: `ReadChangePage1Test.kt`, `ChangeHealthConnect.kt`, `test_read_change_page_1.py`, the runner, `sender/scripts/gradle.sh`, and the module's `android/build.gradle`.
