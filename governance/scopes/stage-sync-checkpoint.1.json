@@ -1,0 +1,63 @@
+{
+  "contract_schema": 1,
+  "scope": "stage-sync-checkpoint",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Make one normally finished or recovered-interrupted Polling Run observable without carrying health data: build its byte-stable Sync Checkpoint from the caller's run summary and the Outbox counts sampled before insertion, seal it, and append it to the Sender Outbox exactly once per run, or stage nothing.",
+  "inputs": [
+    { "name": "run_summary", "mode": "pure", "description": "One finished or recovered-interrupted Polling Run as coordinate-sender-sync records it: run sequence, trigger, Sender wall-clock start and end, optional monotonic elapsed duration, Background Scheduling Status, and each permitted record type's outcome, any reason, and source-data-staged flag." },
+    { "name": "staging_context", "mode": "pure", "description": "The Sender's active Sender Installation, its installation key alias, and the capability generation to stage under, as stage-outbox-batch uses." },
+    { "name": "installation_cipher", "mode": "effectful", "description": "The 3ug InstallationCipher seam, which seals the checkpoint with AES-256-GCM under the installation key." },
+    { "name": "sender_storage", "mode": "effectful", "description": "The Sender's SQLite database: the installation's queued Outbox messages and bytes and its high-water mark, and this unit's checkpoint records, read before sealing and again inside the commit transaction." }
+  ],
+  "outputs": [
+    { "name": "checkpoint_staged", "description": "One sealed Sync Checkpoint appended to the Sender Outbox under the next sequence and recorded as the run's only checkpoint in the same transaction. It carries the queued Outbox message and byte counts sampled before its insertion, and no source-record counts, source tokens, Source Identities, health dates, or health values." },
+    { "name": "refusal", "description": "The run already has a staged checkpoint, with nothing written." },
+    { "name": "conflict", "description": "The Outbox or the checkpoint record changed while the checkpoint was being sealed, so nothing was written and it can be staged again." },
+    { "name": "cipher_failure", "description": "The installation key was missing, unusable, or unavailable, or the cipher failed unexpectedly, with nothing written." },
+    { "name": "storage_failure", "description": "A database read or the commit failed and rolled back, so nothing was staged." }
+  ],
+  "named_failures": [
+    { "name": "checkpoint-already-staged", "outcome": "refusal" },
+    { "name": "staging-conflict", "outcome": "conflict" },
+    { "name": "installation-key-missing", "outcome": "cipher-failure" },
+    { "name": "installation-key-unusable", "outcome": "cipher-failure" },
+    { "name": "keystore-unavailable", "outcome": "cipher-failure" },
+    { "name": "unexpected-cipher-failure", "outcome": "cipher-failure" },
+    { "name": "storage-failed", "outcome": "storage-failure" }
+  ],
+  "observable_effects": [
+    { "name": "installation-key-seal", "description": "Seals the checkpoint once through the installation cipher with stage-outbox-batch's authenticated data for its installation and sequence; never creates, deletes, or opens with the key." },
+    { "name": "sender-storage-write", "description": "Applies this unit's Sender schema migration, and commits the sealed checkpoint through stage-outbox-batch's Outbox primitive with this unit's checkpoint record in one SQLite transaction or not at all." }
+  ],
+  "authority": {
+    "owns": [
+      "building the Sync Checkpoint message from a run summary, with record types in ascending order and the protocol's outcome and reason pairing",
+      "sampling the installation's queued Outbox message and byte counts before the checkpoint's insertion",
+      "the rule that a Polling Run is checkpointed at most once, and the Sender's checkpoint records and their schema migration",
+      "classification of cipher and storage failures into the named failures for a checkpoint"
+    ],
+    "does_not_own": [
+      "opening, recovering, and closing Polling Runs, run sequences, triggers, and each type's outcome and reason, which belong to coordinate-sender-sync",
+      "Background Scheduling Status, which belongs to schedule-background-polling",
+      "the Sender Outbox, its sequence high-water mark, and its sealing format, which belong to stage-outbox-batch",
+      "Polling Freshness, Last Delivery, and clock-skew judgment, which belong to the Portal's accept-sync-checkpoint",
+      "delivery and receipt-bound removal, which belong to send-outbox-message",
+      "the Wire Protocol message format and its closed value lists, which belong to ingest-protocol",
+      "the Expo bridge between Kotlin and TypeScript"
+    ]
+  },
+  "dependencies": [
+    { "scope": "ingest-protocol", "version": "1" },
+    { "scope": "stage-outbox-batch", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/stage-sync-checkpoint-1.spec.md",
+    "executable_tests": {
+      "typescript": "sender/app/test/stage-sync-checkpoint-1.test.ts",
+      "python": "tests/acceptance/test_stage_sync_checkpoint_1.py"
+    },
+    "runner": "tests/acceptance/run_stage_sync_checkpoint_1.sh",
+    "languages": ["python", "typescript"]
+  }
+}
