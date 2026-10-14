@@ -1,6 +1,6 @@
 # Draft acceptance pack — `manage-sender-installation@1`
 
-**Status:** Draft approved by the Operator on 2026-10-14, including the seven decisions below; the executable pack adds the refinements its tests pin down. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
+**Status:** Draft approved by the Operator on 2026-10-14, including the seven decisions below; the executable pack adds the refinements its tests pin down. Amended to `manage-sender-installation-pack/2` through deviation DEV-msi-01 (pack defect, Operator decision 2026-10-14; see Decision 6). Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
 
 **Acceptance owner:** Operator, who approves the draft semantics. **Pack drafter:** Claude. **Implementer after freeze:** GPT 6.1 Sol through a T3 delegated task. **Approver for freeze, implementation review, merge, and publication:** GPT 6 Astra through a T3 delegated task, as a separate agent from the drafter and implementer.
 
@@ -149,11 +149,15 @@ Tests: `test_replacement_starts_with_no_operational_state`, `test_unlink_leaves_
 - When the content differs from the highest honored generation's, it uses the next generation number (1 when there is none) and honors those exact canonical bytes.
 - When the content is unchanged, it returns the existing generation without writing.
 
-`stop_superseded_generation` stops the lowest honored generation below the latest acknowledged one, in one store transaction, and returns it. The latest acknowledged generation is the highest one acknowledged, not the most recently received. Stopping it is what `ingest-protocol@1` R10 permits. The Operations page or `portal` command repeats the call until it returns `None`, which it does when no acknowledgement exists or nothing is below it (Decision 9). It raises `pending-installation-exists` while any installation is pending, because a pending Sender may hold an older advertisement it has not yet acknowledged (Decision 6).
+`stop_superseded_generation` stops the lowest honored generation below the governing acknowledgement, in one store transaction, and returns it. An installation's acknowledgement is the highest staged generation among its archived capability acknowledgements: the highest acknowledged, not the most recently received. The governing acknowledgement depends on whether an installation is delivering:
+- When an installation is active or draining, it is that installation's own acknowledgement. The installation now delivering is the only one whose queued messages can still arrive, and it may hold an older generation than a retired predecessor acknowledged.
+- When no installation is delivering, it is the highest acknowledgement in the store, which every future enrollee exceeds because it receives the current advertisement.
+
+Stopping below it is always within what `ingest-protocol@1` R10 permits. The Operations page or `portal` command repeats the call until it returns `None`. It returns `None` when there is no governing acknowledgement, including when the delivering installation has acknowledged nothing, or when nothing is below it (Decision 9). It raises `pending-installation-exists` while any installation is pending, because a pending Sender may hold an older advertisement it has not yet acknowledged (Decision 6).
 
 `current_advertisement` returns the highest honored generation's exact bytes, or raises `no-capability-generation`.
 
-Tests: `test_configured_capabilities_get_the_next_generation`, `test_unchanged_capabilities_keep_their_generation`, `test_advertisement_bytes_are_exact_and_canonical`, `test_superseded_generations_stop_only_below_the_latest_acknowledgement`, `test_latest_acknowledgement_is_the_highest_not_the_newest`, `test_each_call_stops_only_the_lowest_superseded_generation`, `test_generations_are_kept_while_an_installation_is_pending`, `test_current_advertisement_is_the_highest_generation`.
+Tests: `test_configured_capabilities_get_the_next_generation`, `test_unchanged_capabilities_keep_their_generation`, `test_advertisement_bytes_are_exact_and_canonical`, `test_superseded_generations_stop_only_below_the_latest_acknowledgement`, `test_latest_acknowledgement_is_the_highest_not_the_newest`, `test_each_call_stops_only_the_lowest_superseded_generation`, `test_a_replacement_keeps_its_generation_until_it_acknowledges_a_later_one`, `test_without_a_delivering_installation_any_acknowledgement_counts`, `test_generations_are_kept_while_an_installation_is_pending`, `test_current_advertisement_is_the_highest_generation`.
 
 ### R10 — Refusals change nothing
 
@@ -161,7 +165,7 @@ The store is left exactly as it was, as compared by SQLite's `iterdump` before a
 - an Operator intent raises `InstallationRefusal` or `InstallationRetryable`;
 - a confirmation is answered `refused` or `retryable`.
 
-Tests: `test_every_refusal_leaves_the_store_unchanged`, `test_retryable_conditions_leave_the_store_unchanged`.
+Tests: `test_every_refusal_leaves_the_store_unchanged`, `test_retryable_conditions_leave_the_store_unchanged`, `test_activation_under_contention_is_retryable`.
 
 ### R11 — Health-data-free outcomes
 
@@ -202,7 +206,7 @@ Tests: `test_checks_follow_the_documented_order`.
 5. **Activation requires the compared fingerprint.** The Operator confirms a specific pending installation by its fingerprint, so a second pending installation cannot be activated by mistake. How the Operations page displays fingerprints for comparison belongs to presentation.
 6. **The Portal numbers capability generations.**
    - Configured content gets the next generation only when it changes.
-   - Superseded generations stop only below the latest acknowledgement, which is the protocol's own safety rule.
+   - Superseded generations stop only below the acknowledgement of the installation now delivering, or the highest acknowledgement in the store when none is delivering. That stays within the protocol's own safety rule. This was amended through DEV-msi-01 on 2026-10-14: the frozen `pack/1` used the store-wide acknowledgement, which a retired predecessor could raise past the generation its replacement still held.
    - Superseded generations never stop while an installation is pending, because a pending Sender may hold an older advertisement it acknowledges only after the Operator confirms it.
 
    The alternative is to number generations by hand in configuration.
@@ -232,7 +236,7 @@ The approver escalated two changes made since Gate A. The Operator decided both 
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the Python acceptance suite, with 52 tests;
+- the Python acceptance suite, with 55 tests;
 - the runner, which verifies that every test method ran and passed;
 - the Interface stub `src/activity_tracker_portal/sender_installation.py`.
 
@@ -248,6 +252,13 @@ The implementer's read-only implementability review found nothing blocking. Its 
 - R9's test that the latest acknowledgement is the highest, not the newest;
 - R10's per-call retryable outcomes;
 - the serialization boundary in the ground rules and the contract.
+
+`pack/2`, through DEV-msi-01, amends R9 and Decision 6 and adds three tests:
+- the replacement regression the approver reproduced;
+- the case with no delivering installation;
+- activation under store contention, from the Codex review.
+
+Against the `pack/1` implementation, the replacement regression fails and the other 54 pass.
 
 The binding is:
 - spec files: the contract and this pack;

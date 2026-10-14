@@ -754,6 +754,39 @@ class R9CapabilityGenerations(Case):
         self.assertIsNone(stop_superseded_generation(proxy, at(7)))
         self.assertEqual([1, 2], proxy.stopped)
 
+    def test_a_replacement_keeps_its_generation_until_it_acknowledges_a_later_one(self) -> None:
+        self.honor(CAPABILITIES)
+        self.activate(A, 1)
+        self.enroll(B, 2)
+        self.honor(LATER, 3)
+        self.deliver(A, 1, generation=2, minutes=4)
+        self.assertRefused("pending-installation-exists", lambda: stop_superseded_generation(self.store, at(5)))
+        begin_draining(self.store, A, at(6))
+        retire_drained(self.store, A, 1, at(7))
+        confirm_installation(self.store, B, installation_fingerprint(B), at(8))
+        # B was enrolled under generation 1 and has acknowledged nothing, so A's acknowledgement does not govern.
+        before = self.dump()
+        self.assertIsNone(stop_superseded_generation(self.store, at(9)))
+        self.assertEqual(before, self.dump())
+        self.deliver(B, 1, generation=1, minutes=10)
+        self.assertIsNone(stop_superseded_generation(self.store, at(11)))
+        self.deliver(B, 2, generation=2, minutes=12)
+        self.assertEqual(1, stop_superseded_generation(self.store, at(13)))
+        self.assertEqual([2], self.honored())
+
+    def test_without_a_delivering_installation_any_acknowledgement_counts(self) -> None:
+        self.honor(CAPABILITIES)
+        self.honor(LATER, 1)
+        self.activate(A, 2)
+        self.deliver(A, 1, generation=2, minutes=3)
+        begin_draining(self.store, A, at(4))
+        self.assertEqual(1, stop_superseded_generation(self.store, at(5)))
+        self.honor(LATEST, 6)
+        self.deliver(A, 2, generation=3, minutes=7)
+        retire_drained(self.store, A, 2, at(8))
+        self.assertEqual(2, stop_superseded_generation(self.store, at(9)))
+        self.assertEqual([3], self.honored())
+
     def test_generations_are_kept_while_an_installation_is_pending(self) -> None:
         self.honor(CAPABILITIES)
         self.honor(LATER, 1)
@@ -853,6 +886,19 @@ class R10RefusalsChangeNothing(Case):
         self.assertEqual("installation-unknown", unknown.exception.failure)
         blocker.rollback()
         self.assertEqual(before, self.dump())
+
+
+    def test_activation_under_contention_is_retryable(self) -> None:
+        self.honor()
+        self.enroll(A)
+        before = self.dump()
+        blocker = self.blocked()
+        with self.assertRaises(InstallationRetryable) as caught:
+            confirm_installation(self.store, A, installation_fingerprint(A), at(1))
+        blocker.rollback()
+        self.assertEqual("store-busy", caught.exception.failure)
+        self.assertEqual(before, self.dump())
+        self.assertEqual("active", confirm_installation(self.store, A, installation_fingerprint(A), at(2)).state)
 
 
 class R11HealthDataFreeOutcomes(Case):
