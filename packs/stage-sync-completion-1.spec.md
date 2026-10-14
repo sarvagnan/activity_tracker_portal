@@ -100,7 +100,7 @@ Tests: `an_unfinished_cycle_is_refused`, `a_cycle_of_a_superseded_attempt_is_ref
 
 ### R5 — Exactly once
 
-The completion and its Outbox row commit together, with this unit's completion record. A cycle that already has a completion is `completion-already-staged`, and nothing new is sealed or written. `cycleCompletion` reports the recorded completion, which survives reopening the database.
+The completion and its Outbox row commit together, with this unit's completion record. A cycle that already has a completion is `completion-already-staged`, and nothing new is sealed or written. That holds even after `send-outbox-message` removes the delivered Outbox row. `cycleCompletion` reports the recorded completion, which survives reopening the database.
 
 Tests: `a_cycle_is_completed_once`, `the_completion_record_survives_reopening`.
 
@@ -124,7 +124,17 @@ Tests: `cipher_failures_write_nothing`, `storage_errors_roll_back_everything`.
 
 ### R8 — The Sender schema migration
 
-`completionMigration` is Sender schema version 3. It is registered after `stage-outbox-batch@1`'s version 2 and creates one table of completion records. It references no other unit's table.
+`completionMigration` is Sender schema version 3. It is registered after `stage-outbox-batch@1`'s version 2, and references no other unit's table. It creates exactly this table, compared token for token with whitespace ignored, and nothing else besides its automatic indexes:
+
+```sql
+CREATE TABLE cycle_completions (
+  cycle_id TEXT PRIMARY KEY NOT NULL, record_type TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('snapshot-completion', 'change-completion')),
+  installation_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0),
+  UNIQUE (installation_id, sequence)) STRICT;
+```
+
+It holds one completion per cycle and one per Outbox sequence.
 
 Tests: `migration_creates_version_three`, `migration_is_idempotent`.
 
@@ -142,12 +152,18 @@ Tests: `migration_creates_version_three`, `migration_is_idempotent`.
 
 **Key use.** The unit only seals with the key; it never creates, deletes, or opens one.
 
+**Other units' tables.** The module reaches them only through those units' functions. A static check confirms three things:
+- its source names none of their tables;
+- it appends through `appendOutboxMessages`;
+- it imports only relative modules and the protocol library, without Node built-ins.
+
 Tests:
 - `malformed_inputs_are_caller_errors`
 - `non_staged_results_carry_only_named_failures`
 - `every_named_failure_is_reachable_and_in_the_contract`
 - `checks_follow_the_documented_order`
 - `staging_only_seals`
+- `the_module_uses_other_units_tables_only_through_their_functions`
 
 ## Decisions for the Operator
 
@@ -169,9 +185,29 @@ Not mechanically provable here; the approver confirms it in implementation revie
 
 ## Freeze prerequisites
 
-After Operator approval, the executable pack adds:
-- the TypeScript suite, about 24 tests;
+The Operator approved the draft. The executable pack adds:
+- the TypeScript suite, 24 tests;
 - the Python contract suite, 2 tests;
 - the self-verifying runner;
-- the Interface stub;
-- the pinned completion-record table layout.
+- the Interface stub `sender/app/src/outbox/stage-sync-completion.ts`.
+
+The suite's fixture migrates explicitly with `[snapshotAttemptsMigration, outboxMigration, completionMigration]` to version 3. It drives the published `begin-initial-snapshot@2`, `begin-reconciliation-snapshot@1`, and `stage-outbox-batch@1`, and guards the cipher against any key creation, deletion, or opening.
+
+A throwaway reference implementation passes all 24 tests and typechecks. Six mutants of it each fail at least one test:
+- `page_count` taken from the fragment count;
+- `snapshot_kind` fixed as `initial`;
+- no attempt-currency check;
+- no exactly-once check;
+- the recheck run outside the transaction;
+- the completion record written outside the Outbox transaction.
+
+Against the stub:
+- every TypeScript test fails, because the stub's migration throws and the static check finds no `appendOutboxMessages` call;
+- the two Python tests pass, because they check the contract.
+
+The binding is:
+- spec files: the contract and this pack;
+- test files:
+  - `stage-sync-completion-1.test.ts`;
+  - its 3ug substitutes `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`;
+  - `test_stage_sync_completion_1.py` and the runner.
