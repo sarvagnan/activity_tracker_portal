@@ -1,6 +1,6 @@
 # Draft acceptance pack — `accept-sync-completion@1`
 
-**Status:** Draft for Operator review (Gate A), including the eight decisions below. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
+**Status:** Draft approved by the Operator on 2026-10-15, including the eight decisions below; the executable pack adds the refinements its tests pin down. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
 
 **Acceptance owner:** Operator, who approves the draft semantics. **Pack drafter:** Claude. **Implementer after freeze:** GPT 6.1 Sol through a T3 delegated task. **Approver for freeze, implementation review, merge, and publication:** GPT 6 Astra through a T3 delegated task, as a separate agent from the drafter and implementer.
 
