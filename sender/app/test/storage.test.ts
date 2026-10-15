@@ -248,15 +248,16 @@ test("safe integer limits match protocol numbers exactly and reject larger or fr
   await assert.rejects(database.query("SELECT 1.5 AS value"), TypeError);
 });
 
-test("production migrations create only the twelve version five tables and automatic indexes", async (t) => {
+test("production migrations create only the thirteen version six tables and automatic indexes", async (t) => {
   const { snapshotAttemptsMigration } = await import("../src/snapshot/begin-initial-snapshot.ts");
   const { outboxMigration } = await import("../src/outbox/stage-outbox-batch.ts");
   const { completionMigration } = await import("../src/outbox/stage-sync-completion.ts");
   const { checkpointMigration } = await import("../src/outbox/stage-sync-checkpoint.ts");
   const { syncMigration } = await import("../src/sync/coordinate-sender-sync.ts");
+  const { schedulingMigration } = await import("../src/scheduling/schedule-background-polling.ts");
   const { database } = await fixture(t);
-  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration]);
-  assert.deepEqual(await migrate(database), { status: "ready", version: 5 });
+  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration]);
+  assert.deepEqual(await migrate(database), { status: "ready", version: 6 });
   const schema = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name");
   const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
   assert.deepEqual(schema.map((row) => ({ ...row, sql: typeof row.sql === "string" ? normalize(row.sql) : row.sql })), [
@@ -310,6 +311,17 @@ test("production migrations create only the twelve version five tables and autom
   installation_id TEXT NOT NULL, run_sequence INTEGER NOT NULL CHECK (run_sequence > 0),
   sequence INTEGER NOT NULL CHECK (sequence > 0),
   PRIMARY KEY (installation_id, run_sequence), UNIQUE (installation_id, sequence)) STRICT`),
+    },
+    {
+      type: "table", name: "scheduling_state", tbl_name: "scheduling_state",
+      sql: normalize(`CREATE TABLE scheduling_state (
+  singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+  observed_status TEXT NOT NULL CHECK (observed_status IN ('available', 'restricted', 'unregistered')),
+  observed_at_ms INTEGER NOT NULL,
+  action_condition TEXT CHECK (action_condition IN ('restricted', 'unregistered')),
+  notified_condition TEXT CHECK (notified_condition IN ('restricted', 'unregistered')),
+  CHECK (action_condition IS (CASE WHEN observed_status = 'available' THEN NULL ELSE observed_status END)),
+  CHECK (notified_condition IS NULL OR notified_condition IS action_condition)) STRICT`),
     },
     {
       type: "table", name: "snapshot_attempts", tbl_name: "snapshot_attempts",
