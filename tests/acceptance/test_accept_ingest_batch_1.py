@@ -259,13 +259,18 @@ class Case(unittest.TestCase):
     def block_index(self) -> dict[tuple[object, ...], Any]:
         return {(record.installation_id, record.sequence, record.message_sha256, record.failure): record for record in self.blocks()}
 
-    def deliverBlocked(self, data: bytes, failure: str, minute: float = 1, identity: bool = True) -> None:
+    def deliverBlocked(self, data: bytes, failure: str, minute: float = 1, identity: bool = True,
+                       body: bytes | None = None) -> None:
         """Deliver bytes that must be blocked, and require the durable block record and no other write."""
         before, records_before = contents(self.path), self.block_index()
-        self.assertBlocked(self.accept(data, minute), data, failure, identity)
+        response = self.accept(data, minute)
+        if body is None:
+            self.assertBlocked(response, data, failure, identity)
+        else:
+            self.assertEqual(response, DeliveryResponse("block", body, failure, None))
         self.assertEqual(without_blocks(contents(self.path)), without_blocks(before))
-        message = ingest_protocol.decode_message(data) if identity else {}
-        key = (message.get("sender_installation"), message.get("sequence"), message_sha256(data), failure)
+        block = ingest_protocol.decode_message(response.body)
+        key = (block.get("sender_installation"), block.get("sequence"), message_sha256(data), failure)
         records = self.block_index()
         prior = records_before.get(key)
         record = records[key]
@@ -362,17 +367,17 @@ class R2CallerErrors(Case):
 class R3UndecodableMessages(Case):
     def assertProtocolBlock(self, data: bytes, failure: str) -> None:
         self.activate()
-        before = contents(self.path)
-        response = self.accept(data)
         reference = evaluate_delivery(new_delivery_state([advertisement(1)]), data)
         self.assertEqual((reference.outcome, reference.failure), ("block", failure))
-        self.assertEqual(response, DeliveryResponse("block", reference.response, failure, None))
+        # Once, then again later: the record keeps its first time, takes the later one, and counts both.
+        self.deliverBlocked(data, failure, minute=1, body=reference.response)
+        self.deliverBlocked(data, failure, minute=4, body=reference.response)
         block = ingest_protocol.decode_message(reference.response)
         self.assertEqual(
-            [(record.installation_id, record.sequence, record.message_sha256, record.failure, record.count) for record in self.blocks()],
-            [(block.get("sender_installation"), block.get("sequence"), message_sha256(data), failure, 1)],
+            [(record.installation_id, record.sequence, record.message_sha256, record.failure, record.first_seen_at,
+              record.last_seen_at, record.count) for record in self.blocks()],
+            [(block.get("sender_installation"), block.get("sequence"), message_sha256(data), failure, at(1), at(4), 2)],
         )
-        self.assertEqual(without_blocks(contents(self.path)), without_blocks(before))
 
     def test_malformed_bytes_are_blocked(self) -> None:
         self.assertProtocolBlock(b"synthetic bytes that are not json", "malformed-message")
@@ -434,10 +439,12 @@ class R4IdentityAndRetry(Case):
         self.activate()
         self.assertReceipt(self.accept(batch(1)), batch(1))
         other = batch(1, items=[projection(b"synthetic-other-projection")])
-        before = contents(self.path)
-        self.deliverBlocked(other, "sequence-content-mismatch")
-        self.assertEqual(without_blocks(contents(self.path)), without_blocks(before))
-        self.assertEqual([record.failure for record in self.blocks()], ["sequence-content-mismatch"])
+        for minute in (2, 5, 9):
+            self.deliverBlocked(other, "sequence-content-mismatch", minute=minute)
+        self.assertEqual(
+            [(record.failure, record.first_seen_at, record.last_seen_at, record.count) for record in self.blocks()],
+            [("sequence-content-mismatch", at(2), at(9), 3)],
+        )
 
 
 # R5 — Installation state
@@ -817,11 +824,17 @@ class R11Conformance(Case):
             "fragment-order-mismatch", "record-count-limit-exceeded", "sequence-out-of-order", "unsupported-wire-protocol",
             "uncompressed-byte-limit-exceeded", "unsupported-source-projection-schema", "sequence-content-mismatch",
         })
-        for event in ("gap", "retry", "completion", "after-completion"):
+        for event in ("gap", "retry", "completion", "after-completion", "recorded-block", "repeated-block"):
             self.assertGreater(self.events[event], 0, event)
+
+    def records(self, store) -> dict[tuple[object, ...], Any]:
+        with store.read() as view:
+            return {(record.installation_id, record.sequence, record.message_sha256, record.failure): record
+                    for record in view.delivery_blocks()}
 
     def deliver(self, store, state, history: History, data: bytes, minute: float, action: str):
         expected = evaluate_delivery(state, data)
+        records_before = self.records(store)
         actual = accept_ingest_batch(store, data, at(minute))
         self.assertEqual(
             (actual.outcome, actual.body, actual.failure, actual.gap_after),
@@ -844,12 +857,21 @@ class R11Conformance(Case):
             if action == "after-completion" and expected.failure == "fragment-order-mismatch":
                 self.events["after-completion"] += 1
             if expected.outcome == "block":
-                with store.read() as view:
-                    records = [record for record in view.delivery_blocks(message["sender_installation"])
-                               if (record.sequence, record.message_sha256, record.failure)
-                               == (message["sequence"], message_sha256(data), expected.failure)]
-                self.assertEqual([record.last_seen_at for record in records], [at(minute)], (minute, action))
                 self.events["recorded-block"] += 1
+        records = self.records(store)
+        if expected.outcome == "block":
+            key = (message["sender_installation"], message["sequence"], message_sha256(data), expected.failure)
+            prior = records_before.get(key)
+            self.assertEqual(
+                (records[key].count, records[key].first_seen_at, records[key].last_seen_at),
+                ((prior.count if prior else 0) + 1, prior.first_seen_at if prior else at(minute), at(minute)),
+                (minute, action),
+            )
+            if prior is not None:
+                self.events["repeated-block"] += 1
+            records = {k: v for k, v in records.items() if k != key}
+            records_before = {k: v for k, v in records_before.items() if k != key}
+        self.assertEqual(records, records_before, (minute, action))
         history.sent.append(data)
         return expected.state
 

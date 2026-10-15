@@ -243,7 +243,7 @@ The tests pin these refinements:
 
 Against the stub, every behaviour test fails: 32 tests and R11's 8 seeded histories. The two contract tests pass, and the runner exits 1.
 
-A throwaway reference, kept out of the repository, passes all 35 tests. Its R11 histories cross-check about 1,020 answers against `evaluate_delivery`. They include every batch-level block failure, 235 receipts after gaps, 62 retries, 43 archived completions, and 81 fragments refused after completion. R11 also checks the durable record of every block it produces. The reference kills all 29 mutants:
+A throwaway reference, kept out of the repository, passes all 35 tests. Its R11 histories cross-check about 1,020 answers against `evaluate_delivery`. They include every batch-level block failure, 235 receipts after gaps, 62 retries, 43 archived completions, and 81 fragments refused after completion. R11 also compares every block's durable record with its prior state: 471 blocks, 7 of them repeats. Every receipt and retryable answer must leave the block records untouched. The reference kills all 31 mutants:
 - ended installations blocked, pending ones delivered, and unknown ones raising;
 - installation state checked before identity;
 - each order, generation, schema, and limit check removed;
@@ -258,7 +258,9 @@ A throwaway reference, kept out of the repository, passes all 35 tests. Its R11 
 - retries re-evaluated;
 - a shifted receipt time;
 - one block class left unrecorded;
-- the reserve checked before protocol validation.
+- the reserve checked before protocol validation;
+- decode-level block times shifted;
+- a repeated block recorded twice.
 
 GPT 6.1 Sol's read-only implementability review found no blocker. Its three P2 findings are resolved above:
 - R11 now archives completions, and asserts its coverage;
@@ -270,6 +272,10 @@ Its two notes are resolved in R1 and R2.
 GPT 6 Astra's Gate B round 1 found two gaps, each shown by a surviving mutant, and both are resolved:
 - Every block is now checked with its durable record, including in R11, and a busy store while recording a semantic block is tested.
 - R10 now tests that blocks win over an exhausted reserve.
+
+Its round 2 found two more gaps in block records, each shown by a surviving mutant, and both are resolved:
+- R3's decode-level blocks now go through the same durable-record check, times included.
+- R3, R4, and R11 now repeat blocks at distinct times. Each repeat must raise the count by exactly one, keep the first seen time, and take the new last seen time.
 
 The binding is:
 - **spec files:** the contract and this pack;
