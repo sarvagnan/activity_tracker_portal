@@ -131,6 +131,7 @@ Tests:
 - `test_fragments_continue_by_page_and_chain`
 - `test_discontinuous_fragments_are_blocked`
 - `test_completed_cycle_accepts_no_fragment`
+- `test_cycles_of_other_installations_never_matter`
 
 ### R9 — Exact archival before receipt
 
@@ -149,7 +150,7 @@ Tests: `test_accepted_batch_is_archived_exactly`, `test_receipt_echoes_the_messa
 
 The answer writes nothing in either case below:
 - **Storage reserve exhausted:** retryable with reason `storage-reserve-exhausted`, failure `storage-reserve-exhausted`. An identical retry is still answered with its receipt (R4).
-- **Store busy:** retryable `temporarily-unavailable`, failure `store-busy`.
+- **Store busy:** retryable `temporarily-unavailable`, failure `store-busy`. This applies whether the store is busy while reading, archiving, or recording a block. A block is never answered without its record.
 
 Tests: `test_exhausted_reserve_is_retryable_and_writes_nothing`, `test_busy_store_is_retryable`.
 
@@ -195,14 +196,47 @@ Tests: `test_blocks_and_responses_are_health_data_free`.
 
 - Fixtures are synthetic. Projections are arbitrary synthetic bytes, because the store and this unit never interpret them.
 - The suite builds every message with `ingest-protocol@1`'s `encode_message`, and computes chains with `chain_start` and `chain_next`.
-- Lock contention is injected by holding a write transaction on a second connection, without sleeping past the store's timeout.
+- Lock contention is injected in two ways:
+  - by holding a write transaction on a second connection, with a 100 ms store timeout;
+  - by a store proxy whose `read` or `record_delivery_block` raises the store's retryable `store-busy`.
+- R11's histories come from fixed seeds. Each has 120 steps over two record types, with deliberate defects:
+  - retries, gaps, and old and conflicting sequences;
+  - broken chains and orders;
+  - fragments after completion;
+  - unsupported schemas and generations;
+  - over-limit batches.
+
+  Completions are archived as `accept-sync-completion` would archive them.
 - Not mechanically provable here; the approver confirms this in implementation review: the ingress shell's dispatch, decompression, and request limits belong to the enabling task.
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the Python suite;
-- the runner;
-- the Interface stub `accept_ingest_batch.py`, whose function raises `NotImplementedError`.
+The Operator approved the draft. The executable pack adds:
+- the Python suite `tests/acceptance/test_accept_ingest_batch_1.py`, 32 tests;
+- the runner `tests/acceptance/run_accept_ingest_batch_1.sh`, which runs the pinned-runtime check and then the suite;
+- the Interface stub `src/activity_tracker_portal/accept_ingest_batch.py`, whose function raises `NotImplementedError`.
 
-Against the stub, every behaviour test fails and the two contract tests pass. GPT 6.1 Sol's read-only implementability review runs before Gate B.
+The tests pin these refinements:
+- other installations' cycles never matter (R8);
+- a busy store at any step is retryable, and a block is never answered without its record (R10).
+
+Against the stub, every behaviour test fails: 29 tests and R11's 8 seeded histories. The two contract tests pass, and the runner exits 1.
+
+A throwaway reference, kept out of the repository, passes all 32 tests. Its R11 histories cross-check about 870 answers against `evaluate_delivery`, covering every block failure and receipts with and without gaps. It kills all 27 mutants:
+- ended installations blocked, pending ones delivered, and unknown ones raising;
+- installation state checked before identity;
+- each order, generation, schema, and limit check removed;
+- inclusive limits made exclusive, and the two limits swapped;
+- the page, chain, type, kind, completed-cycle, and first-fragment continuity rules relaxed;
+- projections stored as base64 text;
+- a gap reported off by one;
+- a block unrecorded or without its identity;
+- the wrong retryable reason;
+- a busy read answered as a block;
+- other kinds and naive times accepted;
+- retries re-evaluated;
+- a shifted receipt time.
+
+GPT 6.1 Sol's read-only implementability review runs before Gate B. The binding is:
+- **spec files:** the contract and this pack;
+- **test files:** the suite and the runner.
