@@ -1,0 +1,95 @@
+{
+  "contract_schema": 1,
+  "scope": "accept-ingest-batch",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Admit, validate, idempotently archive, and acknowledge one delivered Ingest Batch under Wire Protocol Version 1: answer with exactly one Delivery Receipt, retryable failure, or Delivery Block whose bytes match ingest-protocol's own evaluation for a delivering installation, archive the exact envelope and every Source Projection or Source Retraction before any receipt, keep a pending installation's deliveries retryable until the Operator confirms it, and make accepted sequence gaps visible.",
+  "inputs": [
+    {
+      "name": "delivered_bytes",
+      "mode": "pure",
+      "description": "The exact uncompressed bytes of one delivered message, which the ingress shell routes here when they are an Ingest Batch or are not a valid Outbox Message of another kind."
+    },
+    {
+      "name": "receipt_time",
+      "mode": "pure",
+      "description": "The timezone-aware Portal time of the delivery, supplied by the caller and recorded as the receipt time and Last Delivery."
+    },
+    {
+      "name": "operational_state",
+      "mode": "effectful",
+      "description": "The Operational Store's installation lifecycle states, honored capability advertisements, archived message identities, delivery cycles, sequence history, and storage reserve, read and written through operational-store@2."
+    },
+    {
+      "name": "free_space",
+      "mode": "volatile",
+      "description": "Free bytes on the store's filesystem, which the store compares with its reserve when archiving."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "delivery_response",
+      "description": "Exactly one of a Delivery Receipt echoing the installation, sequence, and message SHA-256; a retryable failure with reason storage-reserve-exhausted or temporarily-unavailable; or a Delivery Block naming one closed ingest-protocol failure and the message's SHA-256, with its installation and sequence when the bytes reveal them. The response carries its outcome, exact bytes, named failure, and any accepted sequence gap."
+    },
+    {
+      "name": "archived_ingest_batch",
+      "description": "For a newly accepted batch, the exact envelope, receipt, receipt time, batch identity, and every item archived in one store transaction, with Last Delivery and any sequence gap; nothing for a retry, retryable failure, or Delivery Block."
+    },
+    {
+      "name": "delivery_block_record",
+      "description": "A health-data-free Delivery Block record for every block: installation and sequence when known, message SHA-256, failure, and first and last seen times."
+    }
+  ],
+  "named_failures": [
+    { "name": "malformed-message", "outcome": "delivery-block" },
+    { "name": "noncanonical-message", "outcome": "delivery-block" },
+    { "name": "unsupported-wire-protocol", "outcome": "delivery-block" },
+    { "name": "unsupported-source-projection-schema", "outcome": "delivery-block" },
+    { "name": "record-count-limit-exceeded", "outcome": "delivery-block" },
+    { "name": "uncompressed-byte-limit-exceeded", "outcome": "delivery-block" },
+    { "name": "sequence-content-mismatch", "outcome": "delivery-block" },
+    { "name": "sequence-out-of-order", "outcome": "delivery-block" },
+    { "name": "fragment-order-mismatch", "outcome": "delivery-block" },
+    { "name": "installation-pending", "outcome": "retryable" },
+    { "name": "installation-ended", "outcome": "retryable" },
+    { "name": "installation-unknown", "outcome": "retryable" },
+    { "name": "storage-reserve-exhausted", "outcome": "retryable" },
+    { "name": "store-busy", "outcome": "retryable" }
+  ],
+  "observable_effects": [
+    {
+      "name": "operational-store-write",
+      "description": "Archives a newly accepted Ingest Batch, or records a health-data-free Delivery Block, through operational-store@2; retries and retryable failures write nothing."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the order in which a delivered Ingest Batch is checked, and the mapping of each check to a receipt, retryable failure, or Delivery Block",
+      "applying ingest-protocol's identity, sequence, generation, version, limit, and fragment-continuity rules to durable store facts",
+      "keeping deliveries from pending, ended, or unknown installations retryable under Wire Protocol Version 1",
+      "turning a decoded Ingest Batch into the store's exact archival record",
+      "recording Delivery Blocks as health-data-free evidence"
+    ],
+    "does_not_own": [
+      "wire schemas, exact bytes, fragment-chain calculation, and the closed failure vocabularies, which belong to ingest-protocol",
+      "the store's schema, transactions, retry identity, gap evidence, and storage reserve, which belong to operational-store",
+      "installation lifecycle transitions and capability generations, which belong to manage-sender-installation",
+      "Snapshot Completions, Change Completions, Sync Checkpoints, and capability acknowledgements, which belong to the other accept units",
+      "HTTP routing, request limits, decompression, and Authorized Ingress, which belong to the Portal ingress shell",
+      "reconciling or interpreting archived records, which belong to later processing scopes"
+    ]
+  },
+  "dependencies": [
+    { "scope": "ingest-protocol", "version": "1" },
+    { "scope": "manage-sender-installation", "version": "1" },
+    { "scope": "operational-store", "version": "2" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/accept-ingest-batch-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_accept_ingest_batch_1.py"
+    },
+    "runner": "tests/acceptance/run_accept_ingest_batch_1.sh",
+    "languages": ["python"]
+  }
+}
