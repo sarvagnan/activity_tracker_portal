@@ -32,6 +32,8 @@ jobs:
         run: tests/acceptance/run_operational_store_2.sh
       - name: Run manage-sender-installation@1 acceptance
         run: tests/acceptance/run_manage_sender_installation_1.sh
+      - name: Run accept-ingest-batch@1 acceptance
+        run: tests/acceptance/run_accept_ingest_batch_1.sh
 
   sender:
     runs-on: ubuntu-latest
