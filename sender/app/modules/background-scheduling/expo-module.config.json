@@ -1,0 +1,6 @@
+{
+  "platforms": ["android"],
+  "android": {
+    "modules": ["org.activitytracker.backgroundscheduling.BackgroundSchedulingModule"]
+  }
+}

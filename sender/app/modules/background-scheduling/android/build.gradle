@@ -1,0 +1,35 @@
+apply plugin: 'com.android.library'
+apply plugin: 'expo-module-gradle-plugin'
+
+group = 'org.activitytracker.backgroundscheduling'
+version = '0.1.0'
+
+android {
+  namespace 'org.activitytracker.backgroundscheduling'
+  defaultConfig {
+    versionCode 1
+    versionName project.version.toString()
+    minSdkVersion 34
+  }
+  testOptions {
+    unitTests.all {
+      testLogging { events 'passed', 'skipped', 'failed' }
+      afterSuite { descriptor, result ->
+        if (descriptor.parent == null) {
+          println "Background scheduling: ${result.testCount} tests, ${result.failedTestCount} failures, ${result.skippedTestCount} skipped"
+        }
+      }
+    }
+  }
+}
+
+kotlin {
+  jvmToolchain {
+    languageVersion = JavaLanguageVersion.of(17)
+    vendor = JvmVendorSpec.ADOPTIUM
+  }
+}
+
+dependencies {
+  testImplementation 'junit:junit:4.13.2'
+}

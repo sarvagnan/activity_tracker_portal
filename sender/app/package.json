@@ -13,9 +13,11 @@
   "dependencies": {
     "@activity-tracker-portal/ingest-protocol": "0.1.0",
     "expo": "57.0.28",
+    "expo-background-task": "57.0.21",
     "expo-dev-client": "57.0.20",
     "expo-modules-core": "57.0.22",
     "expo-sqlite": "57.0.4",
+    "expo-task-manager": "57.0.21",
     "react": "19.2.3",
     "react-native": "0.86.3"
   },

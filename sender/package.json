@@ -15,7 +15,7 @@
     "typecheck": "npm run typecheck --workspace @activity-tracker-portal/sender",
     "test": "npm run test --workspaces",
     "prebuild": "npm run prebuild --workspace @activity-tracker-portal/sender",
-    "test:kotlin": "./scripts/gradle.sh :health-connect:testDebugUnitTest :installation-key:testDebugUnitTest",
+    "test:kotlin": "./scripts/gradle.sh :health-connect:testDebugUnitTest :installation-key:testDebugUnitTest :background-scheduling:testDebugUnitTest",
     "build:android": "./scripts/gradle.sh :app:assembleDebug"
   }
 }
