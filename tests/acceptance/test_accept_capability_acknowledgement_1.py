@@ -45,12 +45,12 @@ B = "00000000-0000-4000-8000-0000000000b2"
 UNKNOWN = "00000000-0000-4000-8000-0000000000c3"
 
 
-def advertisement(generation: int) -> dict[str, Any]:
+def advertisement(generation: int, wire_versions: list[int] | None = None) -> dict[str, Any]:
     return {
         "wire_version": 1,
         "kind": "capability-advertisement",
         "generation": generation,
-        "wire_versions": [1],
+        "wire_versions": [1] if wire_versions is None else wire_versions,
         "projection_schemas": [{"record_type": "steps", "versions": [1]}],
         "max_record_count": 4,
         "max_message_bytes": 8192,
@@ -215,12 +215,10 @@ class R1GovernedScopeContract(unittest.TestCase):
             "installation-pending", "installation-ended", "installation-unknown", "storage-reserve-exhausted", "store-busy",
         })
         self.assertEqual([effect["name"] for effect in CONTRACT["observable_effects"]], ["operational-store-write"])
-        self.assertEqual(CONTRACT["dependencies"], [
-            {"scope": "ingest-protocol", "version": "1"},
-            {"scope": "accept-ingest-batch", "version": "1"},
-            {"scope": "manage-sender-installation", "version": "1"},
-            {"scope": "operational-store", "version": "2"},
-        ])
+        pairs = [(dependency["scope"], dependency["version"]) for dependency in CONTRACT["dependencies"]]
+        self.assertEqual(len(pairs), len(set(pairs)))
+        self.assertEqual(set(pairs), {("ingest-protocol", "1"), ("accept-ingest-batch", "1"),
+                                      ("manage-sender-installation", "1"), ("operational-store", "2")})
         for owner in ("ingest-protocol", "operational-store", "manage-sender-installation", "accept-ingest-batch", "ingress shell"):
             self.assertTrue(any(owner in entry for entry in CONTRACT["authority"]["does_not_own"]), owner)
         oracle = CONTRACT["acceptance_oracle"]
@@ -267,18 +265,20 @@ class R2CallerErrors(Case):
 class R3IdentityAndRetry(Case):
     def test_identical_retry_returns_the_archived_receipt(self) -> None:
         self.activate()
-        data = acknowledgement(1, generation=2)
+        data = acknowledgement(1, generation=1)
         first = self.accept(data, minute=1)
         self.assertReceipt(first, data)
         before = contents(self.path)
         self.assertEqual(self.accept(data, minute=7), first)
-        # Still answered after the generation stops, the installation retires, and the reserve runs out.
-        self.store.stop_honoring_generation(1, at(8))
-        self.store.begin_draining(A, at(9))
-        self.store.retire_installation(A, "destructive", at(10))
+        self.assertEqual(contents(self.path), before)
+        # Still answered after its own generation stops, the installation retires, and the reserve runs out.
+        self.assertReceipt(self.accept(acknowledgement(2, generation=2), minute=8), acknowledgement(2, generation=2))
+        self.store.stop_honoring_generation(1, at(9))
+        self.store.begin_draining(A, at(10))
+        self.store.retire_installation(A, "destructive", at(11))
         self.free.value = RESERVE - 1
         before = contents(self.path)
-        self.assertEqual(self.accept(data, minute=11), first)
+        self.assertEqual(self.accept(data, minute=12), first)
         self.assertEqual(contents(self.path), before)
 
     def test_same_sequence_different_bytes_is_blocked(self) -> None:
@@ -348,6 +348,9 @@ class R6GenerationAndVersion(Case):
         self.assertReceipt(self.accept(acknowledgement(1, generation=2), minute=2), acknowledgement(1, generation=2))
         self.store.stop_honoring_generation(1, at(3))
         self.deliverBlocked(acknowledgement(2, generation=1), "unsupported-wire-protocol", minute=4)
+        # A valid advertisement may list only a later Wire Protocol Version.
+        self.store.honor_generation(3, encode_message(advertisement(3, wire_versions=[2])), at(5))
+        self.deliverBlocked(acknowledgement(3, generation=3), "unsupported-wire-protocol", minute=6)
 
 
 # R7 — Archival and the acknowledged generation
@@ -417,6 +420,13 @@ class R8CapacityAndContention(Case):
             self.assertRetryable(accept_capability_acknowledgement(BusyAt(self.store, operation), data, at(2)),
                                  "temporarily-unavailable", "store-busy")
         self.assertEqual(contents(self.path), before)
+        # The generation is checked before archival: a busy archive never hides a block.
+        unknown = acknowledgement(1, generation=3)
+        response = accept_capability_acknowledgement(BusyAt(self.store, "archive_capability_acknowledgement"), unknown, at(3))
+        self.assertEqual((response.outcome, response.failure), ("block", "unsupported-wire-protocol"))
+        self.assertEqual([(r.message_sha256, r.failure, r.last_seen_at) for r in self.block_index().values()],
+                         [(message_sha256(unknown), "unsupported-wire-protocol", at(3))])
+        self.assertEqual(without_blocks(contents(self.path)), without_blocks(before))
         self.assertReceipt(self.accept(acknowledgement(1)), acknowledgement(1))
 
 
@@ -479,6 +489,7 @@ class R9Conformance(Case):
             message = ingest_protocol.decode_message(data)
             expected = evaluate_delivery(state, data)
             records_before = self.records(store)
+            database_before = contents(directory / "portal.sqlite3")
             actual = accept_capability_acknowledgement(store, data, at(step))
             self.assertEqual(
                 (actual.outcome, actual.body, actual.failure, actual.gap_after),
@@ -499,6 +510,11 @@ class R9Conformance(Case):
                 records = {k: v for k, v in records.items() if k != key}
                 records_before = {k: v for k, v in records_before.items() if k != key}
             self.assertEqual(records, records_before, (seed, step, action))
+            database_after = contents(directory / "portal.sqlite3")
+            if expected.outcome == "block":
+                self.assertEqual(without_blocks(database_after), without_blocks(database_before), (seed, step, action))
+            elif expected.outcome == "receipt" and message["sequence"] in accepted:
+                self.assertEqual(database_after, database_before, (seed, step, action))
             if expected.outcome == "receipt":
                 self.events["receipt"] += 1
                 if expected.gap_after is not None:

@@ -77,7 +77,7 @@ Tests: `test_older_unseen_sequence_is_blocked`, `test_gap_is_accepted_and_report
 
 ### R6 — Generation and version
 
-The acknowledgement's staged generation must be honored, and its advertisement must list the message's Wire Protocol Version. Otherwise it is blocked as `unsupported-wire-protocol`.
+The acknowledgement's staged generation must be honored, and its advertisement must list the message's Wire Protocol Version. A valid advertisement may list only a later version. Otherwise the acknowledgement is blocked as `unsupported-wire-protocol`. The generation is checked before archival, so a busy archive never hides this block.
 
 Tests: `test_unhonored_generation_is_unsupported`.
 
@@ -102,7 +102,7 @@ Tests: `test_exhausted_reserve_is_retryable_and_blocks_still_win`, `test_busy_st
 
 ### R9 — Conformance with the protocol's evaluation
 
-For an active installation, every answer equals `ingest-protocol@1`'s `evaluate_delivery` over the same history: the same outcome, exact body bytes, failure, and gap. Seeded synthetic histories interleave acknowledgements with archived Ingest Batches, and include retries, gaps, conflicts, and unknown generations.
+For an active installation with storage available, every answer equals `ingest-protocol@1`'s `evaluate_delivery` over the same history: the same outcome, exact body bytes, failure, and gap. The protocol does not model the storage reserve or a busy store, so R8's storage-availability answers are the only exceptions. Each block and each identical retry is checked against the whole database: a block changes only its own record, and a retry changes nothing. Seeded synthetic histories interleave acknowledgements with archived Ingest Batches, and include retries, gaps, conflicts, and unknown generations.
 
 Tests: `test_answers_match_the_protocol_evaluation`.
 
@@ -113,7 +113,7 @@ Tests: `test_answers_match_the_protocol_evaluation`.
 3. **Only valid acknowledgements reach this unit.** The ingress shell decodes the kind and routes undecodable and non-Outbox bytes to `accept-ingest-batch` (`accept-ingest-batch@1` Decision 5). Anything else reaching this unit is a caller error.
 4. **One response type.** The unit returns `accept-ingest-batch@1`'s `DeliveryResponse`, so the ingress shell handles every `accept-*` answer alike. That makes `accept-ingest-batch@1` a dependency. The alternative is a second identical type.
 5. **Acceptance stops nothing.** Archiving advances the store's latest acknowledged generation. Stopping a superseded generation stays an Operator-driven `manage-sender-installation@1` intent, under its own rules for delivering and pending installations. The alternative is to stop generations automatically on acceptance, which would move that unit's authority here.
-6. **The protocol's answer, from durable facts.** As in `accept-ingest-batch@1` Decision 2, answers for a delivering installation equal `evaluate_delivery`'s (R9).
+6. **The protocol's answer, from durable facts.** As in `accept-ingest-batch@1` Decision 2, answers for a delivering installation with storage available equal `evaluate_delivery`'s (R9).
 
 ## Ground rules
 
@@ -136,9 +136,10 @@ The test asserts this coverage.
 
 Against the stub, every behaviour test fails: 14 tests and R9's 8 seeded histories. The two contract tests pass, and the runner exits 1.
 
-A throwaway reference, kept out of the repository, passes all 17 tests. It kills 18 of 19 mutants:
+A throwaway reference, kept out of the repository, passes all 17 tests. It kills all 19 mutants:
 - pending, ended, and unknown installations mishandled;
 - the order check removed;
+- the generation pre-check removed;
 - a gap reported off by one;
 - a block unrecorded, recorded with shifted times, recorded twice on repeat, or sent without its identity;
 - a busy store swallowed or answered as a block;
@@ -148,9 +149,19 @@ A throwaway reference, kept out of the repository, passes all 17 tests. It kills
 - the staged generation ignored;
 - a shifted receipt time.
 
-The surviving mutant removes the generation pre-check, and it is equivalent. Nothing is checked after generation, and the store's own `generation-unknown` refusal maps to the same `unsupported-wire-protocol` block and record (Decision 6). The wire-version half of the check cannot be reached, because `ingest-protocol@1` decodes only Wire Protocol Version 1.
+The coverage counts above are what the seeded histories produce. The test itself requires positive coverage of each category, not those totals.
 
-GPT 6.1 Sol's read-only implementability review runs before Gate B. The binding is:
+GPT 6.1 Sol's read-only implementability review found one blocker: the generation pre-check had been wrongly judged an equivalent mutant. Removing it changes two answers:
+- with a busy archive, a block becomes a retryable answer;
+- an advertisement may list only Wire Protocol Version 2.
+
+Both cases are now tested in R6 and R8. Its two P2 findings are also resolved:
+- R3's retry now outlives the stopping of its own generation;
+- R9 is qualified by R8's storage availability.
+
+Its notes are resolved: R9 now compares the whole database for blocks and retries, and R1 compares dependencies as a set.
+
+The binding is:
 - **spec files:** the contract and this pack;
 - **test files:** the suite and the runner.
 
