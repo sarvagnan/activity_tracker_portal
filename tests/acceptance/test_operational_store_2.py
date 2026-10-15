@@ -173,7 +173,7 @@ class R13GovernedScopeContractVersion2(unittest.TestCase):
         self.assertEqual(CONTRACT_2["kind"], CONTRACT_1["kind"])
         for key in ("inputs", "named_failures", "observable_effects", "dependencies"):
             self.assertEqual(CONTRACT_2[key], CONTRACT_1[key], key)
-        self.assertEqual([output["name"] for output in CONTRACT_2["outputs"]], [output["name"] for output in CONTRACT_1["outputs"]])
+        self.assertEqual({output["name"] for output in CONTRACT_2["outputs"]}, {output["name"] for output in CONTRACT_1["outputs"]})
         by_outcome: dict[str, set[str]] = {}
         for failure in CONTRACT_2["named_failures"]:
             by_outcome.setdefault(failure["outcome"], set()).add(failure["name"])
@@ -182,9 +182,9 @@ class R13GovernedScopeContractVersion2(unittest.TestCase):
             "retryable": set(store_module.RETRYABLE_FAILURES),
             "invariant-refusal": set(store_module.INVARIANT_FAILURES),
         })
-        owns_1 = CONTRACT_1["authority"]["owns"]
-        self.assertEqual(CONTRACT_2["authority"]["owns"][: len(owns_1)], owns_1)
-        self.assertTrue(any("delivery cycle" in entry for entry in CONTRACT_2["authority"]["owns"][len(owns_1):]))
+        owns_1, owns_2 = set(CONTRACT_1["authority"]["owns"]), set(CONTRACT_2["authority"]["owns"])
+        self.assertLessEqual(owns_1, owns_2)
+        self.assertTrue(any("delivery cycle" in entry for entry in owns_2 - owns_1))
         self.assertIn("delivery cycle", CONTRACT_2["purpose"])
         view = next(output for output in CONTRACT_2["outputs"] if output["name"] == "coherent_view")
         self.assertIn("delivery cycle", view["description"])
@@ -247,6 +247,14 @@ class R14LastFragmentAndCounts(StoreCase):
         assert cycle is not None
         self.assertEqual((cycle.fragment_count, cycle.record_count), (3, 6))
         self.assertEqual((cycle.first_sequence, cycle.last_sequence, cycle.cycle_kind), (1, 3, "change-cycle"))
+        # A fragment with no items still counts as a fragment, and as the last one.
+        store.archive_ingest_batch(header(INSTALLATION, 4, "ingest-batch"), fragment(CYCLE, 4, 1, chain("d"), (), cycle_kind="change-cycle"))
+        cycle = self.cycle(store, INSTALLATION, CYCLE)
+        assert cycle is not None
+        self.assertEqual(
+            (cycle.fragment_count, cycle.record_count, cycle.last_sequence, cycle.last_source_page_index, cycle.last_previous_chain),
+            (4, 6, 4, 4, chain("d")),
+        )
 
     def test_interleaved_messages_do_not_change_a_cycle(self) -> None:
         store = self.ready()
@@ -312,7 +320,8 @@ class R15AbsenceCompletionAndScope(StoreCase):
         before = self.cycle(store, INSTALLATION, CYCLE)
         assert before is not None
         self.assertIsNone(before.completion_sequence)
-        store.archive_completion(header(INSTALLATION, 4, "snapshot-completion"), completion(CYCLE))
+        # The completion claims another record type; the last fragment's stays authoritative.
+        store.archive_completion(header(INSTALLATION, 4, "snapshot-completion"), completion(CYCLE, "weight"))
         after = self.cycle(store, INSTALLATION, CYCLE)
         assert after is not None
         self.assertEqual(after.completion_sequence, 4)
@@ -390,22 +399,58 @@ class R17NoSchemaChange(StoreCase):
         self.assertEqual(digest(store_module.MIGRATIONS[0][1].encode("utf-8")), BASELINE_CHECKSUM)
 
     def test_version_1_database_answers_cycle_reads(self) -> None:
-        store = self.ready()
-        store.archive_ingest_batch(header(INSTALLATION, 1, "ingest-batch"), fragment(CYCLE, 1, 1, chain("a"), projections(3)))
-        store.close()
+        # The fixture is a dump of a database the published operational-store@1 module produced.
         connection = sqlite3.connect(self.path)
         try:
-            recorded = connection.execute("SELECT version, checksum FROM store_migrations ORDER BY version").fetchall()
-            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            connection.executescript((ROOT / "tests/acceptance/fixtures/operational-store-1-archive.sql").read_text(encoding="utf-8"))
         finally:
             connection.close()
-        self.assertEqual((recorded, user_version), ([(1, BASELINE_CHECKSUM)], 1))
-        reopened = self.open()
-        cycle = self.cycle(reopened, INSTALLATION, CYCLE)
-        assert cycle is not None
-        self.assertEqual((cycle.fragment_count, cycle.record_count, cycle.last_previous_chain), (1, 3, chain("a")))
-        self.assertEqual(reopened.settings().schema_migrations, ((1, BASELINE_CHECKSUM),))
+        before = self.schema()
+        self.assertEqual((before[1], before[2]), (1, [(1, BASELINE_CHECKSUM)]))
+        store = self.open()
+        self.assertEqual(self.cycle(store, INSTALLATION, CYCLE), DeliveryCycle(
+            installation_id=INSTALLATION,
+            cycle_id=CYCLE,
+            record_type="steps",
+            cycle_kind="initial-snapshot",
+            first_sequence=1,
+            last_sequence=4,
+            last_source_page_index=2,
+            last_fragment_index=1,
+            last_previous_chain=chain("c"),
+            last_message_sha256=digest(envelope(INSTALLATION, 4, "ingest-batch")),
+            fragment_count=3,
+            record_count=3,
+            completion_sequence=None,
+        ))
+        self.assertEqual(self.cycle(store, INSTALLATION, OTHER_CYCLE), DeliveryCycle(
+            installation_id=INSTALLATION,
+            cycle_id=OTHER_CYCLE,
+            record_type="weight",
+            cycle_kind="change-cycle",
+            first_sequence=2,
+            last_sequence=2,
+            last_source_page_index=1,
+            last_fragment_index=1,
+            last_previous_chain=chain("x"),
+            last_message_sha256=digest(envelope(INSTALLATION, 2, "ingest-batch")),
+            fragment_count=1,
+            record_count=1,
+            completion_sequence=5,
+        ))
+        store.close()
+        # Opening and reading under @2 changed no schema object, schema version, or migration record.
+        self.assertEqual(self.schema(), before)
 
+    def schema(self) -> tuple[list[tuple[object, ...]], int, list[tuple[object, ...]]]:
+        connection = sqlite3.connect(self.path)
+        try:
+            objects = connection.execute("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            migrations = connection.execute("SELECT version, checksum FROM store_migrations ORDER BY version").fetchall()
+        finally:
+            connection.close()
+        return objects, user_version, migrations
 
 if __name__ == "__main__":
     unittest.main()

@@ -57,7 +57,7 @@ Tests: `test_contract_2_keeps_version_1_and_adds_cycle_reads`, `test_scope_map_r
 For an installation and cycle identity with archived fragments, `delivery_cycle` reports:
 - from the fragment with the highest sequence: its record type, cycle kind, source-page index, fragment index, previous chain, and message SHA-256;
 - the first fragment's sequence and the last fragment's sequence;
-- the number of fragments, and the number of their items, counting projections and retractions alike.
+- the number of fragments, and the number of their items, counting projections and retractions alike. A fragment with no items still counts as a fragment.
 
 Fragments of other cycles and other installations, and other message kinds interleaved between the cycle's fragments, never change the result.
 
@@ -71,7 +71,7 @@ Tests:
 The read behaves as follows:
 - **No evidence:** `None` when no archived fragment or completion carries the identity, for a known or unknown installation.
 - **Completion only:** the record type comes from the completion, the kind is `None`, the counts are zero, and `completion_sequence` is set.
-- **Fragments and completion:** both are reported.
+- **Fragments and completion:** both are reported. The record type and kind still come from the last fragment, even when the completion names another record type.
 - **Scope:** a cycle identity belongs to one installation. The same identity under another installation is a separate cycle.
 
 Tests:
@@ -91,7 +91,9 @@ Tests:
 
 ### R17 — No schema change
 
-`MIGRATIONS` is exactly `@1`'s: one baseline migration with an unchanged checksum. A database created under `@1` therefore opens under `@2`, and its existing archive answers cycle reads with no migration.
+`MIGRATIONS` is exactly `@1`'s: one baseline migration with an unchanged checksum. A database created under `@1` therefore opens under `@2`, and its existing archive answers cycle reads with no migration. Opening and reading it changes no schema object, schema version, or migration record.
+
+The test proves this with `tests/acceptance/fixtures/operational-store-1-archive.sql`. That file is a dump of a synthetic database produced by the published `@1` module at `bee3744`, with no `delivery_cycle`.
 
 Tests: `test_version_2_keeps_the_baseline_schema`, `test_version_1_database_answers_cycle_reads`.
 
@@ -100,9 +102,14 @@ Tests: `test_version_2_keeps_the_baseline_schema`, `test_version_1_database_answ
 1. **Reads, not replay.** On 2026-10-15 the Operator replaced `@1` Decision 2: the Portal reads cycle state from the store rather than replaying every accepted envelope. `accepted_envelopes` stays available. The alternative was to keep replay, which grows with history and breaks once a deletion erases envelopes.
 2. **No schema change.** The read derives everything from the rows `@1` already keeps, through their primary keys, so existing databases open unchanged. A new database needs no migration step, which only arrives with `migrate-operational-store` in Phase 8 (ADR 0032).
 
-   The cost is speed. Finding a cycle's last fragment scans that installation's fragments from the newest, which is quick for an active cycle. Proving a cycle absent scans all of them, on the order of milliseconds at tens of thousands of fragments.
+   The cost is speed. The primary keys index installation and sequence, not cycle identity:
+   - Finding an active cycle's last fragment walks that installation's fragments back from the newest, which is quick.
+   - Proving a cycle absent, and finding its first fragment and counts, scan all of that installation's fragments. That is about 7 ms at 30,000 fragments, by Sol's measurement in review.
+   - The item count must be driven by fragments: each matching fragment's items counted through the item key. That is about 3 ms. Joining all of the installation's items instead took about 134 ms.
 
-   The alternative is an index added through a second migration. Every existing `@1` database would then refuse to open, with `store-migration-required`, until Phase 8, or would have to be recreated. A later version can add the index once migration exists.
+   Because `accept-ingest-batch` reads once per fragment, the work over one snapshot cycle grows with the square of the installation's fragments. That is acceptable for a once-per-installation Initial Snapshot. A later version can add an index once migration exists.
+
+   The alternative is an index added through a second migration. Every existing `@1` database would then refuse to open, with `store-migration-required`, until Phase 8, or would have to be recreated.
 3. **The store stays protocol-agnostic.** It reports the last fragment's previous chain and message digest, and callers compute the next chain position with `ingest-protocol`. This keeps `@1` Decision 1: no dependency on `ingest-protocol`. The alternative, computing the chain in the store, would make the store depend on the protocol.
 4. **Facts, not verdicts.** The read reports what is archived and never refuses. Absence is `None`, even for an unknown installation, because callers check the installation separately. Continuity and completion validity stay with the `accept-*` units.
 5. **The `@1` suite is re-bound.** The `@2` runner calls `@1`'s bound runner unchanged, then runs the new suite. Its binding includes `@1`'s bound files.
@@ -114,27 +121,36 @@ These are `@1`'s ground rules, and the trusted boundary is unchanged.
 
 The new suite archives synthetic Ingest Batches, completions, checkpoints, and capability acknowledgements through the store's own operations. Chain and digest values are synthetic 64-character hex strings. The store never checks their meaning, and the envelope bytes hash to the header's digest as `@1` requires.
 
-Not mechanically provable here; the approver confirms this in implementation review: the implementation changes nothing in `@1`'s behaviour or schema beyond adding the read.
+Not mechanically provable here; the approver confirms these in implementation review:
+- the implementation changes nothing in `@1`'s behaviour or schema beyond adding the read;
+- it counts items by fragment, not by joining all of the installation's items (Decision 2);
+- it keeps all aggregation inside `delivery_cycle`, out of opening, view creation, and writes.
 
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
 - the new suite `tests/acceptance/test_operational_store_2.py`, 14 tests;
+- the `@1` fixture, `tests/acceptance/fixtures/operational-store-1-archive.sql` (R17);
 - the runner `tests/acceptance/run_operational_store_2.sh`, which runs `@1`'s bound runner unchanged and then the new suite;
 - the Interface stub, appended to the published module: `DeliveryCycle`, and a `delivery_cycle` method that raises `NotImplementedError`.
 
-R14's first test also archives a later fragment of the same cycle with a different record type, kind, and indexes. The read must report that fragment, because the store reports facts, not verdicts (Decision 4).
+The tests pin these refinements:
+- A later fragment that disagrees with earlier ones is still the last, because the store reports facts, not verdicts (Decision 4).
+- An empty fragment counts.
+- A completion's record type never overrides the fragments'.
 
 Against the stub:
-- the 11 R14–R16 tests, and `test_version_1_database_answers_cycle_reads`, fail;
+- the 10 R14–R16 tests, and `test_version_1_database_answers_cycle_reads`, fail;
 - the two contract tests and `test_version_2_keeps_the_baseline_schema` pass, because they check invariants the stub already keeps;
 - `@1`'s runner passes its 53 tests, because `@1`'s behaviour is intact.
 
-The runner therefore exits 1. A throwaway reference, kept out of the repository, passes all 14 new tests and `@1`'s 53. It kills all 13 mutants:
+The runner therefore exits 1. A throwaway reference, kept out of the repository, passes all 14 new tests and `@1`'s 53. It kills all 15 mutants:
 - the first fragment taken for the last;
 - the installation ignored in each of the three lookups;
-- fragments counted as records;
+- items counted per fragment as one;
 - retractions not counted;
+- the completion's record type preferred;
+- empty fragments dropped;
 - a completion without fragments reported as absent;
 - the completion dropped;
 - the first sequence taken from the last fragment;
@@ -143,6 +159,16 @@ The runner therefore exits 1. A throwaway reference, kept out of the repository,
 - an unknown installation refused;
 - the message digest reported as the previous chain.
 
-GPT 6.1 Sol's read-only implementability review runs before Gate B. The binding is:
+GPT 6.1 Sol's read-only implementability review found nothing blocking. Its four P2 findings are resolved above:
+- the `@1` fixture;
+- the fuller cost in Decision 2, with fragment-driven counting;
+- the completion-type test;
+- the empty-fragment test.
+
+Its two notes are also resolved: the contract test compares unordered collections, and the stub-failure count is corrected.
+
+The binding is:
 - **spec files:** this contract and pack, and `@1`'s contract and pack, which R1–R12 carry over and R13 compares against;
-- **test files:** the new suite and runner, and every file `operational-store-pack/1` binds: `test_operational_store_1.py` and `run_operational_store_1.sh`.
+- **test files:**
+  - the new suite, the `@1` fixture, and the runner;
+  - every file `operational-store-pack/1` binds: `test_operational_store_1.py` and `run_operational_store_1.sh`.
