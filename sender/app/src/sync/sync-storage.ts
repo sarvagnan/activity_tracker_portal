@@ -1,22 +1,8 @@
 import type { SenderDatabase } from "../storage/database.ts";
 
-type Lane = <T>(operation: () => Promise<T>) => Promise<T>;
-const lanes = new WeakMap<SenderDatabase, Lane>();
+import { storageLane } from "../storage/storage-lane.ts";
 
-/** Shared by this coordinator's public reads, retries, and concurrent turns. */
-export function storageLane(database: SenderDatabase): Lane {
-  let lane = lanes.get(database);
-  if (!lane) {
-    let tail: Promise<unknown> = Promise.resolve();
-    lane = <T>(operation: () => Promise<T>): Promise<T> => {
-      const result = tail.then(operation);
-      tail = result.then(() => undefined, () => undefined);
-      return result;
-    };
-    lanes.set(database, lane);
-  }
-  return lane;
-}
+export { storageLane } from "../storage/storage-lane.ts";
 
 /** Keep database TypeErrors distinct from caller validation errors. */
 export function storageDatabase(database: SenderDatabase): SenderDatabase {

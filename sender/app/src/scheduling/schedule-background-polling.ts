@@ -2,7 +2,7 @@ import type { BackgroundScheduling } from "../outbox/stage-sync-checkpoint.ts";
 import type { SenderDatabase } from "../storage/database.ts";
 import type { Migration } from "../storage/migrations.ts";
 import type { SenderSync } from "../sync/coordinate-sender-sync.ts";
-import { storageLane } from "../sync/sync-storage.ts";
+import { storageLane } from "../storage/storage-lane.ts";
 
 /** The background task's name in Expo TaskManager (schedule-background-polling@1). */
 export const POLLING_TASK_NAME = "activity-tracker-portal.polling";
