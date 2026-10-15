@@ -212,6 +212,25 @@ class SequenceGap:
 
 
 @dataclass(frozen=True)
+class DeliveryCycle:
+    """One installation's delivery cycle, derived from its archived fragments and completion."""
+
+    installation_id: str
+    cycle_id: str
+    record_type: str
+    cycle_kind: Literal["initial-snapshot", "reconciliation-snapshot", "change-cycle"] | None
+    first_sequence: int | None
+    last_sequence: int | None
+    last_source_page_index: int
+    last_fragment_index: int
+    last_previous_chain: str | None
+    last_message_sha256: str | None
+    fragment_count: int
+    record_count: int
+    completion_sequence: int | None
+
+
+@dataclass(frozen=True)
 class DeliveryBlockRecord:
     installation_id: str | None
     sequence: int | None
@@ -597,6 +616,68 @@ class StoreView:
             record_types=outcomes,
             outbox_messages_before_checkpoint=row["outbox_messages_before_checkpoint"],
             outbox_bytes_before_checkpoint=row["outbox_bytes_before_checkpoint"],
+        )
+
+    def delivery_cycle(self, installation_id: str, cycle_id: str) -> DeliveryCycle | None:
+        """Report archived cycle facts from this view's snapshot, without replay."""
+        identity = (installation_id, cycle_id)
+        last = _execute(
+            self._connection,
+            "SELECT b.sequence, b.record_type, b.cycle_kind, b.source_page_index, b.fragment_index, "
+            "b.previous_chain, (SELECT m.message_sha256 FROM archived_messages m "
+            "WHERE m.installation_id = b.installation_id AND m.sequence = b.sequence) AS message_sha256 "
+            "FROM ingest_batches b WHERE b.installation_id = ? AND b.cycle_id = ? "
+            "ORDER BY b.sequence DESC LIMIT 1",
+            identity,
+        ).fetchone()
+        completion = _execute(
+            self._connection,
+            "SELECT sequence, record_type FROM completions WHERE installation_id = ? AND cycle_id = ?",
+            identity,
+        ).fetchone()
+        if last is None:
+            if completion is None:
+                return None
+            return DeliveryCycle(
+                installation_id=installation_id,
+                cycle_id=cycle_id,
+                record_type=completion["record_type"],
+                cycle_kind=None,
+                first_sequence=None,
+                last_sequence=None,
+                last_source_page_index=0,
+                last_fragment_index=0,
+                last_previous_chain=None,
+                last_message_sha256=None,
+                fragment_count=0,
+                record_count=0,
+                completion_sequence=completion["sequence"],
+            )
+
+        # Count through each matching fragment's item key, including empty fragments.
+        # Do not join all of the installation's items or read their health data.
+        counts = _execute(
+            self._connection,
+            "SELECT min(b.sequence) AS first_sequence, count(*) AS fragment_count, "
+            "sum((SELECT count(*) FROM batch_items i "
+            "WHERE i.installation_id = b.installation_id AND i.sequence = b.sequence)) AS record_count "
+            "FROM ingest_batches b WHERE b.installation_id = ? AND b.cycle_id = ?",
+            identity,
+        ).fetchone()
+        return DeliveryCycle(
+            installation_id=installation_id,
+            cycle_id=cycle_id,
+            record_type=last["record_type"],
+            cycle_kind=last["cycle_kind"],
+            first_sequence=counts["first_sequence"],
+            last_sequence=last["sequence"],
+            last_source_page_index=last["source_page_index"],
+            last_fragment_index=last["fragment_index"],
+            last_previous_chain=last["previous_chain"],
+            last_message_sha256=last["message_sha256"],
+            fragment_count=counts["fragment_count"],
+            record_count=counts["record_count"],
+            completion_sequence=None if completion is None else completion["sequence"],
         )
 
     def storage_reserve(self) -> ReserveStatus:
