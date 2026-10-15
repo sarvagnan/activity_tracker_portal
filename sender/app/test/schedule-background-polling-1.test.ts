@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { decodeMessage } from "@activity-tracker-portal/ingest-protocol";
+import ts from "typescript";
 import { outboxAad, outboxMessages, outboxMigration } from "../src/outbox/stage-outbox-batch.ts";
 import type { StagingContext } from "../src/outbox/stage-outbox-batch.ts";
 import { checkpointMigration } from "../src/outbox/stage-sync-checkpoint.ts";
@@ -104,7 +105,10 @@ class FakePlatform implements SchedulingPlatform {
   }
 }
 
-/** Records every notification attempt; the next `failures` attempts throw, and an open gate holds delivery. */
+/**
+ * Records every notification attempt; the next `failures` attempts throw, and an unopened gate holds delivery.
+ * `onNotify` runs synchronously as each attempt starts, and `arrival()` resolves at the next attempt.
+ */
 class FakeNotifier implements SchedulingNotifier {
   readonly calls: unknown[][] = [];
   readonly attempts: string[] = [];
@@ -112,11 +116,19 @@ class FakeNotifier implements SchedulingNotifier {
   failures = 0;
   synchronously = false;
   gate: Promise<void> | null = null;
+  onNotify: (() => void) | null = null;
+  private arrivals: (() => void)[] = [];
+
+  arrival(): Promise<void> {
+    return new Promise<void>((resolve) => { this.arrivals.push(resolve); });
+  }
 
   notify(...args: [SchedulingCondition]): Promise<void> {
     this.calls.push(args);
     const [condition] = args;
     this.attempts.push(condition);
+    this.onNotify?.();
+    for (const arrive of this.arrivals.splice(0)) arrive();
     if (this.failures > 0) {
       this.failures--;
       const error = new Error(`${SENTINEL} synthetic notification failure`);
@@ -192,9 +204,9 @@ async function contents(database: SenderDatabase) {
 
 const MUTATION = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/i;
 
-/** Every write fails; reads succeed. */
-function failingWrites(database: SenderDatabase): SenderDatabase {
-  const guard = (sql: string) => { if (MUTATION.test(sql)) throw new Error(`${SENTINEL} synthetic write failure`); };
+/** Every write fails while `failing()` holds; reads succeed. */
+function failingWrites(database: SenderDatabase, failing: () => boolean = () => true): SenderDatabase {
+  const guard = (sql: string) => { if (failing() && MUTATION.test(sql)) throw new Error(`${SENTINEL} synthetic write failure`); };
   return {
     async execute(sql, parameters) { guard(sql); return database.execute(sql, parameters); },
     query: (sql, parameters) => database.query(sql, parameters),
@@ -544,11 +556,38 @@ test("concurrent_observations_notify_once", async (t) => {
   f.platform.restricted = true;
   let open!: () => void;
   f.notifier.gate = new Promise<void>((resolve) => { open = resolve; });
+  const entered = f.notifier.arrival();
   const pending = Promise.all([f.polling.observe(), f.polling.ensureRegistered(), f.polling.observe()]);
-  await settle();
-  open();
+  try {
+    // While the first notification is pending, the other observations get time to run; none may notify.
+    await entered;
+    await settle();
+    assert.deepEqual(f.notifier.attempts, ["restricted"]);
+  } finally { open(); }
   assert.deepEqual(await pending, ["restricted", observed("restricted", "restricted"), "restricted"]);
   assert.deepEqual(f.notifier.attempts, ["restricted"]);
+});
+
+test("a_lost_acknowledgement_notifies_again", async (t) => {
+  const f = await fixture(t);
+  f.platform.restricted = true;
+  // Storage fails from the moment the notification is delivered, so only its acknowledgement is lost.
+  let failing = false;
+  const polling = f.make({ database: failingWrites(f.database, () => failing) });
+  f.notifier.onNotify = () => { failing = true; };
+  assert.deepEqual(await polling.ensureRegistered(), { outcome: "storage-failed" });
+  assert.deepEqual(f.notifier.delivered, ["restricted"]);
+  f.notifier.onNotify = null;
+  failing = false;
+  // The observation and its condition stayed durable; the notification is repeated, then acknowledged.
+  assert.deepEqual(await state(f), [row("restricted", START, "restricted", null)]);
+  assert.equal(await polling.condition(), "restricted");
+  f.wall = START + HOUR;
+  assert.equal(await polling.observe(), "restricted");
+  assert.deepEqual(f.notifier.delivered, ["restricted", "restricted"]);
+  assert.deepEqual(await state(f), [row("restricted", START + HOUR, "restricted", "restricted")]);
+  assert.equal(await polling.observe(), "restricted");
+  assert.deepEqual(f.notifier.attempts, ["restricted", "restricted"]);
 });
 
 // R7 — Background runs
@@ -645,13 +684,17 @@ test("observations_wait_for_the_storage_lane", async (t) => {
   const lane = storageLane(database);
   // While coordinate-sender-sync@1 holds the shared lane, nothing touches storage.
   let release!: () => void;
-  const held = lane(() => new Promise<void>((resolve) => { release = resolve; }));
+  let acquired!: () => void;
+  const holding = new Promise<void>((resolve) => { acquired = resolve; });
+  const held = lane(() => new Promise<void>((resolve) => { release = resolve; acquired(); }));
+  await holding;
   f.platform.restricted = true;
   const ensured = polling.ensureRegistered();
   const read = polling.condition();
-  await settle();
-  assert.deepEqual(operations, []);
-  release();
+  try {
+    await settle();
+    assert.deepEqual(operations, []);
+  } finally { release(); }
   await held;
   assert.deepEqual(await ensured, observed("restricted", "restricted"));
   assert.ok([null, "restricted"].includes(await read as string | null));
@@ -662,11 +705,13 @@ test("observations_wait_for_the_storage_lane", async (t) => {
   let open!: () => void;
   f.notifier.gate = new Promise<void>((resolve) => { open = resolve; });
   f.platform.restricted = true;
+  const entered = f.notifier.arrival();
   const restricted = polling.observe();
-  await settle();
-  assert.deepEqual(f.notifier.attempts, ["restricted", "restricted"]);
-  assert.equal(await Promise.race([lane(async () => "free"), settle(1_000).then(() => "held")]), "free");
-  open();
+  try {
+    await entered;
+    assert.deepEqual(f.notifier.attempts, ["restricted", "restricted"]);
+    assert.equal(await Promise.race([lane(async () => "free"), settle(1_000).then(() => "held")]), "free");
+  } finally { open(); }
   assert.equal(await restricted, "restricted");
 });
 
@@ -679,7 +724,7 @@ const DDL = `CREATE TABLE scheduling_state (
   action_condition TEXT CHECK (action_condition IN ('restricted', 'unregistered')),
   notified_condition TEXT CHECK (notified_condition IN ('restricted', 'unregistered')),
   CHECK (action_condition IS (CASE WHEN observed_status = 'available' THEN NULL ELSE observed_status END)),
-  CHECK (notified_condition IS NULL OR notified_condition = action_condition)) STRICT`;
+  CHECK (notified_condition IS NULL OR notified_condition IS action_condition)) STRICT`;
 /** SQL as its tokens, so whitespace between tokens never matters and literals keep their contents. */
 const normalize = (sql: DatabaseValue): DatabaseValue =>
   typeof sql === "string" ? (sql.match(/'(?:[^']|'')*'|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|\S/g) ?? []).join(" ") : sql;
@@ -716,6 +761,80 @@ test("migration_is_idempotent", async (t) => {
 
 // R11 — Boundary
 
+/** A file's code as the TypeScript parser sees it, so comments never count. */
+interface Code {
+  /** Static imports and re-exports with the value names they bring in, by original name, and dynamic imports or requires. */
+  readonly dependencies: { readonly specifier: string; readonly values: readonly string[]; readonly dynamic: boolean }[];
+  /** Every identifier, property names included. */
+  readonly identifiers: string[];
+  /** Identifiers that name a binding or global rather than a property. */
+  readonly references: string[];
+  /** The text of every string and template literal. */
+  readonly strings: string[];
+}
+
+function parse(file: string): Code {
+  const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const code: Code = { dependencies: [], identifiers: [], references: [], strings: [] };
+  const literal = (node: ts.Node | undefined) => node !== undefined && ts.isStringLiteralLike(node) ? node.text : "<computed>";
+  /** An expression without parentheses, type assertions, or non-null assertions around it. */
+  const bare = (node: ts.Expression): ts.Expression =>
+    ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) ||
+    ts.isNonNullExpression(node) || ts.isSatisfiesExpression(node) ? bare(node.expression) : node;
+  const isGlobalThis = (node: ts.Expression) => { const inner = bare(node); return ts.isIdentifier(inner) && inner.text === "globalThis"; };
+  const named = (elements: readonly (ts.ImportSpecifier | ts.ExportSpecifier)[]) =>
+    elements.filter((element) => !element.isTypeOnly).map((element) => (element.propertyName ?? element.name).text);
+  const property = (node: ts.Identifier): boolean => {
+    const parent = node.parent;
+    if (ts.isPropertyAccessExpression(parent) && parent.name === node) {
+      return !isGlobalThis(parent.expression);
+    }
+    if ((ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent) || ts.isPropertySignature(parent) || ts.isMethodDeclaration(parent) ||
+         ts.isMethodSignature(parent) || ts.isGetAccessor(parent) || ts.isSetAccessor(parent)) && parent.name === node) return true;
+    if (ts.isQualifiedName(parent) && parent.right === node) return true;
+    return (ts.isBindingElement(parent) || ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) && parent.propertyName === node;
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) {
+      const clause = node.importClause;
+      const values: string[] = [];
+      if (clause === undefined) values.push("<side effect>");
+      else if (!clause.isTypeOnly) {
+        if (clause.name) values.push("default");
+        if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) values.push("*");
+        if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) values.push(...named(clause.namedBindings.elements));
+      }
+      code.dependencies.push({ specifier: literal(node.moduleSpecifier), values, dynamic: false });
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
+      const values = node.isTypeOnly ? [] : node.exportClause && ts.isNamedExports(node.exportClause) ? named(node.exportClause.elements) : ["*"];
+      code.dependencies.push({ specifier: literal(node.moduleSpecifier), values, dynamic: false });
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      const reference = node.moduleReference;
+      code.dependencies.push({ specifier: ts.isExternalModuleReference(reference) ? literal(reference.expression) : "<alias>", values: ["="], dynamic: true });
+    } else if (ts.isCallExpression(node) &&
+               (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
+      code.dependencies.push({ specifier: literal(node.arguments[0]), values: ["*"], dynamic: true });
+    } else if (ts.isElementAccessExpression(node) && isGlobalThis(node.expression)) {
+      code.references.push("globalThis[]");
+    }
+    if (ts.isIdentifier(node)) {
+      code.identifiers.push(node.text);
+      if (!property(node)) code.references.push(node.text);
+    }
+    if (ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) code.strings.push(node.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return code;
+}
+
+/** Every file the unit owns: the module and any helper beside it. */
+function moduleFiles(): string[] {
+  const files = readdirSync(MODULE_DIRECTORY).filter((name) => name.endsWith(".ts")).map((name) => join(MODULE_DIRECTORY, name));
+  assert.ok(files.includes(MODULE));
+  return files;
+}
+
 test("no_battery_exemption_or_foreground_service", async (t) => {
   const f = await fixture(t);
   // Through every entry point and state, nothing outside the seams is called.
@@ -731,35 +850,34 @@ test("no_battery_exemption_or_foreground_service", async (t) => {
   await f.polling.runTask();
   await f.polling.condition();
   assert.deepEqual([...new Set(f.platform.calls)].sort(), ["isRegistered", "register", "restriction"]);
-  // Neither the module nor the app config asks for either.
-  const files = readdirSync(MODULE_DIRECTORY).filter((name) => name.endsWith(".ts")).map((name) => join(MODULE_DIRECTORY, name));
-  for (const file of [...files, APP_CONFIG]) {
-    assert.doesNotMatch(readFileSync(file, "utf8"), /IGNORE_?BATTERY_?OPTIMI[SZ]ATION|FOREGROUND_?SERVICE|startForeground/i, file);
+  // Neither the module's code nor the app config's names either permission or starts a foreground service; comments do not count.
+  const forbidden = /IGNORE_?BATTERY_?OPTIMI[SZ]ATION|FOREGROUND_?SERVICE|startForeground/i;
+  for (const file of [...moduleFiles(), APP_CONFIG]) {
+    const code = parse(file);
+    for (const name of [...code.identifiers, ...code.strings]) assert.doesNotMatch(name, forbidden, file);
   }
 });
 
 test("the_module_stays_inside_its_boundary", async (t) => {
-  // Every file the unit owns: the module and any helper beside it.
-  const files = readdirSync(MODULE_DIRECTORY).filter((name) => name.endsWith(".ts")).map((name) => join(MODULE_DIRECTORY, name));
-  assert.ok(files.includes(MODULE));
-  for (const file of files) {
-    const source = readFileSync(file, "utf8");
-    for (const table of OTHER_TABLES) assert.doesNotMatch(source, new RegExp(`\\b${table}\\b`), table);
-    // Import clauses never contain `=`, `;`, or parentheses, so declarations cannot match.
-    const statements = [...source.matchAll(/^\s*(?:import|export)\s+(type\s+)?([^;=()]*?)\s*from\s*["']([^"']+)["']/gm)];
-    for (const [, specifier] of source.matchAll(/^\s*import\s*["']([^"']+)["']/gm)) assert.match(specifier, /^\.{1,2}\//, specifier);
-    for (const [, typeOnly, clause, specifier] of statements) {
-      // Only relative modules: no Node built-in and no package.
-      assert.match(specifier, /^\.{1,2}\//, specifier);
-      const values = clause.replace(/[{}]/g, "").split(",").map((name) => name.trim()).filter((name) => name && !name.startsWith("type "));
-      if (typeOnly || values.length === 0) continue;
+  const NODE_GLOBALS = new Set(["process", "Buffer", "require", "global", "__dirname", "__filename", "globalThis[]"]);
+  const COORDINATOR = /^(?:createSenderSync|requestRetry|typeBlock|syncMigration|serializedDatabase|storageDatabase)$/;
+  for (const file of moduleFiles()) {
+    const code = parse(file);
+    for (const table of OTHER_TABLES) {
+      for (const text of code.strings) assert.doesNotMatch(text, new RegExp(`\\b${table}\\b`), `${file}: ${table}`);
+    }
+    for (const { specifier, values, dynamic } of code.dependencies) {
+      // Only static imports of relative modules: no Node built-in and no package.
+      assert.equal(dynamic, false, `${file}: ${specifier}`);
+      assert.match(specifier, /^\.{1,2}\//, file);
+      if (values.length === 0) continue;
       // Values come from beside the module, the storage seam, or the storage lane it shares with the coordinator.
       if (/^\.\/|^\.\.\/storage\//.test(specifier)) continue;
-      assert.equal(specifier, "../sync/sync-storage.ts", specifier);
-      assert.deepEqual(values, ["storageLane"]);
+      assert.equal(specifier, "../sync/sync-storage.ts", file);
+      assert.deepEqual(values, ["storageLane"], file);
     }
-    assert.doesNotMatch(source, /\bimport\s*\(|\brequire\s*\(|\bBuffer\s*[.(]|\bprocess\s*\.|\bglobalThis\b/);
-    assert.doesNotMatch(source, /\b(?:createSenderSync|requestRetry|typeBlock|syncMigration|serializedDatabase|storageDatabase)\b/);
+    assert.deepEqual(code.references.filter((name) => NODE_GLOBALS.has(name)), [], file);
+    assert.deepEqual([...code.identifiers, ...code.strings].filter((name) => COORDINATOR.test(name)), [], file);
   }
   // At run time, the coordinator is reached only through trigger.
   const f = await fixture(t);

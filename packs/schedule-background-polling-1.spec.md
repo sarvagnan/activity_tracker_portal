@@ -126,14 +126,14 @@ Tests: `the_checkpoint_reports_the_observation_at_run_open`.
 
 The status sets the persistent condition:
 - a `restricted` or `unregistered` observation sets the condition to that status;
-- an `available` observation clears it.
+- an `available` observation clears it, together with its notification state.
 
 The notifier is called once at each onset, which is a change from no condition, or from the other condition. A change of condition is an onset even when the previous onset's notification failed. The notification behaves as follows:
 - it is called with the condition alone, after the observation is recorded, and its success is then recorded;
 - one that throws, synchronously or not, is retried at the next observation until it succeeds;
-- if its success cannot be recorded, the next observation notifies again, so delivery is at least once.
+- if its success cannot be recorded, `ensureRegistered()` returns `storage-failed`, and the next observation notifies again, so delivery is at least once.
 
-The condition and its notification state survive a restart. Observations run one at a time in each instance, so concurrent observations notify an onset once.
+`observe()` and `ensureRegistered()` resolve only after any notification attempt, and the attempt to record its success, have settled. The condition and its notification state survive a restart. Observations run one at a time in each instance, so concurrent observations notify an onset once.
 
 Tests:
 - `an_action_required_condition_notifies_once`
@@ -142,6 +142,7 @@ Tests:
 - `a_failed_notification_is_retried`
 - `the_condition_survives_a_restart`
 - `concurrent_observations_notify_once`
+- `a_lost_acknowledgement_notifies_again`
 
 ### R7 — Background runs
 
@@ -167,8 +168,11 @@ Tests: `platform_errors_read_as_the_worst_status`.
 
 If recording an observation fails:
 - `observe()` still returns the observed status, because a checkpoint must report what was observed;
-- `ensureRegistered()` and `condition()` return `storage-failed`;
-- the notifier is not called, because the condition's onset cannot be recorded.
+- `ensureRegistered()` returns `storage-failed`;
+- the notifier is not called, because the condition's onset cannot be recorded;
+- the persistent condition keeps its last recorded value.
+
+`condition()` reads the persistent condition on each call, so it returns `storage-failed` when that read fails. After a failed recording whose read still succeeds, it returns the last recorded condition.
 
 A storage error of any type, including `TypeError`, is a storage failure, not a caller error.
 
@@ -188,25 +192,26 @@ CREATE TABLE scheduling_state (
   action_condition TEXT CHECK (action_condition IN ('restricted', 'unregistered')),
   notified_condition TEXT CHECK (notified_condition IN ('restricted', 'unregistered')),
   CHECK (action_condition IS (CASE WHEN observed_status = 'available' THEN NULL ELSE observed_status END)),
-  CHECK (notified_condition IS NULL OR notified_condition = action_condition)) STRICT
+  CHECK (notified_condition IS NULL OR notified_condition IS action_condition)) STRICT
 ```
 
-The one row holds the last observation and its time, the condition it set, and that condition once its notification succeeded. Notification state is reset at each onset.
+The one row holds the last observation and its time, the condition it set, and that condition once its notification succeeded. Notification state is reset at each onset and cleared on recovery, so `notified_condition` is either `NULL` or the current condition. It is not a history.
 
 Tests: `migration_creates_version_six`, `migration_is_idempotent`.
 
 ### R11 — Boundary
 
-Static checks of every file in the module's directory confirm:
+Static checks parse every file in the module's directory with the TypeScript parser, so comments never count. They confirm:
 - it names no other unit's table;
 - it imports only relative modules;
 - it uses no Node built-in;
 - it imports values only from beside itself, from the storage seam, or `storageLane` from `sync/sync-storage.ts`, and only types from `coordinate-sender-sync`;
-- it names no other `coordinate-sender-sync` function.
+- it names no other `coordinate-sender-sync` function;
+- it refers to no Node global (`process`, `Buffer`, `require`, `global`, `__dirname`, `__filename`), directly or through `globalThis`.
 
 At run time it reaches the coordinator only through `trigger`, and the platform only through the three seam methods.
 
-Neither the module nor `sender/app/app.config.ts` requests the `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` or `FOREGROUND_SERVICE` permissions, or starts a foreground service.
+Neither the module nor `sender/app/app.config.ts` requests the `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` or `FOREGROUND_SERVICE` permissions, or starts a foreground service. No identifier or string in their code names either permission or `startForeground`.
 
 Tests: `no_battery_exemption_or_foreground_service`, `the_module_stays_inside_its_boundary`.
 
@@ -235,6 +240,7 @@ Tests: `no_battery_exemption_or_foreground_service`, `the_module_stays_inside_it
 - The fakes are synthetic. The platform fake scripts registration and restriction, including thrown and malformed results. The notifier fake records each notification and can throw. The sync fake records each trigger and scripts its result. No fixture contains real health data, Device identifiers, or credentials.
 - Assertions that something writes nothing compare the whole database: `PRAGMA user_version`, every schema object, and every row of every table.
 - A restart is simulated by reopening the database file in a new instance. The checkpoint test also abandons a held Polling Run there, so the next process recovers it as interrupted.
+- Tests wait on explicit signals, such as the lane being held or a notification starting. A short pause only gives a wrong implementation time to misbehave; it never decides whether a correct one passes.
 - The runner sets a per-test timeout, so an implementation that hangs fails rather than stalls CI.
 - Not mechanically provable here; the approver confirms these in implementation review:
   - the shell defines the task at module scope;
