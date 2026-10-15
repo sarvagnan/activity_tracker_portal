@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import base64
 import collections
+import contextlib
 import dataclasses
 import json
 import random
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ from activity_tracker_portal.operational_store import (
     CompletionRecord,
     DeliveryCycle,
     MessageHeader,
+    StoreRefusal,
     StoreRetryable,
     open_store,
 )
@@ -201,6 +203,58 @@ class BusyAt:
         return getattr(self._store, name)
 
 
+class RefusesArchive:
+    """The real store, except that archival refuses as the store's own rechecks would."""
+
+    def __init__(self, store: Any, failure: str) -> None:
+        self._store, self._failure = store, failure
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "archive_completion":
+            def refuse(*_args: Any, **_kwargs: Any) -> Any:
+                raise StoreRefusal(self._failure)
+            return refuse
+        return getattr(self._store, name)
+
+
+class NoReplay:
+    """The real store, except that its read views refuse to replay envelopes or read item data."""
+
+    def __init__(self, store: Any) -> None:
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
+
+    @contextlib.contextmanager
+    def read(self) -> Any:
+        with self._store.read() as view:
+            yield _NoReplayView(view)
+
+
+class _NoReplayView:
+    def __init__(self, view: Any) -> None:
+        self._view = view
+
+    def __getattr__(self, name: str) -> Any:
+        if name in ("accepted_envelopes", "archived_items"):
+            raise AssertionError(f"replayed through {name}")
+        return getattr(self._view, name)
+
+
+class NoOffset(tzinfo):
+    """A timezone that is attached but reports no UTC offset."""
+
+    def utcoffset(self, _value: datetime | None) -> None:
+        return None
+
+    def dst(self, _value: datetime | None) -> None:
+        return None
+
+    def tzname(self, _value: datetime | None) -> str:
+        return "synthetic-no-offset"
+
+
 class Untouchable:
     def __getattr__(self, name: str) -> Any:
         raise AssertionError(f"store used: {name}")
@@ -345,7 +399,8 @@ class R1GovernedScopeContract(unittest.TestCase):
 
 class R2CallerErrors(Case):
     def test_invalid_time_is_a_caller_error(self) -> None:
-        for now in (datetime(2026, 10, 15, 9, 0), "2026-10-15T09:00:00Z", None):
+        for now in (datetime(2026, 10, 15, 9, 0), datetime(2026, 10, 15, 9, 0, tzinfo=NoOffset()),
+                    "2026-10-15T09:00:00Z", None):
             with self.assertRaises(ValueError):
                 accept_sync_completion(Untouchable(), completion(1, cycle_id(1)), now)  # type: ignore[arg-type]
 
@@ -684,6 +739,29 @@ class R7CompletionProof(Case):
         ):
             self.deliverBlocked(data, failure)
 
+    def test_proof_uses_durable_facts_without_replay(self) -> None:
+        self.activate()
+        store = NoReplay(self.store)
+        holed, exact = Cycle(cycle_id(1)), Cycle(cycle_id(2), "initial-snapshot")
+        self.send(holed, 1)
+        self.send(holed, 3)
+        self.send(exact, 4, items=3)
+        self.send(exact, 5, items=2, new_page=True)
+        for data, failure in (
+            (holed.completion(6), "completion-sequence-gap"),
+            (exact.completion(6, label="change"), "completion-kind-mismatch"),
+            (exact.completion(6, counts=(9, 9, 9)), "completion-count-mismatch"),
+            (exact.completion(6, final_chain=WRONG_CHAIN), "completion-chain-mismatch"),
+        ):
+            self.deliverBlocked(data, failure, store=store)
+        data = exact.completion(6)
+        first = accept_sync_completion(store, data, at(2))
+        self.assertReceipt(first, data)
+        self.assertEqual(accept_sync_completion(store, data, at(3)), first)
+        self.deliverBlocked(exact.completion(7), "completion-identity-mismatch", minute=4, store=store)
+        empty = completion(7, cycle_id(3), "reconciliation")
+        self.assertReceipt(accept_sync_completion(store, empty, at(5)), empty)
+
 
 # R8 — Archival and the completed cycle
 
@@ -692,21 +770,27 @@ class R8ArchivalAndCompletedCycle(Case):
     def test_accepted_completion_is_archived_exactly(self) -> None:
         self.activate()
         snapshot = Cycle(cycle_id(1), "initial-snapshot")
+        reconciliation = Cycle(cycle_id(3), "reconciliation-snapshot", "sleep")
         self.send(snapshot, 1, items=2)
         self.send(snapshot, 2, items=1, new_page=True)
+        self.send(reconciliation, 3, items=4)
+        # The receipt time is the caller's instant, whatever its timezone.
+        india = timezone(timedelta(hours=5, minutes=30))
         cases = (
-            (snapshot.completion(3, generation=2), 7, 2, None,
+            (snapshot.completion(4, generation=2), at(7), 2, None,
              CompletionRecord("snapshot", "initial", "steps", cycle_id(1), 2, 2, 3, snapshot.chain)),
-            (completion(5, cycle_id(2), "change", record_type="sleep"), 9, 1, 3,
+            (reconciliation.completion(5), at(8).astimezone(india), 1, None,
+             CompletionRecord("snapshot", "reconciliation", "sleep", cycle_id(3), 1, 1, 4, reconciliation.chain)),
+            (completion(7, cycle_id(2), "change", record_type="sleep"), at(9), 1, 5,
              CompletionRecord("change", None, "sleep", cycle_id(2), 0, 0, 0, chain_start(cycle_id(2)))),
         )
-        for data, minute, generation, gap_after, record in cases:
+        for data, now, generation, gap_after, record in cases:
             message = ingest_protocol.decode_message(data)
             sequence = message["sequence"]
             before = contents(self.path)
             with self.store.read() as view:
                 status_before = view.installation(A)
-            response = self.accept(data, minute=minute)
+            response = accept_sync_completion(self.store, data, now)
             self.assertReceipt(response, data, gap_after)
             with self.store.read() as view:
                 archived = view.archived_message(A, sequence)
@@ -716,10 +800,10 @@ class R8ArchivalAndCompletedCycle(Case):
             self.assertEqual(
                 (archived.kind, archived.envelope, archived.receipt, archived.receipt_time, archived.staged_generation,
                  archived.message_sha256, archived.batch, archived.completion, archived.checkpoint),
-                (message["kind"], data, response.body, at(minute), generation, message_sha256(data), None, record, None),
+                (message["kind"], data, response.body, now, generation, message_sha256(data), None, record, None),
             )
-            self.assertEqual(status, dataclasses.replace(status_before, highest_sequence=sequence, last_delivery_at=at(minute)))
-            self.assertEqual(gaps, [] if gap_after is None else [(gap_after, sequence, at(minute))])
+            self.assertEqual(status, dataclasses.replace(status_before, highest_sequence=sequence, last_delivery_at=now))
+            self.assertEqual(gaps, [] if gap_after is None else [(gap_after, sequence, now)])
             # Exactly the message, its completion evidence, any gap, and the installation's progress were written.
             after = contents(self.path)
             changed = {"archived_messages", "completions", "sequence_gaps", "installations"}
@@ -812,6 +896,26 @@ class R9CapacityAndContention(Case):
             self.deliverBlocked(wrong, "completion-count-mismatch", minute=minute, store=busy_archive)
         self.assertEqual(without_blocks(contents(self.path)), without_blocks(before))
         self.assertReceipt(self.accept(exact), exact)
+
+    def test_store_refusals_after_the_read_are_answered(self) -> None:
+        self.activate()
+        cycle = Cycle(cycle_id(1))
+        self.send(cycle, 1, items=2)
+        data = cycle.completion(2)
+        for refusal, failure in (
+            ("sequence-content-conflict", "sequence-content-mismatch"),
+            ("sequence-out-of-order", "sequence-out-of-order"),
+            ("generation-unknown", "unsupported-wire-protocol"),
+            ("cycle-already-completed", "completion-identity-mismatch"),
+        ):
+            self.deliverBlocked(data, failure, store=RefusesArchive(self.store, refusal))
+        before = contents(self.path)
+        response = accept_sync_completion(RefusesArchive(self.store, "installation-not-delivering"), data, at(2))
+        body = encode_message({"wire_version": 1, "kind": "retryable-failure", "reason": "temporarily-unavailable"})
+        self.assertEqual((response.outcome, response.body, response.gap_after), ("retryable", body, None))
+        self.assertIn(response.failure, {"installation-pending", "installation-ended", "installation-unknown"})
+        self.assertEqual(contents(self.path), before)
+        self.assertReceipt(self.accept(data, minute=3), data)
 
 
 # R10 — Conformance with the protocol's evaluation

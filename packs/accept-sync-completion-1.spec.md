@@ -100,6 +100,8 @@ After R3–R6, a completion is checked against its cycle's archived fragments an
 
 A cycle with no archived fragments and no completion is empty. Its completion must carry zero counts and the cycle's chain start.
 
+The proof uses the store's delivery-cycle read and its sequence gaps. It never replays archived envelopes or reads archived item data (Decision 5).
+
 Tests:
 - `test_exact_cycles_are_accepted`, covering all three cycle kinds;
 - `test_empty_cycle_completion`;
@@ -109,12 +111,13 @@ Tests:
 - `test_missing_sequence_in_the_cycle_is_a_gap`;
 - `test_counts_must_match_the_archived_fragments`;
 - `test_final_chain_must_match`;
-- `test_completion_failures_follow_protocol_order`.
+- `test_completion_failures_follow_protocol_order`;
+- `test_proof_uses_durable_facts_without_replay`.
 
 ### R8 — Archival and the completed cycle
 
 A newly accepted completion is archived in one store transaction before its receipt is returned. The store keeps:
-- the exact envelope bytes, the exact receipt bytes, the receipt time `now`, and the staged generation;
+- the exact envelope bytes, the exact receipt bytes, the receipt time `now` (the same instant, whatever its timezone), and the staged generation;
 - the completion and snapshot kind, record type, cycle identity, the three counts, and the final chain.
 
 Nothing else from the message is stored, and it has no source cursor or token. Last Delivery becomes `now`.
@@ -129,7 +132,11 @@ Free space is checked last: a would-be block is still blocked, with its record, 
 
 A busy store at any step — reading, archiving, or recording a block — gets retryable `temporarily-unavailable` with failure `store-busy`. None of these answers writes anything else.
 
-Tests: `test_exhausted_reserve_is_retryable_and_blocks_still_win`, `test_busy_store_is_retryable`.
+The caller serializes writes, so the store's own rechecks should never refuse an archive after this unit's read (`accept-ingest-batch@1` Decision 9). If one does, the unit still answers and never raises:
+- a refused conflict, order, generation, or already completed cycle gives the matching block (`sequence-content-mismatch`, `sequence-out-of-order`, `unsupported-wire-protocol`, or `completion-identity-mismatch`), with its record;
+- an installation that stopped delivering gives its retryable failure, writing nothing.
+
+Tests: `test_exhausted_reserve_is_retryable_and_blocks_still_win`, `test_busy_store_is_retryable`, `test_store_refusals_after_the_read_are_answered`.
 
 ### R10 — Conformance with the protocol's evaluation
 
