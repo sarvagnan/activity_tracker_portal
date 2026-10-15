@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"UnitSpecified","pack_digest":"","payload":{"depends_on":["ingest-protocol","accept-ingest-batch","manage-sender-installation","operational-store"],"name":"accept-capability-acknowledgement","version":"1"},"prev":"6bf7ff221e95f1d4a10a930a08367f10e1aaacc0ea9397eb193ec8b00f563f7c","recorded_at":"2026-10-15T13:09:10+00:00","revision":249,"run_id":""}
