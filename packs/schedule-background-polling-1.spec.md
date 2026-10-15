@@ -26,10 +26,11 @@ These come from the pinned `expo-background-task@57.0.21` and `expo-task-manager
 
 ## Interface
 
-**TypeScript**, module `sender/app/src/sync/schedule-background-polling.ts`. It uses:
+**TypeScript**, module `sender/app/src/scheduling/schedule-background-polling.ts`. It has its own directory, so neither this unit's boundary check nor the coordinator's reads the other's files. It uses:
 - `coordinate-sender-sync@1`'s `SenderSync`;
 - `stage-sync-checkpoint@1`'s `BackgroundScheduling`;
-- the 3ug storage seam.
+- the 3ug storage seam;
+- the storage lane that `coordinate-sender-sync@1` serializes Sender storage through, `storageLane` in `sync/sync-storage.ts` (R9).
 
 The seams:
 - `SchedulingPlatform`:
@@ -44,10 +45,10 @@ The constants:
 - `BACKGROUND_BUDGET_MS = 480_000`.
 
 `createBackgroundPolling({ database, platform, notifier, sync, now })` returns:
-- `ensureRegistered()`, which the shell calls when the app starts and when it returns to the foreground. It registers the task if it is missing, then observes. It returns `{ outcome: "observed", status, condition }` or `{ outcome: "storage-failed" }`.
+- `ensureRegistered()`, which the shell calls when the app starts and when it returns to the foreground. It registers the task if it is missing, then observes. It returns `{ outcome: "observed", status, condition }`, where `condition` is the condition this observation set, or `{ outcome: "storage-failed" }`.
 - `observe()`, which is the `backgroundScheduling` option the shell passes to `coordinate-sender-sync@1`. It observes without registering and returns the status.
 - `runTask()`, the body of the `TaskManager` task executor. It returns `"success"` or `"failed"`.
-- `condition()`, which returns the persistent action-required condition, `"restricted"`, `"unregistered"`, or `null`, or `{ outcome: "storage-failed" }`.
+- `condition()`, which returns the persistent action-required condition, `"restricted"`, `"unregistered"`, or `null`, or `{ outcome: "storage-failed" }`. Before any observation it is `null`.
 
 `schedulingMigration` is Sender schema version 6.
 
@@ -78,7 +79,7 @@ Tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_m
 
 ### R2 — Caller errors
 
-Malformed options throw `TypeError` before any platform, notifier, sync, or storage call. So does a wall-clock reading that is not a safe integer.
+Malformed options throw `TypeError` before any platform, notifier, sync, or storage call. So does a wall-clock reading that is not a safe integer: each `ensureRegistered()` and `observe()` reads `now()` once, before any platform call, and rejects with `TypeError` without calling the platform, notifier, or storage.
 
 Tests: `malformed_options_are_caller_errors`.
 
@@ -88,7 +89,10 @@ Tests: `malformed_options_are_caller_errors`.
 - **A missing task** is registered once, as `POLLING_TASK_NAME` with a 60-minute minimum interval.
 - **A registered task** is never registered again, because registering replaces the pending WorkManager request and restarts its delay (Decision 3).
 - **No call** ever unregisters the task.
-- **A registration that throws** leaves the task missing, and the observation reads it as unregistered.
+- **A registration that throws** leaves the task missing, and the observation reads it as unregistered. So does one that resolves without registering.
+- **An unreadable registration** is not registered over, because registering would replace a pending request. Only a registration read of `false` leads to registering, and the observation then reads the unreadable registration as unregistered (R8).
+
+For a missing task, the platform sees exactly a registration read, the registration, then the observation's registration read and restriction read.
 
 Tests:
 - `a_missing_task_is_registered_hourly`
@@ -103,7 +107,7 @@ An observation reads the registration first and then the platform's restriction.
 - otherwise `restricted` when the platform reports restricted;
 - otherwise `available`.
 
-Each observation is recorded with the time from `now()`. `observe()` never registers.
+Each observation is recorded with the `now()` reading taken when it began, even one earlier than the last observation's. `observe()` never registers. An `available` observation makes exactly one registration read and then one restriction read.
 
 Tests:
 - `a_registered_unrestricted_task_is_available`
@@ -124,7 +128,12 @@ The status sets the persistent condition:
 - a `restricted` or `unregistered` observation sets the condition to that status;
 - an `available` observation clears it.
 
-The notifier is called once at each onset, which is a change from no condition, or from the other condition. A notification that throws is retried at the next observation until it succeeds. The condition and its notification state survive a restart.
+The notifier is called once at each onset, which is a change from no condition, or from the other condition. A change of condition is an onset even when the previous onset's notification failed. The notification behaves as follows:
+- it is called with the condition alone, after the observation is recorded, and its success is then recorded;
+- one that throws, synchronously or not, is retried at the next observation until it succeeds;
+- if its success cannot be recorded, the next observation notifies again, so delivery is at least once.
+
+The condition and its notification state survive a restart. Observations run one at a time in each instance, so concurrent observations notify an onset once.
 
 Tests:
 - `an_action_required_condition_notifies_once`
@@ -132,6 +141,7 @@ Tests:
 - `a_new_condition_notifies_again`
 - `a_failed_notification_is_retried`
 - `the_condition_survives_a_restart`
+- `concurrent_observations_notify_once`
 
 ### R7 — Background runs
 
@@ -139,7 +149,7 @@ Tests:
 - `"success"` when the run checkpointed;
 - `"failed"` when the run failed, the trigger rejected, or the trigger threw.
 
-It never throws to the task executor.
+It never throws to the task executor. It needs no storage of its own, so it reports success for a checkpointed run even when this unit's storage fails.
 
 Tests: `the_background_task_triggers_a_budgeted_background_run`, `a_failed_or_throwing_run_reports_failed`.
 
@@ -160,21 +170,41 @@ If recording an observation fails:
 - `ensureRegistered()` and `condition()` return `storage-failed`;
 - the notifier is not called, because the condition's onset cannot be recorded.
 
-Tests: `storage_failures_keep_the_observation`.
+A storage error of any type, including `TypeError`, is a storage failure, not a caller error.
+
+Every storage operation waits its turn in the storage lane that `coordinate-sender-sync@1` serializes Sender storage through, because the 3ug seam allows one operation at a time. An observation therefore never collides with a Polling Run's storage. A pending notification never holds the lane.
+
+Tests: `storage_failures_keep_the_observation`, `observations_wait_for_the_storage_lane`.
 
 ### R10 — The Sender schema migration
 
-`schedulingMigration` is Sender schema version 6, registered after `coordinate-sender-sync@1`'s version 5. It leaves every earlier schema object unchanged. It creates one table, whose name begins with `scheduling_`, plus its automatic indexes, and it references no other unit's table. The executable pack pins the exact DDL.
+`schedulingMigration` is Sender schema version 6, registered after `coordinate-sender-sync@1`'s version 5. It leaves every earlier schema object unchanged. It creates exactly this table, compared token by token with whitespace ignored, and nothing else; its integer primary key needs no automatic index. It references no other unit's table.
+
+```sql
+CREATE TABLE scheduling_state (
+  singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+  observed_status TEXT NOT NULL CHECK (observed_status IN ('available', 'restricted', 'unregistered')),
+  observed_at_ms INTEGER NOT NULL,
+  action_condition TEXT CHECK (action_condition IN ('restricted', 'unregistered')),
+  notified_condition TEXT CHECK (notified_condition IN ('restricted', 'unregistered')),
+  CHECK (action_condition IS (CASE WHEN observed_status = 'available' THEN NULL ELSE observed_status END)),
+  CHECK (notified_condition IS NULL OR notified_condition = action_condition)) STRICT
+```
+
+The one row holds the last observation and its time, the condition it set, and that condition once its notification succeeded. Notification state is reset at each onset.
 
 Tests: `migration_creates_version_six`, `migration_is_idempotent`.
 
 ### R11 — Boundary
 
-Static checks confirm:
-- the module names no other unit's table;
+Static checks of every file in the module's directory confirm:
+- it names no other unit's table;
 - it imports only relative modules;
 - it uses no Node built-in;
-- it calls no `coordinate-sender-sync` function besides `trigger`.
+- it imports values only from beside itself, from the storage seam, or `storageLane` from `sync/sync-storage.ts`, and only types from `coordinate-sender-sync`;
+- it names no other `coordinate-sender-sync` function.
+
+At run time it reaches the coordinator only through `trigger`, and the platform only through the three seam methods.
 
 Neither the module nor `sender/app/app.config.ts` requests the `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` or `FOREGROUND_SERVICE` permissions, or starts a foreground service.
 
@@ -204,6 +234,8 @@ Tests: `no_battery_exemption_or_foreground_service`, `the_module_stays_inside_it
 
 - The fakes are synthetic. The platform fake scripts registration and restriction, including thrown and malformed results. The notifier fake records each notification and can throw. The sync fake records each trigger and scripts its result. No fixture contains real health data, Device identifiers, or credentials.
 - Assertions that something writes nothing compare the whole database: `PRAGMA user_version`, every schema object, and every row of every table.
+- A restart is simulated by reopening the database file in a new instance. The checkpoint test also abandons a held Polling Run there, so the next process recovers it as interrupted.
+- The runner sets a per-test timeout, so an implementation that hangs fails rather than stalls CI.
 - Not mechanically provable here; the approver confirms these in implementation review:
   - the shell defines the task at module scope;
   - the production adapters honor the seams;
@@ -211,11 +243,15 @@ Tests: `no_battery_exemption_or_foreground_service`, `the_module_stays_inside_it
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the TypeScript suite and its fakes;
+The Operator approved the draft. The executable pack adds:
+- the TypeScript suite `schedule-background-polling-1.test.ts`, with its platform, notifier, and sync fakes;
 - the Python contract suite;
 - the runner;
-- the Interface stub `sync/schedule-background-polling.ts`, whose migration and functions throw;
-- the pinned migration DDL.
+- the Interface stub `scheduling/schedule-background-polling.ts`, whose migration and functions throw;
+- the pinned migration DDL (R10).
 
-Against the stub, every TypeScript test fails and the two Python tests pass. GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation registers `schedulingMigration` sixth and updates the production-migration test in `storage.test.ts`.
+Against the stub, every TypeScript test fails, and the two Python tests pass. The binding is:
+- spec files: the contract and this pack;
+- test files: `schedule-background-polling-1.test.ts`, `synthetic-sync-sources.ts`, `node-database.ts`, `node-installation-cipher.ts`, `test_schedule_background_polling_1.py`, and the runner.
+
+GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation registers `schedulingMigration` sixth and updates the production-migration test in `storage.test.ts`.
