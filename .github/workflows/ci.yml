@@ -74,6 +74,8 @@ jobs:
         run: tests/acceptance/run_stage_sync_checkpoint_1.sh
       - name: Run coordinate-sender-sync@1 acceptance
         run: tests/acceptance/run_coordinate_sender_sync_1.sh
+      - name: Run schedule-background-polling@1 acceptance
+        run: tests/acceptance/run_schedule_background_polling_1.sh
 
   vouch:
     needs: [test, sender]

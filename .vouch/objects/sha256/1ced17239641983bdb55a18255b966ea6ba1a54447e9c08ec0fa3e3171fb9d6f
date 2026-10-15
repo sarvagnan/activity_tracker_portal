@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_schedule_background_polling_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"863474d91b8d55cfffd7355b354ee503a312f783061564e7f9b9d5d33c535ac0","parent":"GENESIS","recorded_at":"2026-10-15T06:36:04+00:00","sequence":1,"unit":{"name":"schedule-background-polling","version":"1"}}
