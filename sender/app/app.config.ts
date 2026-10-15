@@ -7,6 +7,7 @@ export default {
     android: {
       package: "org.activitytracker.sender",
       allowBackup: false,
+      permissions: ["android.permission.POST_NOTIFICATIONS"],
     },
     plugins: [
       ["expo-dev-client", { addGeneratedScheme: false }],
@@ -20,6 +21,7 @@ export default {
         },
       }],
       "./plugins/with-pinned-android.cjs",
+      "./plugins/with-background-scheduling.cjs",
     ],
   },
 };
