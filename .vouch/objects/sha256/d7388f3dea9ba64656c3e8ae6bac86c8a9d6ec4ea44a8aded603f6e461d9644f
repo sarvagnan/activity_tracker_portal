@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_accept_ingest_batch_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"8d74b6cf358dc5e3a7365a41cd73bd14f241edfe9c969e519c146b59956b6816","parent":"GENESIS","recorded_at":"2026-10-15T12:35:29+00:00","sequence":1,"unit":{"name":"accept-ingest-batch","version":"1"}}
