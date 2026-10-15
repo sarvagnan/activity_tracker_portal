@@ -39,7 +39,7 @@ The contract names:
 - the four dependencies;
 - the acceptance oracle.
 
-The 3 block failures are names from `ingest-protocol@1`'s closed Delivery Block vocabulary. The contract does not contradict the scope-map row. That row keeps the kind, the four dependencies, and the phrases "capability acknowledgement" and "latest acknowledged generation".
+The 3 block failures are names from `ingest-protocol@1`'s closed Delivery Block vocabulary. The contract does not contradict the scope-map row. That row keeps the kind and the four dependencies. The test also checks three phrases: "capability acknowledgement" in the purpose, "Capability acknowledgement envelope" in the inputs, and "latest acknowledged generation" in the outputs.
 
 Tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_map_row_does_not_contradict_contract`.
 
@@ -122,9 +122,36 @@ Tests: `test_answers_match_the_protocol_evaluation`.
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the Python suite;
-- the runner;
-- the Interface stub `accept_capability_acknowledgement.py`, whose function raises `NotImplementedError`.
+The Operator approved the draft. The executable pack adds:
+- the Python suite `tests/acceptance/test_accept_capability_acknowledgement_1.py`, 17 tests;
+- the runner `tests/acceptance/run_accept_capability_acknowledgement_1.sh`, which runs the pinned-runtime check and then the suite;
+- the Interface stub `src/activity_tracker_portal/accept_capability_acknowledgement.py`, whose function raises `NotImplementedError`.
 
-Against the stub, every behaviour test fails and the two contract tests pass. GPT 6.1 Sol's read-only implementability review runs before Gate B. Vouch records `specify` once `accept-ingest-batch@1`, a dependency, is published on main.
+Every Delivery Block is checked with its durable record, including repeats at distinct times. That follows the pattern `accept-ingest-batch@1`'s Gate B review established. R9's seeded histories cross-check these answers against `evaluate_delivery`:
+- 732 receipts, including 133 after gaps and 113 retries;
+- every block failure, with 34 repeated blocks;
+- 100 interleaved Ingest Batches accepted through `accept-ingest-batch@1`.
+
+The test asserts this coverage.
+
+Against the stub, every behaviour test fails: 14 tests and R9's 8 seeded histories. The two contract tests pass, and the runner exits 1.
+
+A throwaway reference, kept out of the repository, passes all 17 tests. It kills 18 of 19 mutants:
+- pending, ended, and unknown installations mishandled;
+- the order check removed;
+- a gap reported off by one;
+- a block unrecorded, recorded with shifted times, recorded twice on repeat, or sent without its identity;
+- a busy store swallowed or answered as a block;
+- the wrong reserve reason, or the reserve checked before validation;
+- other kinds or naive times accepted;
+- retries re-evaluated;
+- the staged generation ignored;
+- a shifted receipt time.
+
+The surviving mutant removes the generation pre-check, and it is equivalent. Nothing is checked after generation, and the store's own `generation-unknown` refusal maps to the same `unsupported-wire-protocol` block and record (Decision 6). The wire-version half of the check cannot be reached, because `ingest-protocol@1` decodes only Wire Protocol Version 1.
+
+GPT 6.1 Sol's read-only implementability review runs before Gate B. The binding is:
+- **spec files:** the contract and this pack;
+- **test files:** the suite and the runner.
+
+Vouch records `specify` once `accept-ingest-batch@1` is published on main, before the freeze.
