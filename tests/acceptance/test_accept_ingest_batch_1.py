@@ -9,6 +9,7 @@ Assertions that something wrote nothing compare the whole database.
 from __future__ import annotations
 
 import base64
+import collections
 import json
 import random
 import sqlite3
@@ -366,6 +367,20 @@ class R3UndecodableMessages(Case):
     def test_non_outbox_message_is_blocked(self) -> None:
         self.assertProtocolBlock(encode_message(advertisement(1)), "malformed-message")
 
+    def test_unsupported_wire_version_is_blocked(self) -> None:
+        value = json.loads(batch(7))
+        value["wire_version"] = 2
+        data = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        self.assertProtocolBlock(data, "unsupported-wire-protocol")
+        self.assertEqual((self.blocks()[0].installation_id, self.blocks()[0].sequence), (None, None))
+
+    def test_malformed_batch_is_blocked_without_its_readable_identity(self) -> None:
+        value = json.loads(batch(7))
+        value["items"] = [{"kind": "projection", "data": "not base64!"}]
+        data = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        self.assertProtocolBlock(data, "malformed-message")
+        self.assertEqual((self.blocks()[0].installation_id, self.blocks()[0].sequence), (None, None))
+
 
 # R4 — Identity and retry
 
@@ -700,7 +715,7 @@ class R10CapacityAndContention(Case):
 
 
 class History:
-    """Synthetic delivery histories over two record types, with deliberate defects."""
+    """Synthetic delivery histories over two record types, with deliberate defects and clean episodes."""
 
     def __init__(self, seed: int) -> None:
         self.random = random.Random(seed)
@@ -724,7 +739,7 @@ class History:
         cycle = self.cycles.get(record_type)
         if cycle is None:
             kind = self.random.choice(["initial-snapshot", "reconciliation-snapshot", "change-cycle"])
-            cycle = {"id": self.cycle_id(), "kind": kind, "page": 1, "fragment": 0, "chain": None, "pages": 0, "fragments": 0, "records": 0}
+            cycle = {"id": self.cycle_id(), "kind": kind, "page": 1, "fragment": 0, "pages": 0, "fragments": 0, "records": 0}
             cycle["chain"] = chain_start(cycle["id"])
             self.cycles[record_type] = cycle
         if cycle["fragment"] == 0 or self.random.random() < 0.6:
@@ -750,9 +765,73 @@ class History:
 
 class R11Conformance(Case):
     def test_answers_match_the_protocol_evaluation(self) -> None:
+        self.answers: collections.Counter[tuple[str, str | None]] = collections.Counter()
+        self.events: collections.Counter[str] = collections.Counter()
         for seed in range(8):
             with self.subTest(seed=seed):
                 self.run_history(seed)
+        # The histories must exercise what they claim: every batch-level block failure, gaps, retries,
+        # archived completions, and fragments refused after a completion.
+        blocked = {failure for outcome, failure in self.answers if outcome == "block"}
+        self.assertEqual(blocked, {
+            "fragment-order-mismatch", "record-count-limit-exceeded", "sequence-out-of-order", "unsupported-wire-protocol",
+            "uncompressed-byte-limit-exceeded", "unsupported-source-projection-schema", "sequence-content-mismatch",
+        })
+        for event in ("gap", "retry", "completion", "after-completion"):
+            self.assertGreater(self.events[event], 0, event)
+
+    def deliver(self, store, state, history: History, data: bytes, minute: float, action: str):
+        expected = evaluate_delivery(state, data)
+        actual = accept_ingest_batch(store, data, at(minute))
+        self.assertEqual(
+            (actual.outcome, actual.body, actual.failure, actual.gap_after),
+            (expected.outcome, expected.response, expected.failure, expected.gap_after),
+            (minute, action),
+        )
+        self.answers[(expected.outcome, expected.failure)] += 1
+        message = ingest_protocol.decode_message(data)
+        if expected.outcome == "receipt":
+            if expected.gap_after is not None:
+                self.events["gap"] += 1
+            if message["sequence"] in history.accepted:
+                self.events["retry"] += 1
+            else:
+                history.accepted[message["sequence"]] = data
+                cycle = history.cycles.get(message["record_type"])
+                if cycle is not None and cycle["id"] == message["cycle_id"]:
+                    history.accept_fragment(message["record_type"], data)
+        elif action == "after-completion" and expected.failure == "fragment-order-mismatch":
+            self.events["after-completion"] += 1
+        history.sent.append(data)
+        return expected.state
+
+    def complete(self, store, state, history: History, record_type: str, minute: float):
+        cycle = history.cycles.pop(record_type)
+        data = completion_message(history.next_sequence(), cycle=cycle["id"], record_type=record_type,
+                                  kind=cycle["kind"], page_count=cycle["pages"], fragment_count=cycle["fragments"],
+                                  record_count=cycle["records"], final_chain=cycle["chain"])
+        expected = evaluate_delivery(state, data)
+        if expected.outcome != "receipt":
+            # A blocked message left a hole in the cycle's sequences; the cycle stays open.
+            history.cycles[record_type] = cycle
+            return state, False
+        archive_completion(store, data, at(minute))
+        history.completed.append(cycle["id"])
+        self.events["completion"] += 1
+        return expected.state, True
+
+    def clean_episode(self, store, state, history: History, minute: float):
+        """A fresh cycle of valid fragments, then its completion, then a refused fragment after it."""
+        record_type = history.random.choice(["steps", "heart-rate"])
+        history.cycles.pop(record_type, None)
+        for _ in range(history.random.randint(1, 4)):
+            state = self.deliver(store, state, history, history.fragment(record_type, history.next_sequence()), minute, "clean")
+        if history.accepted:
+            state = self.deliver(store, state, history, history.random.choice(list(history.accepted.values())), minute, "retry")
+        state, completed = self.complete(store, state, history, record_type, minute)
+        self.assertTrue(completed, "a clean episode always completes")
+        late = batch(history.next_sequence(), cycle=history.completed[-1], fragment=2, record_type=record_type)
+        return self.deliver(store, state, history, late, minute, "after-completion")
 
     def run_history(self, seed: int) -> None:
         directory = self.directory / f"seed-{seed}"
@@ -762,31 +841,25 @@ class R11Conformance(Case):
         self.activate(A, store=store)
         state = new_delivery_state([advertisement(1)])
         history = History(seed)
+        archived_before = self.events["completion"]
         actions = ["next"] * 8 + ["complete", "retry", "gap", "bad-chain", "bad-order", "after-completion",
-                                  "bad-schema", "too-many", "too-big", "old", "conflict", "unknown-generation"]
+                                  "bad-schema", "too-many", "too-big", "old", "conflict", "unknown-generation", "clean"]
         for step in range(120):
             action = history.random.choice(actions)
             record_type = history.random.choice(["steps", "heart-rate"])
-            data: bytes | None = None
-            if action == "complete" and record_type in history.cycles and history.cycles[record_type]["fragment"]:
-                cycle = history.cycles.pop(record_type)
-                data = completion_message(history.next_sequence(), cycle=cycle["id"], record_type=record_type,
-                                          kind=cycle["kind"], page_count=cycle["pages"], fragment_count=cycle["fragments"],
-                                          record_count=cycle["records"], final_chain=cycle["chain"])
-                expected = evaluate_delivery(state, data)
-                if expected.outcome != "receipt":
-                    # A blocked message left a hole in the cycle's sequences; the cycle stays open.
-                    history.cycles[record_type] = cycle
-                    continue
-                archive_completion(store, data, at(step))
-                state = expected.state
-                history.completed.append(cycle["id"])
+            if action == "clean":
+                state = self.clean_episode(store, state, history, step)
                 continue
-            if action == "retry" and history.sent:
-                data = history.random.choice(history.sent)
-            elif action == "gap":
+            if action == "complete":
+                if record_type in history.cycles and history.cycles[record_type]["fragment"]:
+                    state, _ = self.complete(store, state, history, record_type, step)
+                continue
+            if action == "gap":
                 history.skipped.append(history.next_sequence())
                 continue
+            data: bytes | None = None
+            if action == "retry" and history.sent:
+                data = history.random.choice(history.sent)
             elif action == "old" and history.skipped:
                 data = history.fragment(record_type, history.random.choice(history.skipped))
             elif action == "conflict" and history.accepted:
@@ -806,22 +879,8 @@ class R11Conformance(Case):
                 data = history.fragment(record_type, history.next_sequence(), **overrides)
             if data is None:
                 data = history.fragment(record_type, history.next_sequence())
-            expected = evaluate_delivery(state, data)
-            actual = accept_ingest_batch(store, data, at(step))
-            self.assertEqual(
-                (actual.outcome, actual.body, actual.failure, actual.gap_after),
-                (expected.outcome, expected.response, expected.failure, expected.gap_after),
-                (seed, step, action),
-            )
-            history.sent.append(data)
-            if expected.outcome == "receipt":
-                message = ingest_protocol.decode_message(data)
-                if message["sequence"] not in history.accepted:
-                    history.accepted[message["sequence"]] = data
-                    if message["kind"] == "ingest-batch" and message["record_type"] in history.cycles \
-                            and history.cycles[message["record_type"]]["id"] == message["cycle_id"]:
-                        history.accept_fragment(message["record_type"], data)
-                state = expected.state
+            state = self.deliver(store, state, history, data, step, action)
+        self.assertGreater(self.events["completion"], archived_before, f"seed {seed} archived no completion")
 
 
 # R12 — Health-data-free evidence

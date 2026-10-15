@@ -29,7 +29,7 @@
   "outputs": [
     {
       "name": "delivery_response",
-      "description": "Exactly one of a Delivery Receipt echoing the installation, sequence, and message SHA-256; a retryable failure with reason storage-reserve-exhausted or temporarily-unavailable; or a Delivery Block naming one closed ingest-protocol failure and the message's SHA-256, with its installation and sequence when the bytes reveal them. The response carries its outcome, exact bytes, named failure, and any accepted sequence gap."
+      "description": "Exactly one of a Delivery Receipt echoing the installation, sequence, and message SHA-256; a retryable failure with reason storage-reserve-exhausted or temporarily-unavailable; or a Delivery Block naming one closed ingest-protocol failure and the message's SHA-256, with its installation and sequence exactly when ingest-protocol's evaluation includes them. The response carries its outcome, exact bytes, named failure, and any accepted sequence gap."
     },
     {
       "name": "archived_ingest_batch",

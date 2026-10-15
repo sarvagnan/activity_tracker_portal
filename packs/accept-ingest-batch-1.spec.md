@@ -44,14 +44,17 @@ The contract names:
 - the `ingest-protocol@1`, `manage-sender-installation@1`, and `operational-store@2` dependencies;
 - the acceptance oracle.
 
-The 9 block failures are names from `ingest-protocol@1`'s closed Delivery Block vocabulary. The contract does not contradict the scope-map row.
+The 9 block failures are names from `ingest-protocol@1`'s closed Delivery Block vocabulary. The contract does not contradict the scope-map row. That row keeps the kind, the three dependencies, and these phrases, which the test checks:
+- in the purpose, "idempotently archive, and acknowledge an Ingest Batch";
+- in the inputs, "Envelope", "active Sender Installation", "capacity state", and "supported versions";
+- in the outputs, "Archived Raw Records plus Delivery Receipt, retryable outcome, or Delivery Block" and "accepted sequence gaps become visible anomalies".
 
 Tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_map_row_does_not_contradict_contract`.
 
 ### R2 — Caller errors
 
 The function raises `ValueError` before reading or writing anything:
-- when `now` is naive;
+- when `now` is not a `datetime`, or is one whose `utcoffset()` is `None`;
 - when the bytes are a valid Outbox Message that is not an Ingest Batch.
 
 Tests: `test_naive_time_is_a_caller_error`, `test_other_outbox_kinds_are_caller_errors`.
@@ -59,12 +62,17 @@ Tests: `test_naive_time_is_a_caller_error`, `test_other_outbox_kinds_are_caller_
 ### R3 — Undecodable messages
 
 Bytes that `ingest-protocol@1` cannot decode, that are not canonical, or that are a valid message of a kind outside the Outbox are answered with a Delivery Block:
-- the failure is `malformed-message` or `noncanonical-message`;
+- the failure is `malformed-message`, `noncanonical-message`, or `unsupported-wire-protocol` for a Wire Protocol Version the protocol does not know;
 - the body's bytes equal `evaluate_delivery`'s for the same bytes, which needs no history for these cases;
-- the block carries the installation and sequence when the bytes reveal them;
+- the block carries exactly the identity `evaluate_delivery` gives it: the installation and sequence for a valid but noncanonical Outbox Message, and none otherwise, even when the bytes contain readable identity fields;
 - the block is recorded, and nothing else is written.
 
-Tests: `test_malformed_bytes_are_blocked`, `test_noncanonical_batch_is_blocked_with_its_identity`, `test_non_outbox_message_is_blocked`.
+Tests:
+- `test_malformed_bytes_are_blocked`
+- `test_noncanonical_batch_is_blocked_with_its_identity`
+- `test_non_outbox_message_is_blocked`
+- `test_unsupported_wire_version_is_blocked`
+- `test_malformed_batch_is_blocked_without_its_readable_identity`
 
 ### R4 — Identity and retry
 
@@ -156,12 +164,15 @@ Tests: `test_exhausted_reserve_is_retryable_and_writes_nothing`, `test_busy_stor
 
 ### R11 — Conformance with the protocol's evaluation
 
-For an active installation, every answer equals `ingest-protocol@1`'s `evaluate_delivery` for the same history, which is built by evaluating the same accepted messages in order: the same outcome, the same exact body bytes, and the same reported gap. Generated synthetic histories cover:
-- interleaved cycles of several record types;
+For an active installation, every Ingest Batch answer equals `ingest-protocol@1`'s `evaluate_delivery` for the same history, which is built by evaluating the same accepted messages in order: the same outcome, the same exact body bytes, the same failure, and the same reported gap. Generated synthetic histories cover:
+- interleaved cycles of two record types;
 - retries;
 - gaps;
-- each block failure;
-- completions archived between fragments.
+- every batch-level block failure;
+- completions archived between fragments;
+- fragments refused after a completion.
+
+Clean episodes guarantee completions: a fresh cycle of valid fragments, then its completion. The test asserts this coverage, so a history that stopped exercising any of it fails. Decode-level blocks are covered by R3.
 
 Tests: `test_answers_match_the_protocol_evaluation`.
 
@@ -212,17 +223,18 @@ Tests: `test_blocks_and_responses_are_health_data_free`.
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the Python suite `tests/acceptance/test_accept_ingest_batch_1.py`, 32 tests;
+- the Python suite `tests/acceptance/test_accept_ingest_batch_1.py`, 34 tests;
 - the runner `tests/acceptance/run_accept_ingest_batch_1.sh`, which runs the pinned-runtime check and then the suite;
 - the Interface stub `src/activity_tracker_portal/accept_ingest_batch.py`, whose function raises `NotImplementedError`.
 
 The tests pin these refinements:
 - other installations' cycles never matter (R8);
-- a busy store at any step is retryable, and a block is never answered without its record (R10).
+- a busy store at any step is retryable, and a block is never answered without its record (R10);
+- decode-level blocks include `unsupported-wire-protocol`, and carry exactly `evaluate_delivery`'s identity (R3).
 
-Against the stub, every behaviour test fails: 29 tests and R11's 8 seeded histories. The two contract tests pass, and the runner exits 1.
+Against the stub, every behaviour test fails: 31 tests and R11's 8 seeded histories. The two contract tests pass, and the runner exits 1.
 
-A throwaway reference, kept out of the repository, passes all 32 tests. Its R11 histories cross-check about 870 answers against `evaluate_delivery`, covering every block failure and receipts with and without gaps. It kills all 27 mutants:
+A throwaway reference, kept out of the repository, passes all 34 tests. Its R11 histories cross-check about 1,020 answers against `evaluate_delivery`. They include every batch-level block failure, 235 receipts after gaps, 62 retries, 43 archived completions, and 81 fragments refused after completion. The reference kills all 27 mutants:
 - ended installations blocked, pending ones delivered, and unknown ones raising;
 - installation state checked before identity;
 - each order, generation, schema, and limit check removed;
@@ -237,6 +249,13 @@ A throwaway reference, kept out of the repository, passes all 32 tests. Its R11 
 - retries re-evaluated;
 - a shifted receipt time.
 
-GPT 6.1 Sol's read-only implementability review runs before Gate B. The binding is:
+GPT 6.1 Sol's read-only implementability review found no blocker. Its three P2 findings are resolved above:
+- R11 now archives completions, and asserts its coverage;
+- the decode-level `unsupported-wire-protocol` block is covered;
+- block identity is exactly `evaluate_delivery`'s.
+
+Its two notes are resolved in R1 and R2.
+
+The binding is:
 - **spec files:** the contract and this pack;
 - **test files:** the suite and the runner.
