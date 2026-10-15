@@ -1,0 +1,93 @@
+{
+  "contract_schema": 1,
+  "scope": "accept-sync-completion",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Admit, validate, idempotently archive, and acknowledge one delivered Snapshot Completion or Change Completion under Wire Protocol Version 1 without accepting false completeness: answer with exactly one Delivery Receipt, retryable failure, or Delivery Block whose bytes match ingest-protocol's own evaluation for a delivering installation, accept a completion only when its cycle identity, kind, sequence continuity, counts, and cumulative fragment-chain digest match the cycle's durably archived fragments, archive the exact envelope before any receipt, keep pending, ended, and unknown installations retryable as accept-ingest-batch does, and make accepted sequence gaps visible.",
+  "inputs": [
+    {
+      "name": "delivered_bytes",
+      "mode": "pure",
+      "description": "The exact uncompressed bytes of one valid Snapshot Completion or Change Completion, which the ingress shell routes here after decoding its kind."
+    },
+    {
+      "name": "receipt_time",
+      "mode": "pure",
+      "description": "The timezone-aware Portal time of the delivery, supplied by the caller and recorded as the receipt time and Last Delivery."
+    },
+    {
+      "name": "operational_state",
+      "mode": "effectful",
+      "description": "The Operational Store's installation lifecycle states, honored capability advertisements, archived message identities, sequence history and gaps, delivery cycles derived from archived fragments, and storage reserve, read and written through operational-store@2."
+    },
+    {
+      "name": "free_space",
+      "mode": "volatile",
+      "description": "Free bytes on the store's filesystem, which the store compares with its reserve when archiving."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "delivery_response",
+      "description": "accept-ingest-batch@1's DeliveryResponse: exactly one of a Delivery Receipt echoing the installation, sequence, and message SHA-256; a retryable failure with reason storage-reserve-exhausted or temporarily-unavailable; or a Delivery Block naming one closed ingest-protocol failure with the message's identity, together with its named failure and any accepted sequence gap."
+    },
+    {
+      "name": "archived_completion",
+      "description": "For a newly accepted completion, the exact envelope, receipt, receipt time, staged generation, and completion evidence (completion and snapshot kind, record type, cycle identity, page, fragment, and record counts, and final chain) archived in one store transaction, with Last Delivery and any sequence gap; the cycle then reads as completed. No source cursor or token is stored. Nothing for a retry, retryable failure, or Delivery Block."
+    },
+    {
+      "name": "delivery_block_record",
+      "description": "A health-data-free Delivery Block record for every block: installation, sequence, message SHA-256, failure, and first and last seen times."
+    }
+  ],
+  "named_failures": [
+    { "name": "sequence-content-mismatch", "outcome": "delivery-block" },
+    { "name": "sequence-out-of-order", "outcome": "delivery-block" },
+    { "name": "unsupported-wire-protocol", "outcome": "delivery-block" },
+    { "name": "completion-identity-mismatch", "outcome": "delivery-block" },
+    { "name": "completion-kind-mismatch", "outcome": "delivery-block" },
+    { "name": "completion-sequence-gap", "outcome": "delivery-block" },
+    { "name": "completion-count-mismatch", "outcome": "delivery-block" },
+    { "name": "completion-chain-mismatch", "outcome": "delivery-block" },
+    { "name": "installation-pending", "outcome": "retryable" },
+    { "name": "installation-ended", "outcome": "retryable" },
+    { "name": "installation-unknown", "outcome": "retryable" },
+    { "name": "storage-reserve-exhausted", "outcome": "retryable" },
+    { "name": "store-busy", "outcome": "retryable" }
+  ],
+  "observable_effects": [
+    {
+      "name": "operational-store-write",
+      "description": "Archives a newly accepted Snapshot Completion or Change Completion, or records a health-data-free Delivery Block, through operational-store@2; retries and retryable failures write nothing."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the order in which a delivered completion is checked, and the mapping of each check to a receipt, retryable failure, or Delivery Block",
+      "applying ingest-protocol's identity, sequence, generation, version, and completion-proof rules to durable store facts: the cycle's identity and kind, sequence continuity from its first fragment, its counts, and its cumulative fragment-chain digest",
+      "turning a decoded completion into the store's exact completion record"
+    ],
+    "does_not_own": [
+      "wire schemas, exact bytes, fragment-chain calculation, and the closed failure vocabularies, which belong to ingest-protocol",
+      "the store's schema, transactions, retry identity, delivery-cycle facts, gap evidence, and storage reserve, which belong to operational-store",
+      "installation lifecycle transitions and capability generations, which belong to manage-sender-installation",
+      "the DeliveryResponse type, undecodable and non-Outbox bytes, Ingest Batches, and fragment continuity, which belong to accept-ingest-batch",
+      "HTTP routing, request limits, decompression, and Authorized Ingress, which belong to the Portal ingress shell",
+      "processing, publishing, or cutting over a completed cycle, which belong to the complete-initial-snapshot, complete-replacement-baseline, complete-reconciliation-snapshot, and complete-change-cycle scopes"
+    ]
+  },
+  "dependencies": [
+    { "scope": "ingest-protocol", "version": "1" },
+    { "scope": "accept-ingest-batch", "version": "1" },
+    { "scope": "manage-sender-installation", "version": "1" },
+    { "scope": "operational-store", "version": "2" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/accept-sync-completion-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_accept_sync_completion_1.py"
+    },
+    "runner": "tests/acceptance/run_accept_sync_completion_1.sh",
+    "languages": ["python"]
+  }
+}
