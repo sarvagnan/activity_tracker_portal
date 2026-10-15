@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_accept_sync_completion_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"bf455df45f91d7cf0f71898695873570f772945e06df5ffb9722e52b70e219ad","parent":"GENESIS","recorded_at":"2026-10-15T16:27:41+00:00","sequence":1,"unit":{"name":"accept-sync-completion","version":"1"}}
