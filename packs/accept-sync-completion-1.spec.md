@@ -137,7 +137,7 @@ For an active installation with storage available, every answer equals `ingest-p
 
 Each block and each identical retry is checked against the whole database: a block changes only its own record, and a retry changes nothing.
 
-Seeded synthetic histories interleave fragments, accepted through `accept-ingest-batch@1`, with completions. They cover several concurrent cycles of every kind and record type, and include:
+Seeded synthetic histories interleave completions with fragments, accepted through `accept-ingest-batch@1`, and with capability acknowledgements. They cover several concurrent cycles of every kind and record type, and include:
 - exact, empty, and second completions;
 - wrong kinds, record types, counts, and chains;
 - holes left by skipped sequences and by blocked messages;
@@ -169,6 +169,7 @@ Tests: `test_answers_match_the_protocol_evaluation`.
 ## Ground rules
 
 - Fixtures are synthetic. Messages are built with `ingest-protocol@1`, and fragments are archived through the published `accept-ingest-batch@1`.
+- Capability acknowledgements, which only fill sequences, are archived directly through `operational-store@2`, so the suite needs no unit beyond the contract's dependencies.
 - A busy store is injected with a held write transaction on a second connection and a short store timeout, and with a store proxy whose operation raises the store's retryable `store-busy`.
 
 ## Freeze prerequisites
