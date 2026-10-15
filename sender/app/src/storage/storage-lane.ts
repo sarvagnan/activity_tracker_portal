@@ -21,4 +21,3 @@ export function storageLane(database: SenderDatabase): Lane {
   }
   return lane;
 }
-
