@@ -45,7 +45,7 @@ Tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_m
 
 ### R2 — Caller errors
 
-The function raises `ValueError` before any store use in two cases: for an invalid `now`, and for bytes that are not a valid capability acknowledgement. The second case covers undecodable or noncanonical bytes, Ingest Batches, completions, and checkpoints.
+The function raises `ValueError` before any store use in two cases: for an invalid `now`, and for bytes that are not a valid capability acknowledgement. The second case covers undecodable or noncanonical bytes, non-Outbox messages, Ingest Batches, Snapshot and Change Completions, and Sync Checkpoints.
 
 Tests: `test_invalid_time_is_a_caller_error`, `test_other_bytes_are_caller_errors`.
 
@@ -53,9 +53,12 @@ Tests: `test_invalid_time_is_a_caller_error`, `test_other_bytes_are_caller_error
 
 An acknowledgement's identity is its installation, sequence, and message SHA-256.
 - **Identical retry:** a second delivery of identical bytes returns the exact archived receipt and writes nothing. That holds even after the installation stops delivering, its generation stops being honored, or the reserve is exhausted.
-- **Conflict:** different bytes at an archived sequence are blocked as `sequence-content-mismatch`.
+- **Conflict:** different bytes at an archived sequence are blocked as `sequence-content-mismatch`. Identity is checked before installation state, so this holds after the installation retires.
 
-Tests: `test_identical_retry_returns_the_archived_receipt`, `test_same_sequence_different_bytes_is_blocked`.
+Tests:
+- `test_identical_retry_returns_the_archived_receipt`
+- `test_conflict_after_retirement_is_still_blocked`
+- `test_same_sequence_different_bytes_is_blocked`
 
 ### R4 — Installation state
 
@@ -123,7 +126,7 @@ Tests: `test_answers_match_the_protocol_evaluation`.
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the Python suite `tests/acceptance/test_accept_capability_acknowledgement_1.py`, 17 tests;
+- the Python suite `tests/acceptance/test_accept_capability_acknowledgement_1.py`, 18 tests;
 - the runner `tests/acceptance/run_accept_capability_acknowledgement_1.sh`, which runs the pinned-runtime check and then the suite;
 - the Interface stub `src/activity_tracker_portal/accept_capability_acknowledgement.py`, whose function raises `NotImplementedError`.
 
@@ -134,9 +137,9 @@ Every Delivery Block is checked with its durable record, including repeats at di
 
 The test asserts this coverage.
 
-Against the stub, every behaviour test fails: 14 tests and R9's 8 seeded histories. The two contract tests pass, and the runner exits 1.
+Against the stub, every behaviour test fails: 15 tests and R9's 8 seeded histories. The two contract tests pass, and the runner exits 1.
 
-A throwaway reference, kept out of the repository, passes all 17 tests. It kills all 19 mutants:
+A throwaway reference, kept out of the repository, passes all 18 tests. It kills all 21 mutants:
 - pending, ended, and unknown installations mishandled;
 - the order check removed;
 - the generation pre-check removed;
@@ -147,7 +150,9 @@ A throwaway reference, kept out of the repository, passes all 17 tests. It kills
 - other kinds or naive times accepted;
 - retries re-evaluated;
 - the staged generation ignored;
-- a shifted receipt time.
+- a shifted receipt time;
+- completions and checkpoints accepted;
+- a conflict after retirement answered as ended.
 
 The coverage counts above are what the seeded histories produce. The test itself requires positive coverage of each category, not those totals.
 
@@ -160,6 +165,11 @@ Both cases are now tested in R6 and R8. Its two P2 findings are also resolved:
 - R9 is qualified by R8's storage availability.
 
 Its notes are resolved: R9 now compares the whole database for blocks and retries, and R1 compares dependencies as a set.
+
+GPT 6 Astra's Gate B round 1 found three gaps, two of them shown by surviving mutants. All are resolved:
+- R2 now covers Snapshot Completions, Change Completions, and Sync Checkpoints.
+- R3 tests a conflict after retirement.
+- R8's busy-archive block goes through the full block check, repeated at distinct times.
 
 The binding is:
 - **spec files:** the contract and this pack;

@@ -170,7 +170,7 @@ class Case(unittest.TestCase):
         with self.store.read() as view:
             return {(r.installation_id, r.sequence, r.message_sha256, r.failure): r for r in view.delivery_blocks()}
 
-    def deliverBlocked(self, data: bytes, failure: str, minute: float = 1) -> None:
+    def deliverBlocked(self, data: bytes, failure: str, minute: float = 1, store: Any = None) -> None:
         """Deliver an acknowledgement that must be blocked; require the durable record and no other write."""
         message = ingest_protocol.decode_message(data)
         before, records_before = contents(self.path), self.block_index()
@@ -178,7 +178,8 @@ class Case(unittest.TestCase):
             "wire_version": 1, "kind": "delivery-block", "failure": failure, "message_sha256": message_sha256(data),
             "sender_installation": message["sender_installation"], "sequence": message["sequence"],
         })
-        self.assertEqual(self.accept(data, minute), DeliveryResponse("block", body, failure, None))
+        response = accept_capability_acknowledgement(store or self.store, data, at(minute))
+        self.assertEqual(response, DeliveryResponse("block", body, failure, None))
         self.assertEqual(without_blocks(contents(self.path)), without_blocks(before))
         key = (message["sender_installation"], message["sequence"], message_sha256(data), failure)
         records = self.block_index()
@@ -253,6 +254,25 @@ class R2CallerErrors(Case):
             json.dumps(json.loads(acknowledgement(1)), indent=1).encode(),
             batch(1, "00000000-0000-4000-8000-000000000c01"),
             encode_message(advertisement(1)),
+            encode_message({
+                "wire_version": 1, "kind": "snapshot-completion", "sender_installation": A, "sequence": 1,
+                "capability_generation": 1, "snapshot_kind": "initial", "record_type": "steps",
+                "cycle_id": "00000000-0000-4000-8000-000000000c01", "page_count": 0, "fragment_count": 0,
+                "record_count": 0, "final_chain": chain_start("00000000-0000-4000-8000-000000000c01"),
+            }),
+            encode_message({
+                "wire_version": 1, "kind": "change-completion", "sender_installation": A, "sequence": 1,
+                "capability_generation": 1, "record_type": "steps", "cycle_id": "00000000-0000-4000-8000-000000000c01",
+                "page_count": 0, "fragment_count": 0, "record_count": 0,
+                "final_chain": chain_start("00000000-0000-4000-8000-000000000c01"),
+            }),
+            encode_message({
+                "wire_version": 1, "kind": "sync-checkpoint", "sender_installation": A, "sequence": 1,
+                "capability_generation": 1, "run_sequence": 1, "trigger": "background",
+                "started_at": "2026-10-15T08:59:00.000Z", "ended_at": "2026-10-15T08:59:30.000Z",
+                "background_scheduling": "available", "record_types": [],
+                "outbox_messages_before_checkpoint": 0, "outbox_bytes_before_checkpoint": 0,
+            }),
         ]
         for data in others:
             with self.assertRaises(ValueError):
@@ -280,6 +300,16 @@ class R3IdentityAndRetry(Case):
         before = contents(self.path)
         self.assertEqual(self.accept(data, minute=12), first)
         self.assertEqual(contents(self.path), before)
+
+    def test_conflict_after_retirement_is_still_blocked(self) -> None:
+        self.activate()
+        self.accept(acknowledgement(1, generation=1))
+        self.store.begin_draining(A, at(2))
+        self.store.retire_installation(A, "drained", at(3))
+        for minute in (4, 8):
+            self.deliverBlocked(acknowledgement(1, generation=2), "sequence-content-mismatch", minute=minute)
+        with self.store.read() as view:
+            self.assertEqual([(r.first_seen_at, r.last_seen_at, r.count) for r in view.delivery_blocks()], [(at(4), at(8), 2)])
 
     def test_same_sequence_different_bytes_is_blocked(self) -> None:
         self.activate()
@@ -421,11 +451,9 @@ class R8CapacityAndContention(Case):
                                  "temporarily-unavailable", "store-busy")
         self.assertEqual(contents(self.path), before)
         # The generation is checked before archival: a busy archive never hides a block.
-        unknown = acknowledgement(1, generation=3)
-        response = accept_capability_acknowledgement(BusyAt(self.store, "archive_capability_acknowledgement"), unknown, at(3))
-        self.assertEqual((response.outcome, response.failure), ("block", "unsupported-wire-protocol"))
-        self.assertEqual([(r.message_sha256, r.failure, r.last_seen_at) for r in self.block_index().values()],
-                         [(message_sha256(unknown), "unsupported-wire-protocol", at(3))])
+        busy_archive = BusyAt(self.store, "archive_capability_acknowledgement")
+        for minute in (3, 6):
+            self.deliverBlocked(acknowledgement(1, generation=3), "unsupported-wire-protocol", minute=minute, store=busy_archive)
         self.assertEqual(without_blocks(contents(self.path)), without_blocks(before))
         self.assertReceipt(self.accept(acknowledgement(1)), acknowledgement(1))
 
