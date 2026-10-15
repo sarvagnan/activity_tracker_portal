@@ -131,7 +131,7 @@ The status sets the persistent condition:
 The notifier is called once at each onset, which is a change from no condition, or from the other condition. A change of condition is an onset even when the previous onset's notification failed. The notification behaves as follows:
 - it is called with the condition alone, after the observation is recorded, and its success is then recorded;
 - one that throws, synchronously or not, is retried at the next observation until it succeeds;
-- if its success cannot be recorded, `ensureRegistered()` returns `storage-failed`, and the next observation notifies again, so delivery is at least once.
+- if its success cannot be recorded, `ensureRegistered()` and `condition()` report `storage-failed` (R9), and the next observation notifies again, so delivery is at least once.
 
 `observe()` and `ensureRegistered()` resolve only after any notification attempt, and the attempt to record its success, have settled. The condition and its notification state survive a restart. Observations run one at a time in each instance, so concurrent observations notify an onset once.
 
@@ -168,11 +168,10 @@ Tests: `platform_errors_read_as_the_worst_status`.
 
 If recording an observation fails:
 - `observe()` still returns the observed status, because a checkpoint must report what was observed;
-- `ensureRegistered()` returns `storage-failed`;
-- the notifier is not called, because the condition's onset cannot be recorded;
-- the persistent condition keeps its last recorded value.
+- `ensureRegistered()` and `condition()` return `storage-failed`;
+- the notifier is not called, because the condition's onset cannot be recorded.
 
-`condition()` reads the persistent condition on each call, so it returns `storage-failed` when that read fails. After a failed recording whose read still succeeds, it returns the last recorded condition.
+Recording an observation includes recording its notification's success, so a lost acknowledgement (R6) counts as a failed recording. `condition()` returns `storage-failed` until the same instance next records an observation in full, because its persistent condition may be stale. It also returns `storage-failed` whenever its own read fails. The persistent condition keeps its last recorded value, and another instance, such as one after a restart, reads that value.
 
 A storage error of any type, including `TypeError`, is a storage failure, not a caller error.
 
@@ -239,6 +238,7 @@ Tests: `no_battery_exemption_or_foreground_service`, `the_module_stays_inside_it
 
 - The fakes are synthetic. The platform fake scripts registration and restriction, including thrown and malformed results. The notifier fake records each notification and can throw. The sync fake records each trigger and scripts its result. No fixture contains real health data, Device identifiers, or credentials.
 - Assertions that something writes nothing compare the whole database: `PRAGMA user_version`, every schema object, and every row of every table.
+- Write failures come from SQLite itself, through a second connection to the same file with `PRAGMA query_only` on, so a failure does not depend on how a write is spelled or issued. Read failures come from a storage seam whose every operation rejects.
 - A restart is simulated by reopening the database file in a new instance. The checkpoint test also abandons a held Polling Run there, so the next process recovers it as interrupted.
 - Tests wait on explicit signals, such as the lane being held or a notification starting. A short pause only gives a wrong implementation time to misbehave; it never decides whether a correct one passes.
 - The runner sets a per-test timeout, so an implementation that hangs fails rather than stalls CI.

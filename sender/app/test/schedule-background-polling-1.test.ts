@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import type { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -169,6 +170,18 @@ async function fixture(t: TestContext) {
     make(overrides: Partial<BackgroundPollingOptions> = {}): BackgroundPolling {
       return createBackgroundPolling({ database, platform: f.platform, notifier: f.notifier, sync: f.sync, now: f.now, ...overrides });
     },
+    /**
+     * A second connection to the same file. While failing, SQLite itself rejects its writes, so the failure
+     * does not depend on how a write is spelled or issued. It starts failing.
+     */
+    async writeFailing(): Promise<{ readonly database: SenderDatabase; readonly failing: (on: boolean) => void }> {
+      let handle!: DatabaseSync;
+      const second = await openNodeDatabase(path, (opened) => { handle = opened; });
+      t.after(async () => { try { await second.close(); } catch { /* already closed */ } });
+      const failing = (on: boolean) => { handle.exec(`PRAGMA query_only = ${on ? "ON" : "OFF"}`); };
+      failing(true);
+      return { database: second, failing };
+    },
     /** A new process on the same file; the old instance is never used again. */
     async reopen(): Promise<void> { await database.close(); database = await openNodeDatabase(path); f.polling = f.make(); },
     polling: undefined as unknown as BackgroundPolling,
@@ -200,24 +213,6 @@ async function contents(database: SenderDatabase) {
     tables[name as string] = await database.query(`SELECT * FROM "${name as string}" ORDER BY rowid`);
   }
   return { version: await database.query("PRAGMA user_version"), schema, tables };
-}
-
-const MUTATION = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/i;
-
-/** Every write fails while `failing()` holds; reads succeed. */
-function failingWrites(database: SenderDatabase, failing: () => boolean = () => true): SenderDatabase {
-  const guard = (sql: string) => { if (failing() && MUTATION.test(sql)) throw new Error(`${SENTINEL} synthetic write failure`); };
-  return {
-    async execute(sql, parameters) { guard(sql); return database.execute(sql, parameters); },
-    query: (sql, parameters) => database.query(sql, parameters),
-    transaction: (fn) => database.transaction((tx) => fn({
-      execute: async (sql: string, parameters?: readonly DatabaseValue[]) => { guard(sql); return tx.execute(sql, parameters); },
-      query: (sql: string, parameters?: readonly DatabaseValue[]) => tx.query(sql, parameters),
-      transaction: tx.transaction.bind(tx),
-      close: tx.close.bind(tx),
-    })),
-    close: () => database.close(),
-  };
 }
 
 /** Every operation fails with `error`. */
@@ -572,20 +567,23 @@ test("a_lost_acknowledgement_notifies_again", async (t) => {
   const f = await fixture(t);
   f.platform.restricted = true;
   // Storage fails from the moment the notification is delivered, so only its acknowledgement is lost.
-  let failing = false;
-  const polling = f.make({ database: failingWrites(f.database, () => failing) });
-  f.notifier.onNotify = () => { failing = true; };
+  const { database, failing } = await f.writeFailing();
+  failing(false);
+  const polling = f.make({ database });
+  f.notifier.onNotify = () => { failing(true); };
   assert.deepEqual(await polling.ensureRegistered(), { outcome: "storage-failed" });
   assert.deepEqual(f.notifier.delivered, ["restricted"]);
   f.notifier.onNotify = null;
-  failing = false;
-  // The observation and its condition stayed durable; the notification is repeated, then acknowledged.
+  failing(false);
+  // The observation and its condition stayed durable, but the observation was not fully recorded (R9).
   assert.deepEqual(await state(f), [row("restricted", START, "restricted", null)]);
-  assert.equal(await polling.condition(), "restricted");
+  assert.deepEqual(await polling.condition(), { outcome: "storage-failed" });
+  // The next observation repeats the notification, then records it.
   f.wall = START + HOUR;
   assert.equal(await polling.observe(), "restricted");
   assert.deepEqual(f.notifier.delivered, ["restricted", "restricted"]);
   assert.deepEqual(await state(f), [row("restricted", START + HOUR, "restricted", "restricted")]);
+  assert.equal(await polling.condition(), "restricted");
   assert.equal(await polling.observe(), "restricted");
   assert.deepEqual(f.notifier.attempts, ["restricted", "restricted"]);
 });
@@ -658,21 +656,31 @@ test("storage_failures_keep_the_observation", async (t) => {
   const f = await fixture(t);
   f.platform.restricted = true;
   const before = await contents(f.database);
-  const writes = f.make({ database: failingWrites(f.database) });
-  assert.equal(await writes.observe(), "restricted");
-  assert.deepEqual(await writes.ensureRegistered(), { outcome: "storage-failed" });
+  const { database, failing } = await f.writeFailing();
+  const writes = f.make({ database });
   assert.equal(await writes.condition(), null);
+  assert.equal(await writes.observe(), "restricted");
+  assert.deepEqual(await writes.condition(), { outcome: "storage-failed" });
+  assert.deepEqual(await writes.ensureRegistered(), { outcome: "storage-failed" });
   // A storage seam that throws TypeError is still a storage failure, not a caller error.
   for (const failure of [new Error(`${SENTINEL} synthetic storage failure`), new TypeError(`${SENTINEL} synthetic storage value`)]) {
     const broken = f.make({ database: brokenDatabase(failure) });
+    // A failed read of the condition is a storage failure even before any observation.
+    assert.deepEqual(await broken.condition(), { outcome: "storage-failed" });
     assert.equal(await broken.observe(), "restricted");
     assert.deepEqual(await broken.ensureRegistered(), { outcome: "storage-failed" });
     assert.deepEqual(await broken.condition(), { outcome: "storage-failed" });
   }
   assert.deepEqual(f.notifier.calls, []);
   assert.deepEqual(await contents(f.database), before);
-  // Once storage recovers, the onset is recorded and notified.
-  assert.equal(await f.polling.observe(), "restricted");
+  // Until the instance records an observation again, its condition stays storage-failed.
+  failing(false);
+  assert.deepEqual(await writes.condition(), { outcome: "storage-failed" });
+  // Another instance, as after a restart, reads the persistent condition, which kept its last recorded value.
+  assert.equal(await f.polling.condition(), null);
+  // Once an observation is recorded, the onset is notified and the condition reads again.
+  assert.equal(await writes.observe(), "restricted");
+  assert.equal(await writes.condition(), "restricted");
   assert.deepEqual(f.notifier.attempts, ["restricted"]);
 });
 
