@@ -138,6 +138,21 @@ def checkpoint(run_sequence: int) -> SyncCheckpointRecord:
     )
 
 
+def contents(path: Path) -> dict[str, object]:
+    """The whole database: schema version, every schema object, and every row of every table, BLOBs included."""
+    connection = sqlite3.connect(path)
+    try:
+        schema = connection.execute("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+        tables: dict[str, list[tuple[object, ...]]] = {}
+        for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall():
+            rows = connection.execute(f'SELECT * FROM "{name}"').fetchall()
+            tables[name] = sorted(rows, key=lambda row: [(value is None, type(value).__name__, 0 if value is None else value) for value in row])
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        connection.close()
+    return {"user_version": user_version, "schema": schema, "tables": tables}
+
+
 class StoreCase(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
@@ -368,6 +383,23 @@ class R16CoherentDurableAndHealthDataFree(StoreCase):
         assert after is not None
         self.assertEqual((after.fragment_count, after.record_count, after.last_sequence, after.completion_sequence), (2, 3, 2, 3))
 
+    def test_cycle_reads_write_nothing(self) -> None:
+        store = self.ready()
+        store.archive_ingest_batch(header(INSTALLATION, 1, "ingest-batch"), fragment(CYCLE, 1, 1, chain("a"), projections(2)))
+        store.archive_completion(header(INSTALLATION, 2, "change-completion"),
+                                 CompletionRecord("change", None, "weight", OTHER_CYCLE, 0, 0, 0, chain("final-x")))
+        store.archive_ingest_batch(header(INSTALLATION, 3, "ingest-batch"), fragment(THIRD_CYCLE, 1, 1, chain("t"), retractions(1)))
+        store.archive_completion(header(INSTALLATION, 4, "snapshot-completion"), completion(THIRD_CYCLE))
+        before = contents(self.path)
+        # Fragments only, completion only, both, absent, and an unknown installation; one view and several.
+        with store.read() as view:
+            for cycle_id in (CYCLE, OTHER_CYCLE, THIRD_CYCLE, "00000000-0000-4000-8000-00000000dead"):
+                view.delivery_cycle(INSTALLATION, cycle_id)
+            view.delivery_cycle(OTHER, CYCLE)
+        for cycle_id in (CYCLE, OTHER_CYCLE, THIRD_CYCLE):
+            self.assertIsNotNone(self.cycle(store, INSTALLATION, cycle_id))
+        self.assertEqual(contents(self.path), before)
+
     def test_cycle_read_survives_reopen(self) -> None:
         store = self.ready()
         store.archive_ingest_batch(header(INSTALLATION, 1, "ingest-batch"), fragment(CYCLE, 1, 1, chain("a"), projections(2)))
@@ -405,8 +437,9 @@ class R17NoSchemaChange(StoreCase):
             connection.executescript((ROOT / "tests/acceptance/fixtures/operational-store-1-archive.sql").read_text(encoding="utf-8"))
         finally:
             connection.close()
-        before = self.schema()
-        self.assertEqual((before[1], before[2]), (1, [(1, BASELINE_CHECKSUM)]))
+        before = contents(self.path)
+        self.assertEqual(before["user_version"], 1)
+        self.assertEqual([row[:2] for row in before["tables"]["store_migrations"]], [(1, BASELINE_CHECKSUM)])
         store = self.open()
         self.assertEqual(self.cycle(store, INSTALLATION, CYCLE), DeliveryCycle(
             installation_id=INSTALLATION,
@@ -438,19 +471,10 @@ class R17NoSchemaChange(StoreCase):
             record_count=1,
             completion_sequence=5,
         ))
+        self.assertIsNone(self.cycle(store, INSTALLATION, "00000000-0000-4000-8000-00000000dead"))
         store.close()
-        # Opening and reading under @2 changed no schema object, schema version, or migration record.
-        self.assertEqual(self.schema(), before)
-
-    def schema(self) -> tuple[list[tuple[object, ...]], int, list[tuple[object, ...]]]:
-        connection = sqlite3.connect(self.path)
-        try:
-            objects = connection.execute("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").fetchall()
-            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
-            migrations = connection.execute("SELECT version, checksum FROM store_migrations ORDER BY version").fetchall()
-        finally:
-            connection.close()
-        return objects, user_version, migrations
+        # Opening and reading under @2 changed nothing: schema, version, migration records, and every row.
+        self.assertEqual(contents(self.path), before)
 
 if __name__ == "__main__":
     unittest.main()

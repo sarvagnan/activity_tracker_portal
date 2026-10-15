@@ -82,16 +82,17 @@ Tests:
 
 ### R16 — Coherent, durable, and health-data-free
 
-The read belongs to the view's snapshot: a fragment committed after the view opened is not seen. It survives a reopen of the database. A `DeliveryCycle` contains no Source Projection bytes, Source Identities, or health values; it holds identities, a record type name, counts, sequences, and digests.
+The read belongs to the view's snapshot: a fragment committed after the view opened is not seen. It survives a reopen of the database. It writes nothing: after reads of every kind (fragments only, completion only, both, absent, and an unknown installation), the whole database is unchanged. "Whole database" means `PRAGMA user_version`, every schema object, and every row of every table, BLOBs included. A `DeliveryCycle` contains no Source Projection bytes, Source Identities, or health values; it holds identities, a record type name, counts, sequences, and digests.
 
 Tests:
 - `test_cycle_read_is_isolated_from_later_commits`
+- `test_cycle_reads_write_nothing`
 - `test_cycle_read_survives_reopen`
 - `test_cycle_read_is_health_data_free`
 
 ### R17 — No schema change
 
-`MIGRATIONS` is exactly `@1`'s: one baseline migration with an unchanged checksum. A database created under `@1` therefore opens under `@2`, and its existing archive answers cycle reads with no migration. Opening and reading it changes no schema object, schema version, or migration record.
+`MIGRATIONS` is exactly `@1`'s: one baseline migration with an unchanged checksum. A database created under `@1` therefore opens under `@2`, and its existing archive answers cycle reads with no migration. Opening and reading it changes nothing in the whole database, including migration records with their times.
 
 The test proves this with `tests/acceptance/fixtures/operational-store-1-archive.sql`. That file is a dump of a synthetic database produced by the published `@1` module at `bee3744`, with no `delivery_cycle`.
 
@@ -129,7 +130,7 @@ Not mechanically provable here; the approver confirms these in implementation re
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the new suite `tests/acceptance/test_operational_store_2.py`, 14 tests;
+- the new suite `tests/acceptance/test_operational_store_2.py`, 15 tests;
 - the `@1` fixture, `tests/acceptance/fixtures/operational-store-1-archive.sql` (R17);
 - the runner `tests/acceptance/run_operational_store_2.sh`, which runs `@1`'s bound runner unchanged and then the new suite;
 - the Interface stub, appended to the published module: `DeliveryCycle`, and a `delivery_cycle` method that raises `NotImplementedError`.
@@ -140,11 +141,11 @@ The tests pin these refinements:
 - A completion's record type never overrides the fragments'.
 
 Against the stub:
-- the 10 R14–R16 tests, and `test_version_1_database_answers_cycle_reads`, fail;
+- the 11 R14–R16 tests, and `test_version_1_database_answers_cycle_reads`, fail;
 - the two contract tests and `test_version_2_keeps_the_baseline_schema` pass, because they check invariants the stub already keeps;
 - `@1`'s runner passes its 53 tests, because `@1`'s behaviour is intact.
 
-The runner therefore exits 1. A throwaway reference, kept out of the repository, passes all 14 new tests and `@1`'s 53. It kills all 15 mutants:
+The runner therefore exits 1. A throwaway reference, kept out of the repository, passes all 15 new tests and `@1`'s 53. It kills all 16 mutants:
 - the first fragment taken for the last;
 - the installation ignored in each of the three lookups;
 - items counted per fragment as one;
@@ -157,7 +158,8 @@ The runner therefore exits 1. A throwaway reference, kept out of the repository,
 - the kind dropped;
 - wrong empty indexes;
 - an unknown installation refused;
-- the message digest reported as the previous chain.
+- the message digest reported as the previous chain;
+- a read that also writes through another connection.
 
 GPT 6.1 Sol's read-only implementability review found nothing blocking. Its four P2 findings are resolved above:
 - the `@1` fixture;
@@ -166,6 +168,8 @@ GPT 6.1 Sol's read-only implementability review found nothing blocking. Its four
 - the empty-fragment test.
 
 Its two notes are also resolved: the contract test compares unordered collections, and the stub-failure count is corrected.
+
+GPT 6 Astra's Gate B round 1 objected that a read which also wrote through another connection passed every test. Reads are now checked against the whole database, in R16 and in R17's fixture test.
 
 The binding is:
 - **spec files:** this contract and pack, and `@1`'s contract and pack, which R1–R12 carry over and R13 compares against;
