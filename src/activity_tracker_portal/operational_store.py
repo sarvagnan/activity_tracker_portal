@@ -212,6 +212,25 @@ class SequenceGap:
 
 
 @dataclass(frozen=True)
+class DeliveryCycle:
+    """One installation's delivery cycle, derived from its archived fragments and completion."""
+
+    installation_id: str
+    cycle_id: str
+    record_type: str
+    cycle_kind: Literal["initial-snapshot", "reconciliation-snapshot", "change-cycle"] | None
+    first_sequence: int | None
+    last_sequence: int | None
+    last_source_page_index: int
+    last_fragment_index: int
+    last_previous_chain: str | None
+    last_message_sha256: str | None
+    fragment_count: int
+    record_count: int
+    completion_sequence: int | None
+
+
+@dataclass(frozen=True)
 class DeliveryBlockRecord:
     installation_id: str | None
     sequence: int | None
@@ -598,6 +617,9 @@ class StoreView:
             outbox_messages_before_checkpoint=row["outbox_messages_before_checkpoint"],
             outbox_bytes_before_checkpoint=row["outbox_bytes_before_checkpoint"],
         )
+
+    def delivery_cycle(self, installation_id: str, cycle_id: str) -> DeliveryCycle | None:
+        raise NotImplementedError("operational-store@2 delivery_cycle is not implemented")
 
     def storage_reserve(self) -> ReserveStatus:
         free = _sample_free_bytes(self._free_bytes, self._path)

@@ -118,14 +118,31 @@ Not mechanically provable here; the approver confirms this in implementation rev
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the new suite;
+The Operator approved the draft. The executable pack adds:
+- the new suite `tests/acceptance/test_operational_store_2.py`, 14 tests;
 - the runner `tests/acceptance/run_operational_store_2.sh`, which runs `@1`'s bound runner unchanged and then the new suite;
-- the Interface stub: `DeliveryCycle`, and a `delivery_cycle` method that raises `NotImplementedError`, appended to the published module.
+- the Interface stub, appended to the published module: `DeliveryCycle`, and a `delivery_cycle` method that raises `NotImplementedError`.
+
+R14's first test also archives a later fragment of the same cycle with a different record type, kind, and indexes. The read must report that fragment, because the store reports facts, not verdicts (Decision 4).
 
 Against the stub:
-- every R14–R16 test, and `test_version_1_database_answers_cycle_reads`, fails;
-- the contract tests and `test_version_2_keeps_the_baseline_schema` pass, because they check invariants the stub already keeps;
-- `@1`'s runner passes, because `@1`'s behaviour is intact.
+- the 11 R14–R16 tests, and `test_version_1_database_answers_cycle_reads`, fail;
+- the two contract tests and `test_version_2_keeps_the_baseline_schema` pass, because they check invariants the stub already keeps;
+- `@1`'s runner passes its 53 tests, because `@1`'s behaviour is intact.
 
-The runner therefore exits 1. GPT 6.1 Sol's read-only implementability review runs before Gate B.
+The runner therefore exits 1. A throwaway reference, kept out of the repository, passes all 14 new tests and `@1`'s 53. It kills all 13 mutants:
+- the first fragment taken for the last;
+- the installation ignored in each of the three lookups;
+- fragments counted as records;
+- retractions not counted;
+- a completion without fragments reported as absent;
+- the completion dropped;
+- the first sequence taken from the last fragment;
+- the kind dropped;
+- wrong empty indexes;
+- an unknown installation refused;
+- the message digest reported as the previous chain.
+
+GPT 6.1 Sol's read-only implementability review runs before Gate B. The binding is:
+- **spec files:** this contract and pack, and `@1`'s contract and pack, which R1–R12 carry over and R13 compares against;
+- **test files:** the new suite and runner, and every file `operational-store-pack/1` binds: `test_operational_store_1.py` and `run_operational_store_1.sh`.
