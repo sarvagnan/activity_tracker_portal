@@ -256,6 +256,25 @@ class Case(unittest.TestCase):
         with self.store.read() as view:
             return view.delivery_blocks()
 
+    def block_index(self) -> dict[tuple[object, ...], Any]:
+        return {(record.installation_id, record.sequence, record.message_sha256, record.failure): record for record in self.blocks()}
+
+    def deliverBlocked(self, data: bytes, failure: str, minute: float = 1, identity: bool = True) -> None:
+        """Deliver bytes that must be blocked, and require the durable block record and no other write."""
+        before, records_before = contents(self.path), self.block_index()
+        self.assertBlocked(self.accept(data, minute), data, failure, identity)
+        self.assertEqual(without_blocks(contents(self.path)), without_blocks(before))
+        message = ingest_protocol.decode_message(data) if identity else {}
+        key = (message.get("sender_installation"), message.get("sequence"), message_sha256(data), failure)
+        records = self.block_index()
+        prior = records_before.get(key)
+        record = records[key]
+        self.assertEqual(
+            (record.count, record.first_seen_at, record.last_seen_at),
+            ((prior.count if prior else 0) + 1, prior.first_seen_at if prior else at(minute), at(minute)),
+        )
+        self.assertEqual({k: v for k, v in records.items() if k != key}, {k: v for k, v in records_before.items() if k != key})
+
 
 # R1 — Governed Scope contract
 
@@ -416,7 +435,7 @@ class R4IdentityAndRetry(Case):
         self.assertReceipt(self.accept(batch(1)), batch(1))
         other = batch(1, items=[projection(b"synthetic-other-projection")])
         before = contents(self.path)
-        self.assertBlocked(self.accept(other), other, "sequence-content-mismatch")
+        self.deliverBlocked(other, "sequence-content-mismatch")
         self.assertEqual(without_blocks(contents(self.path)), without_blocks(before))
         self.assertEqual([record.failure for record in self.blocks()], ["sequence-content-mismatch"])
 
@@ -470,7 +489,7 @@ class R6SequenceOrderAndGaps(Case):
         later = batch(4, fragment=2, previous=after(first))
         self.accept(later)
         older = batch(2, fragment=2, previous=after(first))
-        self.assertBlocked(self.accept(older), older, "sequence-out-of-order")
+        self.deliverBlocked(older, "sequence-out-of-order")
 
     def test_gap_is_accepted_and_reported(self) -> None:
         self.activate()
@@ -509,7 +528,7 @@ class R7GenerationVersionsAndLimits(Case):
     def test_unhonored_generation_is_unsupported(self) -> None:
         self.activate()
         unknown = batch(1, generation=2)
-        self.assertBlocked(self.accept(unknown), unknown, "unsupported-wire-protocol")
+        self.deliverBlocked(unknown, "unsupported-wire-protocol")
         # A generation that stopped being honored is unsupported for new messages.
         self.store.honor_generation(2, encode_message(advertisement(2)), at(2))
         acknowledgement = control("capability-acknowledgement", 1, generation=2)
@@ -517,7 +536,7 @@ class R7GenerationVersionsAndLimits(Case):
             A, 1, message_sha256(acknowledgement), 2, at(2), acknowledgement, b'{"synthetic-receipt":1}'))
         self.store.stop_honoring_generation(1, at(3))
         stopped = batch(2, generation=1)
-        self.assertBlocked(self.accept(stopped, minute=4), stopped, "unsupported-wire-protocol")
+        self.deliverBlocked(stopped, "unsupported-wire-protocol", minute=4)
         current = batch(3, generation=2)
         self.assertReceipt(self.accept(current, minute=5), current, gap_after=1)
 
@@ -525,7 +544,7 @@ class R7GenerationVersionsAndLimits(Case):
         self.activate()
         for sequence, record_type, schema in ((1, "steps", 3), (2, "heart-rate", 2), (3, "weight", 1)):
             data = batch(sequence, record_type=record_type, schema=schema, cycle=f"00000000-0000-4000-8000-00000000d00{sequence}")
-            self.assertBlocked(self.accept(data), data, "unsupported-source-projection-schema")
+            self.deliverBlocked(data, "unsupported-source-projection-schema")
         accepted = batch(1, schema=2)
         self.assertReceipt(self.accept(accepted), accepted)
 
@@ -540,13 +559,13 @@ class R7GenerationVersionsAndLimits(Case):
     def test_over_limit_batches_are_blocked(self) -> None:
         self.activate()
         five = batch(1, items=[projection(b"synthetic-%d" % index) for index in range(MAX_RECORDS + 1)])
-        self.assertBlocked(self.accept(five), five, "record-count-limit-exceeded")
+        self.deliverBlocked(five, "record-count-limit-exceeded")
         over = sized(1, MAX_BYTES + 1)
-        self.assertBlocked(self.accept(over), over, "uncompressed-byte-limit-exceeded")
+        self.deliverBlocked(over, "uncompressed-byte-limit-exceeded")
         # The record count is checked before the size.
         both = batch(1, items=[projection(bytes(3000))] * (MAX_RECORDS + 1))
         self.assertGreater(len(both), MAX_BYTES)
-        self.assertBlocked(self.accept(both), both, "record-count-limit-exceeded")
+        self.deliverBlocked(both, "record-count-limit-exceeded")
 
 
 # R8 — Fragment continuity
@@ -556,7 +575,7 @@ class R8FragmentContinuity(Case):
     def test_a_cycle_starts_at_its_first_fragment(self) -> None:
         self.activate()
         for data in (batch(1, page=2), batch(1, fragment=2), batch(1, previous=chain_start(CYCLE_2))):
-            self.assertBlocked(self.accept(data), data, "fragment-order-mismatch")
+            self.deliverBlocked(data, "fragment-order-mismatch")
         start = batch(1)
         self.assertReceipt(self.accept(start), start)
 
@@ -587,7 +606,7 @@ class R8FragmentContinuity(Case):
             batch(2, fragment=2, previous=chain, kind="reconciliation-snapshot"),
         ]
         for data in cases:
-            self.assertBlocked(self.accept(data), data, "fragment-order-mismatch")
+            self.deliverBlocked(data, "fragment-order-mismatch")
         valid = batch(2, fragment=2, previous=chain)
         self.assertReceipt(self.accept(valid), valid)
 
@@ -599,13 +618,13 @@ class R8FragmentContinuity(Case):
             2, cycle=CYCLE, record_type="steps", kind="initial-snapshot", page_count=1, fragment_count=1,
             record_count=1, final_chain=after(first)), at(2))
         late = batch(3, fragment=2, previous=after(first))
-        self.assertBlocked(self.accept(late, minute=3), late, "fragment-order-mismatch")
+        self.deliverBlocked(late, "fragment-order-mismatch", minute=3)
         # A cycle completed without fragments accepts none either.
         archive_completion(self.store, completion_message(
             4, cycle=CYCLE_2, record_type="steps", kind="change-cycle", page_count=0, fragment_count=0,
             record_count=0, final_chain=chain_start(CYCLE_2)), at(4))
         empty = batch(5, cycle=CYCLE_2, kind="change-cycle")
-        self.assertBlocked(self.accept(empty, minute=5), empty, "fragment-order-mismatch")
+        self.deliverBlocked(empty, "fragment-order-mismatch", minute=5)
 
     def test_cycles_of_other_installations_never_matter(self) -> None:
         self.activate()
@@ -617,7 +636,7 @@ class R8FragmentContinuity(Case):
         fresh = batch(1, installation=B)
         self.assertReceipt(self.accept(fresh, minute=5), fresh)
         continuing = batch(2, installation=B, fragment=2, previous=after(first))
-        self.assertBlocked(self.accept(continuing, minute=6), continuing, "fragment-order-mismatch")
+        self.deliverBlocked(continuing, "fragment-order-mismatch", minute=6)
 
 
 # R9 — Exact archival before receipt
@@ -691,6 +710,25 @@ class R10CapacityAndContention(Case):
         self.free.value = RESERVE
         self.assertReceipt(self.accept(second), second)
 
+    def test_blocks_are_answered_even_without_reserve(self) -> None:
+        self.activate()
+        first = batch(1)
+        self.accept(first)
+        third = batch(3, fragment=2, previous=after(first))
+        self.accept(third)
+        self.free.value = RESERVE - 1
+        chain = after(third)
+        self.deliverBlocked(batch(1, items=[projection(b"synthetic-other")]), "sequence-content-mismatch")
+        self.deliverBlocked(batch(2, fragment=3, previous=chain), "sequence-out-of-order")
+        self.deliverBlocked(batch(4, fragment=3, previous=chain, generation=2), "unsupported-wire-protocol")
+        self.deliverBlocked(batch(4, fragment=3, previous=chain, schema=9), "unsupported-source-projection-schema")
+        self.deliverBlocked(batch(4, fragment=3, previous=chain, items=[projection(b"s")] * (MAX_RECORDS + 1)),
+                            "record-count-limit-exceeded")
+        self.deliverBlocked(sized(4, MAX_BYTES + 1, previous=chain, fragment=3), "uncompressed-byte-limit-exceeded")
+        self.deliverBlocked(batch(4, fragment=5, previous=chain), "fragment-order-mismatch")
+        # Only a batch that would be accepted meets the exhausted reserve.
+        self.assertRetryable(self.accept(batch(4, fragment=3, previous=chain)), "storage-reserve-exhausted", "storage-reserve-exhausted")
+
     def test_busy_store_is_retryable(self) -> None:
         self.activate()
         holder = sqlite3.connect(self.path, isolation_level=None, timeout=0)
@@ -706,6 +744,8 @@ class R10CapacityAndContention(Case):
         self.assertRetryable(accept_ingest_batch(BusyAt(self.store, "read"), batch(1), at(2)), "temporarily-unavailable", "store-busy")
         malformed = b"synthetic bytes that are not json"
         self.assertRetryable(accept_ingest_batch(BusyAt(self.store, "record_delivery_block"), malformed, at(2)),
+                             "temporarily-unavailable", "store-busy")
+        self.assertRetryable(accept_ingest_batch(BusyAt(self.store, "record_delivery_block"), batch(1, page=2), at(2)),
                              "temporarily-unavailable", "store-busy")
         self.assertEqual(contents(self.path), before)
         self.assertReceipt(self.accept(batch(1)), batch(1))
@@ -800,8 +840,16 @@ class R11Conformance(Case):
                 cycle = history.cycles.get(message["record_type"])
                 if cycle is not None and cycle["id"] == message["cycle_id"]:
                     history.accept_fragment(message["record_type"], data)
-        elif action == "after-completion" and expected.failure == "fragment-order-mismatch":
-            self.events["after-completion"] += 1
+        else:
+            if action == "after-completion" and expected.failure == "fragment-order-mismatch":
+                self.events["after-completion"] += 1
+            if expected.outcome == "block":
+                with store.read() as view:
+                    records = [record for record in view.delivery_blocks(message["sender_installation"])
+                               if (record.sequence, record.message_sha256, record.failure)
+                               == (message["sequence"], message_sha256(data), expected.failure)]
+                self.assertEqual([record.last_seen_at for record in records], [at(minute)], (minute, action))
+                self.events["recorded-block"] += 1
         history.sent.append(data)
         return expected.state
 
