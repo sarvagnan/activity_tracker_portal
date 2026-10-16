@@ -42,6 +42,24 @@ class OperatorNotificationTest {
         }
     }
 
+    @Test fun operatorConditionsUseFixedHealthDataFreeTextAndDistinctIds() {
+        val expected = mapOf(
+            "permission-missing" to OperatorNotification(1010, "Permission required", "Sender condition: permission-missing. Open the Sender."),
+            "screen-lock-removed" to OperatorNotification(1011, "Screen lock required", "Sender condition: screen-lock-removed. Open the Sender."),
+            "storage-pressure" to OperatorNotification(1012, "Storage space required", "Sender condition: storage-pressure. Open the Sender."),
+            "record-too-large" to OperatorNotification(1013, "Sender action required", "Sender condition: record-too-large. Open the Sender."),
+            "projection-refused" to OperatorNotification(1014, "Sender action required", "Sender condition: projection-refused. Open the Sender."),
+            "installation-key-unusable" to OperatorNotification(1015, "Installation key unusable", "Sender condition: installation-key-unusable. Open the Sender."),
+            "enrollment-refused" to OperatorNotification(1016, "Enrollment refused", "Sender condition: enrollment-refused. Open the Sender."),
+            "drain-complete" to OperatorNotification(1017, "Drain complete", "Sender condition: drain-complete. Open the Sender."),
+        )
+        val ids = mutableSetOf(1001, 1002, 1003)
+        for ((condition, notification) in expected) {
+            assertEquals(notification, operatorNotification(condition))
+            assertEquals(true, ids.add(notification.id))
+        }
+    }
+
     @Test fun rejectsEveryUnsupportedConditionWithoutEchoingInput() {
         for (condition in listOf("", "available", "Restricted", "restricted ", "private health data")) {
             val failure = assertThrows(IllegalArgumentException::class.java) { operatorNotification(condition) }

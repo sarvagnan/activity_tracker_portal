@@ -7,6 +7,10 @@ import { URL } from "node:url";
 import { test as nodeTest } from "node:test";
 import type { TestContext, TestFn, TestOptions } from "node:test";
 import { decodeMessage, encodeMessage, messageSha256 } from "@activity-tracker-portal/ingest-protocol";
+import { createShellConditionObserver, installationIdentity, CONDITION_NOTIFICATION_TIMEOUT_MS, CONDITION_OBSERVATION_BUDGET_MS, CONDITION_FINISH_RESERVE_MS, conditionNotifier } from "../src/shell/operator-condition-observer.ts";
+import type { ConditionRecord } from "../src/notifications/notify-operator-conditions.ts";
+import type { RunSummary, OutcomeReason } from "../src/outbox/stage-sync-checkpoint.ts";
+import { migrate, senderMigrations } from "../src/storage/migrations.ts";
 import { composeSender, MAX_DELIVERY_ATTEMPTS, DELIVERY_FINISH_RESERVE_MS, PROJECTION_IMPLEMENTATION_VERSION, readSyncConditions, STORAGE_PRESSURE_FREE_BYTES } from "../src/shell/compose-sender.ts";
 import type { ComposeSenderOptions, ShellRunResult } from "../src/shell/compose-sender.ts";
 import { startForegroundLifecycle } from "../src/shell/foreground-lifecycle.ts";
@@ -18,6 +22,7 @@ import { DELIVERY_TIMEOUT_MS } from "../src/delivery/send-outbox-message.ts";
 import { BACKGROUND_BUDGET_MS } from "../src/scheduling/schedule-background-polling.ts";
 import { createOutboxSender } from "../src/delivery/send-outbox-message.ts";
 import { appendOutboxMessages, lastOutboxSequence, outboxAad, outboxMessages } from "../src/outbox/stage-outbox-batch.ts";
+import { storageLane } from "../src/storage/storage-lane.ts";
 import type { SenderDatabase } from "../src/storage/database.ts";
 import { openNodeDatabase } from "./support/node-database.ts";
 import { NodeInstallationCipher } from "./support/node-installation-cipher.ts";
@@ -66,6 +71,7 @@ async function fixture(t: TestContext, initial: Status = enrolled()) {
       async refreshCapabilities() { return { outcome: "current" }; },
     }; },
     fetch: async () => { throw new Error("Synthetic offline Portal"); },
+    conditionNotifier: { async notify() {} },
     deliveryNotifier: { async notify(failure) { state.notifications.push(failure); } },
     cipher, sources,
     async projectionSchemaVersions() { state.versionReads++; return state.versions; },
@@ -88,7 +94,13 @@ function checkpoint(result: ShellRunResult) {
   if (result.outcome !== "checkpointed") throw new Error("Expected checkpoint");
   return result;
 }
-async function runs(database: SenderDatabase) { return database.query("SELECT * FROM sync_runs ORDER BY run_sequence"); }
+function query(database: SenderDatabase, ...args: Parameters<SenderDatabase["query"]>) {
+  return storageLane(database)(() => database.query(...args));
+}
+function execute(database: SenderDatabase, ...args: Parameters<SenderDatabase["execute"]>) {
+  return storageLane(database)(() => database.execute(...args));
+}
+async function runs(database: SenderDatabase) { return query(database, "SELECT * FROM sync_runs ORDER BY run_sequence"); }
 
 // The build identity must track the app release, independently of protocol versions.
 test("projection implementation identity matches the Sender package version", () => {
@@ -99,7 +111,7 @@ test("projection implementation identity matches the Sender package version", ()
 test("opens and migrates once; start and foreground return ensure registration and manual triggers share the run sequence", async (t) => {
   const f = await fixture(t);
   const shell = await composeSender(f.options);
-  assert.equal((await f.database().query("PRAGMA user_version"))[0].user_version, 9);
+  assert.equal((await query(f.database(), "PRAGMA user_version"))[0].user_version, 9);
   assert.equal(checkpoint(await shell.foreground()).summary.trigger, "foreground");
   assert.equal(checkpoint(await shell.foreground()).runSequence, 2);
   assert.equal(f.state.registerCalls, 1);
@@ -129,18 +141,15 @@ test("managed types intersect exact native schema versions and sort; a new gener
   assert.equal(f.state.versionReads, 2);
 });
 
-// The coordinator reads now() synchronously when accepting a trigger. While
-// a source read is held, the active run makes no other clock reads.
+// A synchronous admission signal replaces event-loop guesses and clock-read
+// counts, which also include registration, checkpoints, and NOC observations.
 function submissionClock(now: () => number) {
-  let remaining = 0;
   let accepted: (() => void) | undefined;
   return {
-    now() {
-      if (remaining > 0 && --remaining === 0) accepted?.();
-      return now();
-    },
-    async submit<T>(action: () => Promise<T>, clockReads = 1): Promise<{ result: Promise<T> }> {
-      const arrived = new Promise<void>((resolve) => { accepted = resolve; remaining = clockReads; });
+    now,
+    admitted() { accepted?.(); accepted = undefined; },
+    async submit<T>(action: () => Promise<T>): Promise<{ result: Promise<T> }> {
+      const arrived = new Promise<void>((resolve) => { accepted = resolve; });
       const result = action();
       await arrived;
       return { result };
@@ -151,15 +160,15 @@ function submissionClock(now: () => number) {
 test("foreground, manual and background share the strongest unbudgeted follow-up", { timeout: 5_000 }, async (t) => {
   const f = await fixture(t);
   const submissions = submissionClock(f.clock.now);
-  const shell = await composeSender({ ...f.options, now: submissions.now });
+  const shell = await composeSender({ ...f.options, onRunSubmitted: submissions.admitted, now: submissions.now });
   const activeRead = f.sources.hold("snapshot", "steps");
   const followUpRead = f.sources.hold("snapshot", "steps");
   f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "synthetic-permission-gap" });
   try {
     const active = shell.manualSync();
     await activeRead.arrived;
-    // Registration reads now() once before foreground's trigger is submitted.
-    const foreground = await submissions.submit(() => shell.foreground(), 2);
+    // Wait for foreground coordinator admission, after registration.
+    const foreground = await submissions.submit(() => shell.foreground());
     const manual = await submissions.submit(() => shell.manualSync());
     // The published polling adapter submits its own unchanged background budget.
     const background = await submissions.submit(() => backgroundTaskBody(shell.backgroundPollingProvider)());
@@ -185,7 +194,7 @@ test("foreground, manual and background share the strongest unbudgeted follow-up
     assert.ok(second.summary.recordTypes.every((type) => type.reason !== "time-budget-reached"));
     assert.equal(backgroundResult, 1); // R8 keeps the unbudgeted follow-up; delivery still has its task deadline.
     assert.deepEqual((await runs(f.database())).map((row) => row.run_sequence), [1, 2]);
-    const checkpoints = await f.database().query("SELECT run_sequence FROM run_checkpoints ORDER BY run_sequence");
+    const checkpoints = await query(f.database(), "SELECT run_sequence FROM run_checkpoints ORDER BY run_sequence");
     assert.deepEqual(checkpoints.map((row) => row.run_sequence), [1, 2]);
     const staged = [];
     for (const message of await outboxMessages(f.database())) {
@@ -221,7 +230,7 @@ test("generation replacement waits for the old run and routes waiting triggers t
         assert.equal(f.sources.inFlight, 0);
         const previous = await runs(f.database());
         assert.equal(previous.length, 1);
-        assert.equal((await f.database().query("SELECT * FROM run_checkpoints WHERE run_sequence = 1")).length, 1);
+        assert.equal((await query(f.database(), "SELECT * FROM run_checkpoints WHERE run_sequence = 1")).length, 1);
         replacementPrepared();
       }
       return f.state.versions;
@@ -253,7 +262,7 @@ test("generation replacement waits for the old run and routes waiting triggers t
     assert.equal(await background, 1);
     assert.equal(f.state.versionReads, 2);
     assert.equal(f.sources.maxInFlight, 1);
-    assert.equal((await f.database().query(`SELECT * FROM sync_runs AS r WHERE NOT EXISTS
+    assert.equal((await query(f.database(), `SELECT * FROM sync_runs AS r WHERE NOT EXISTS
       (SELECT 1 FROM run_checkpoints AS c WHERE c.installation_id = r.installation_id AND c.run_sequence = r.run_sequence)`)).length, 0);
   } finally {
     oldRead.release(); newRead.release();
@@ -353,7 +362,7 @@ for (const condition of ["secureLock", "storagePressure", "deliveryBlocked"] as 
       async availableStorageBytes(): Promise<number> { throw new Error("synthetic storage failure"); },
     } : {}) });
     if (condition === "deliveryBlocked") {
-      await f.database().execute(`INSERT INTO outbox_head_block VALUES (?, 1, 'portal', 'installation-not-active', ?, 0, 0, 1, 1)`,
+      await execute(f.database(), `INSERT INTO outbox_head_block VALUES (?, 1, 'portal', 'installation-not-active', ?, 0, 0, 1, 1)`,
         [INSTALLATION, "a".repeat(64)]);
     }
     const result = checkpoint(await shell.manualSync());
@@ -506,7 +515,7 @@ for (const trigger of ["foreground", "manual", "background"] as const) {
     assert.ok(p.requests.length >= 4);
     assert.deepEqual(p.requests.map(({ body }) => decodeMessage(body).sequence),
       Array.from({ length: p.requests.length }, (_, n) => n + 1));
-    assert.equal((await f.database().query("SELECT * FROM run_checkpoints")).length, 1);
+    assert.equal((await query(f.database(), "SELECT * FROM run_checkpoints")).length, 1);
   });
 }
 
@@ -528,7 +537,7 @@ test("a blocked head stops the loop, notifies once, and the next trigger retries
   assert.equal(p.requests.length, 4);
   assert.deepEqual(p.requests[0].body, p.requests[1].body);
   assert.deepEqual(await outboxMessages(f.database()), []);
-  assert.deepEqual(await f.database().query("SELECT * FROM outbox_head_block"), []);
+  assert.deepEqual(await query(f.database(), "SELECT * FROM outbox_head_block"), []);
 });
 
 test("retryable delivery stops after one attempt and never changes a successful checkpoint result", async (t) => {
@@ -542,7 +551,7 @@ test("retryable delivery stops after one attempt and never changes a successful 
   assert.equal(first.runSequence, 1);
   assert.equal(p.requests.length, 1);
   assert.ok((await outboxMessages(f.database())).length >= 3);
-  assert.equal((await f.database().query("SELECT * FROM run_checkpoints")).length, 1);
+  assert.equal((await query(f.database(), "SELECT * FROM run_checkpoints")).length, 1);
   assert.deepEqual(f.state.notifications, []);
   p.state.answer = async () => { throw new Error("Synthetic network failure"); };
   assert.equal(checkpoint(await shell.manualSync()).runSequence, 2);
@@ -618,7 +627,7 @@ for (const afterLastStart of [0, 1]) {
       held.release();
       assert.equal(await background, "success");
       assert.equal((await runs(f.database())).length, 1);
-      assert.equal((await f.database().query("SELECT * FROM run_checkpoints")).length, 1);
+      assert.equal((await query(f.database(), "SELECT * FROM run_checkpoints")).length, 1);
       assert.deepEqual(starts, afterLastStart === 0 ? [lastStart] : []);
       assert.ok(starts.every((start) => start <= lastStart));
       assert.ok((await outboxMessages(f.database())).length > 0);
@@ -776,7 +785,7 @@ for (const phase of ["confirming", "enrolled"] as const) {
           if (url.endsWith("/v1/outbox-messages")) return response(receipt(init.body!));
           if (testing) {
             registrationAtRequest = f.state.registerCalls;
-            observationAtRequest = (await f.database().query("SELECT observed_status FROM scheduling_state"))[0]?.observed_status;
+            observationAtRequest = (await query(f.database(), "SELECT observed_status FROM scheduling_state"))[0]?.observed_status;
             arrive();
             await released;
             throw new Error("Synthetic unreachable Portal");
@@ -792,7 +801,7 @@ for (const phase of ["confirming", "enrolled"] as const) {
       const previousRegistrations = f.state.registerCalls;
       f.state.registered = false;
       // A fresh observation must finish on this trigger, even if a prior one exists.
-      await f.database().execute("DELETE FROM scheduling_state");
+      await execute(f.database(), "DELETE FROM scheduling_state");
       testing = true;
       const pending = shell.foreground();
       try {
@@ -997,11 +1006,11 @@ test("a foreground refresh arriving during a Polling Run waits for its coalesced
   const p = portal(f);
   const submissions = submissionClock(f.clock.now);
   let refreshes = 0;
-  const shell = await composeSender({ ...p.options, now: submissions.now, enrollment(database, transport) {
+  const shell = await composeSender({ ...p.options, onRunSubmitted: submissions.admitted, now: submissions.now, enrollment(database, transport) {
     return { ...f.options.enrollment(database, transport), async refreshCapabilities() {
       assert.equal(f.sources.inFlight, 0);
       assert.equal((await runs(f.database())).length, 2);
-      assert.equal((await f.database().query("SELECT * FROM run_checkpoints")).length, 2);
+      assert.equal((await query(f.database(), "SELECT * FROM run_checkpoints")).length, 2);
       refreshes++;
       f.state.status = enrolled({ stagingContext: { ...enrolled().stagingContext!, generation: {
         generation: 2, maxRecordCount: 100, maxMessageBytes: 65_536, projectionSchemas: { weight: [1] },
@@ -1013,7 +1022,7 @@ test("a foreground refresh arriving during a Polling Run waits for its coalesced
   try {
     const active = shell.manualSync();
     await held.arrived;
-    const returning = await submissions.submit(() => shell.foreground(), 2);
+    const returning = await submissions.submit(() => shell.foreground());
     assert.equal(refreshes, 0);
     held.release();
     checkpoint(await active);
@@ -1058,6 +1067,7 @@ for (const remaining of [DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS - 1,
       } };
     } });
     await acknowledgements(f, 2);
+    first = true; // Composition now observes enrollment at process start.
     assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2);
     assert.equal(p.requests.length, remaining === DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS ? 1 : 0);
   });
@@ -1083,7 +1093,7 @@ test("a reset during an unanswered request cannot start a second delivery loop",
     const first = shell.manualSync();
     await arrived;
     // Reset/unlink deletes the old installation's Outbox before replacement.
-    await f.database().execute("DELETE FROM outbox_messages WHERE installation_id = ?", [INSTALLATION]);
+    await execute(f.database(), "DELETE FROM outbox_messages WHERE installation_id = ?", [INSTALLATION]);
     await acknowledgements(f, 2, installation, key);
     f.state.status = enrolled({ phase: "draining", deliveryContext: {
       installationId: installation, keyAlias: key, portalUrl: "https://replacement.synthetic.invalid",
@@ -1319,37 +1329,38 @@ test("only a fresh trigger during the extra retryable pass buys another pass", {
 for (const kind of ["manual", "foreground"] as const) {
   test(`round 2: background before ${kind} shares exactly one strongest follow-up`, { timeout: 5_000 }, async (t) => {
     const f = await fixture(t);
-    const shell = await composeSender(f.options);
+    const submissions = submissionClock(f.clock.now);
+    const shell = await composeSender({ ...f.options, onRunSubmitted: submissions.admitted });
     const held = f.sources.hold("snapshot", "steps");
     try {
       const active = shell.manualSync();
       await held.arrived;
-      const background = (await shell.backgroundPollingProvider())!.runTask();
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      const following = kind === "manual" ? shell.manualSync() : shell.foreground();
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      const polling = (await shell.backgroundPollingProvider())!;
+      const background = await submissions.submit(() => polling.runTask());
+      const following = await submissions.submit(() => kind === "manual" ? shell.manualSync() : shell.foreground());
       held.release();
       checkpoint(await active);
-      const result = checkpoint(await following);
-      assert.equal(await background, "success");
+      const result = checkpoint(await following.result);
+      assert.equal(await background.result, "success");
       assert.equal(result.runSequence, 2);
       assert.equal(result.summary.trigger, kind);
       assert.deepEqual((await runs(f.database())).map((row) => row.trigger), ["manual", kind]);
-      assert.equal((await f.database().query("SELECT * FROM run_checkpoints")).length, 2);
+      assert.equal((await query(f.database(), "SELECT * FROM run_checkpoints")).length, 2);
     } finally { held.release(); }
   });
 }
 
 test("round 2: overlapping background callbacks share one follow-up", { timeout: 5_000 }, async (t) => {
   const f = await fixture(t);
-  const shell = await composeSender(f.options);
+  const submissions = submissionClock(f.clock.now);
+  const shell = await composeSender({ ...f.options, onRunSubmitted: submissions.admitted });
   const held = f.sources.hold("snapshot", "steps");
   try {
     const active = shell.manualSync();
     await held.arrived;
     const polling = (await shell.backgroundPollingProvider())!;
-    const backgrounds = Array.from({ length: 3 }, () => polling.runTask());
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    const backgrounds: Promise<"success" | "failed">[] = [];
+    for (let i = 0; i < 3; i++) backgrounds.push((await submissions.submit(() => polling.runTask())).result);
     held.release();
     checkpoint(await active);
     assert.deepEqual(await Promise.all(backgrounds), ["success", "success", "success"]);
@@ -1368,7 +1379,7 @@ for (const count of [1, 32]) {
     await acknowledgements(f, count);
     await shell.manualSync();
     assert.equal(p.requests.length, count);
-    assert.equal(reads, 2, "one preparation read and one delivery-pass read, independent of queue length");
+    assert.equal(reads, 4, "two startup freshness reads, one preparation read and one delivery read, independent of queue length");
   });
 }
 
@@ -1409,7 +1420,7 @@ for (const refresh of ["current", "adopted", "unavailable"] as const) {
       let refreshes = 0;
       const refreshInFlight: number[] = [];
       const events: string[] = [];
-      const shell = await composeSender({ ...p.options, now() {
+      const shell = await composeSender({ ...p.options, onRunSubmitted: submissions.admitted, now() {
         if (rejectCheckpoint) { rejectCheckpoint = false; throw failure; }
         return submissions.now();
       }, enrollment(database, transport) {
@@ -1435,7 +1446,7 @@ for (const refresh of ["current", "adopted", "unavailable"] as const) {
       try {
         const active = shell.manualSync();
         await activeRead.arrived;
-        const returning = await submissions.submit(() => shell.foreground(), 2);
+        const returning = await submissions.submit(() => shell.foreground());
         const rejected = assert.rejects(returning.result, (error) => {
           events.push("rejected");
           return error === failure;
@@ -1472,7 +1483,7 @@ for (const trigger of ["manual", "background", "foreground"] as const) {
       const failure = new TypeError("Synthetic coordinator clock failure");
       let rejectCheckpoint = false;
       let refreshes = 0;
-      const shell = await composeSender({ ...p.options, now() {
+      const shell = await composeSender({ ...p.options, onRunSubmitted: submissions.admitted, now() {
         if (rejectCheckpoint) {
           rejectCheckpoint = false;
           f.state.status = enrolled({ phase });
@@ -1500,7 +1511,7 @@ for (const trigger of ["manual", "background", "foreground"] as const) {
         const polling = (await shell.backgroundPollingProvider())!;
         const request = trigger === "foreground" ? () => shell.foreground()
           : trigger === "manual" ? () => shell.manualSync() : () => polling.runTask();
-        const submitted = await submissions.submit<unknown>(request, trigger === "foreground" ? 2 : 1);
+        const submitted = await submissions.submit<unknown>(request);
         const outcome = trigger === "background"
           ? submitted.result.then((result) => { assert.equal(result, "failed"); })
           : assert.rejects(submitted.result, (error) => error === failure);
@@ -1534,7 +1545,7 @@ for (const terminal of ["retryable", "blocked"] as const) {
         : encodeMessage({ wire_version: 1, kind: "delivery-block", failure: "sequence-out-of-order",
           message_sha256: messageSha256(init.body!), sender_installation: INSTALLATION,
           sequence: decodeMessage(init.body!).sequence });
-      const shell = await composeSender({ ...p.options, now: submissions.now, enrollment(database, transport) {
+      const shell = await composeSender({ ...p.options, onRunSubmitted: submissions.admitted, now: submissions.now, enrollment(database, transport) {
         return { ...f.options.enrollment(database, transport), async refreshCapabilities() {
           if (refresh === "current") return { outcome: "current" };
           f.state.status = enrolled({ stagingContext: { ...enrolled().stagingContext!, generation: {
@@ -1550,7 +1561,7 @@ for (const terminal of ["retryable", "blocked"] as const) {
       try {
         const active = shell.manualSync();
         await activeRead.arrived;
-        const returning = await submissions.submit(() => shell.foreground(), 2);
+        const returning = await submissions.submit(() => shell.foreground());
         activeRead.release();
         checkpoint(await active);
         checkpoint(await returning.result);
@@ -1575,7 +1586,7 @@ test("foreground return during a slow drain refreshes capabilities before openin
     if (p.requests.length === 1) { arrive(); await released; }
     return receipt(init.body!);
   };
-  const shell = await composeSender({ ...p.options, now: submissions.now, enrollment(database, transport) {
+  const shell = await composeSender({ ...p.options, onRunSubmitted: submissions.admitted, now: submissions.now, enrollment(database, transport) {
     return { ...f.options.enrollment(database, transport), async refreshCapabilities() {
       assert.equal((await runs(f.database())).length, 1, "refresh must precede the second run");
       refreshes++;
@@ -1588,8 +1599,8 @@ test("foreground return during a slow drain refreshes capabilities before openin
   try {
     const first = shell.manualSync();
     await arrived;
-    assert.equal((await f.database().query("SELECT * FROM run_checkpoints")).length, 1);
-    const returning = await submissions.submit(() => shell.foreground(), 2);
+    assert.equal((await query(f.database(), "SELECT * FROM run_checkpoints")).length, 1);
+    const returning = await submissions.submit(() => shell.foreground());
     assert.equal(refreshes, 1, "delivery must not count as an in-flight Polling Run");
     release();
     checkpoint(await first);
@@ -1612,4 +1623,436 @@ test("source condition checks share one enrollment observation per step", { time
   checkpoint(await shell.manualSync());
   assert.ok(checks.length > 1, "exercise repeated condition checks within a run");
   assert.ok(checks.slice(1).every((count) => count === 1), "collection and headBlock share each step's status read");
+});
+
+
+function signal() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+function conditionNames(result: readonly ConditionRecord[] | { outcome: "storage-failed" }): string[] {
+  assert.ok(Array.isArray(result), "expected readable conditions");
+  return (result as readonly ConditionRecord[]).map((row) => row.condition);
+}
+function summary(runSequence: number, reason?: OutcomeReason): RunSummary {
+  return { runSequence, trigger: "manual", startedAtMs: NOW, endedAtMs: NOW,
+    backgroundScheduling: "available", recordTypes: [{ recordType: "steps", sourceDataStaged: false,
+      outcome: reason ? "deferred" : "no-change", ...(reason ? { reason } : {}) }] };
+}
+async function observerFixture(t: TestContext) {
+  const f = await fixture(t);
+  const database = await f.options.openDatabase();
+  assert.equal((await migrate(database, senderMigrations)).status, "ready");
+  const notifications: string[] = [];
+  const options = {
+    database, cipher: f.cipher, now: f.clock.now, monotonicNow: f.clock.monotonicNow,
+    status: async () => f.state.status,
+    notifier: { async notify(condition: string) { notifications.push(condition); } },
+  };
+  const run = (sequence: number, reason?: OutcomeReason) => ({ summary: summary(sequence, reason), identity: installationIdentity(enrolled())! });
+  return { ...f, notifications, observerOptions: options, run };
+}
+
+for (const kind of ["foreground", "manual", "background"] as const) {
+  test(`NOC: ${kind} observes its own summary and clears it with the next run`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    const notifications: string[] = [];
+    const shell = await composeSender({ ...f.options, conditionNotifier: { async notify(condition) { notifications.push(condition); } } });
+    f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "read-permission-missing" });
+    const run = () => kind === "background" ? (async () => (await shell.backgroundPollingProvider())!.runTask())()
+      : kind === "foreground" ? shell.foreground() : shell.manualSync();
+    const observedRun = await run();
+    assert.deepEqual(notifications, ["permission-missing"], JSON.stringify(observedRun));
+    assert.deepEqual(conditionNames(await shell.conditions()), ["permission-missing"]);
+    // No-summary UI observations retain R3's run conditions and do not repeat.
+    await shell.observeConditions();
+    assert.deepEqual(notifications, ["permission-missing"]);
+    await run();
+    assert.deepEqual(conditionNames(await shell.conditions()), []);
+    assert.equal((await runs(f.database())).length, 2);
+  });
+}
+
+test("NOC: foreground and headless entry points share one onset and notify its recurrence", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const notifications: string[] = [];
+  f.state.bytes = 0;
+  const shell = await composeSender({ ...f.options, conditionNotifier: { async notify(condition) { notifications.push(condition); } } });
+  await shell.foreground();
+  const polling = (await shell.backgroundPollingProvider())!;
+  assert.equal(await polling.runTask(), "success");
+  await shell.manualSync();
+  assert.deepEqual(notifications, ["storage-pressure"]);
+  f.state.bytes = STORAGE_PRESSURE_FREE_BYTES;
+  await shell.manualSync();
+  assert.deepEqual(conditionNames(await shell.conditions()), []);
+  f.state.bytes = 0;
+  assert.equal(await polling.runTask(), "success");
+  assert.deepEqual(notifications, ["storage-pressure", "storage-pressure"]);
+  assert.equal(f.state.opened, 1);
+});
+
+test("NOC: process start, foreground return and UI enrollment actions read current status and key", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t, enrolled({ phase: "refused" }));
+  const notifications: string[] = [];
+  const aliases: string[] = [];
+  const keyStatus = f.cipher.keyStatus.bind(f.cipher);
+  f.cipher.keyStatus = async (alias) => { aliases.push(alias); return keyStatus(alias); };
+  const shell = await composeSender({ ...f.options, conditionNotifier: { async notify(condition) { notifications.push(condition); } } });
+  assert.deepEqual(notifications, ["enrollment-refused"], "composition observes app/headless process start");
+  f.state.status = enrolled({ phase: "draining", finalSequence: 17 });
+  await shell.foreground();
+  assert.deepEqual(conditionNames(await shell.conditions()), ["drain-complete"]);
+  assert.deepEqual(notifications, ["enrollment-refused", "drain-complete"]);
+  await f.cipher.delete(KEY);
+  await shell.observeConditions();
+  assert.deepEqual(conditionNames(await shell.conditions()), ["installation-key-unusable", "drain-complete"]);
+  f.state.status = null; // UI unlink/reset calls the exposed hook after its action.
+  await shell.observeConditions();
+  assert.deepEqual(conditionNames(await shell.conditions()), []);
+  assert.ok(aliases.length >= 3 && aliases.every((alias) => alias === KEY));
+});
+
+for (const change of ["confirm", "refresh"] as const) {
+  test(`NOC: observation follows shell ${change} before collection`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t, change === "confirm" ? enrolled({ phase: "confirming", confirmed: false }) : enrolled());
+    const notifications: string[] = [];
+    const shell = await composeSender({ ...f.options,
+      conditionNotifier: { async notify(condition) { notifications.push(condition); } },
+      enrollment(database, transport) {
+        const base = f.options.enrollment(database, transport);
+        return { ...base,
+          async confirm() { f.state.status = enrolled({ phase: "refused" }); return { outcome: "portal-refused", failure: "enrollment-refused" }; },
+          async refreshCapabilities() { f.state.status = enrolled({ phase: "refused" }); return { outcome: "unavailable" }; },
+        };
+      },
+    });
+    assert.deepEqual(await shell.foreground(), { outcome: "skipped" });
+    assert.deepEqual(notifications, ["enrollment-refused"]);
+    assert.deepEqual(conditionNames(await shell.conditions()), ["enrollment-refused"]);
+    assert.deepEqual(await runs(f.database()), []);
+  });
+}
+
+test("NOC: the next preparation observes a drain completed by delivery", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const p = portal(f);
+  const notifications: string[] = [];
+  p.state.answer = async (_url, init) => { f.state.status = enrolled({ phase: "draining", finalSequence: 9 }); return receipt(init.body!); };
+  const shell = await composeSender({ ...p.options, conditionNotifier: { async notify(condition) { notifications.push(condition); } } });
+  await shell.manualSync();
+  // The next preparation observes the external phase transition. No new run opens.
+  await shell.manualSync();
+  assert.deepEqual(notifications, ["drain-complete"]);
+  assert.deepEqual(conditionNames(await shell.conditions()), ["drain-complete"]);
+});
+
+test("NOC: a pending notifier releases within the bound and the onset retries", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  f.state.bytes = 0;
+  let calls = 0;
+  const entered = signal();
+  const shell = await composeSender({ ...f.options, conditionNotifier: { async notify() {
+    calls++;
+    if (calls === 1) { entered.resolve(); await new Promise<void>(() => {}); }
+  } } });
+  const first = shell.manualSync();
+  await entered.promise;
+  const start = performance.now();
+  const next = shell.observeConditions();
+  checkpoint(await first);
+  await next;
+  assert.ok(performance.now() - start < CONDITION_NOTIFICATION_TIMEOUT_MS + 1_000);
+  assert.equal(calls, 2);
+  const records = await shell.conditions();
+  assert.ok(Array.isArray(records) && records[0].notified);
+});
+
+test("NOC: timeout prevents a late native permission check from starting a post", { timeout: 5_000 }, async () => {
+  const enabled = signal();
+  let posted = false;
+  const notifier = conditionNotifier({
+    async notificationsEnabled() { await enabled.promise; return true; },
+    async postOperatorNotification() { posted = true; },
+  });
+  const attempt = notifier.notify("permission-missing");
+  await assert.rejects(attempt, /timed out/);
+  enabled.resolve();
+  await Promise.resolve();
+  assert.equal(posted, false);
+});
+
+test("NOC: coalescing retains a summary across lifecycle signals and supersedes older pending runs", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal();
+  const release = signal();
+  let held = false;
+  const observer = createShellConditionObserver({ ...f.observerOptions, cipher: { async keyStatus() {
+    if (!held) { held = true; entered.resolve(); await release.promise; }
+    return "present";
+  } } });
+  const active = observer.observe();
+  await entered.promise;
+  const old = observer.observe(f.run(1, "storage-pressure"));
+  const newest = observer.observe(f.run(2, "permission-missing"));
+  const duplicate = observer.observe(f.run(1, "storage-pressure"));
+  const lifecycle = observer.observe();
+  release.resolve();
+  await Promise.all([active, old, newest, duplicate, lifecycle]);
+  assert.deepEqual(f.notifications, ["permission-missing"]);
+  assert.deepEqual(conditionNames(await observer.conditions()), ["permission-missing"]);
+});
+
+test("NOC: lifecycle signal during summary construction retains that unsubmitted summary", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal();
+  const release = signal();
+  let held = false;
+  const observer = createShellConditionObserver({ ...f.observerOptions, cipher: { async keyStatus() {
+    if (!held) { held = true; entered.resolve(); await release.promise; }
+    return "present";
+  } } });
+  const run = observer.observe(f.run(1, "record-too-large"));
+  await entered.promise;
+  const lifecycle = observer.observe();
+  release.resolve();
+  await Promise.all([run, lifecycle]);
+  assert.deepEqual(f.notifications, ["record-too-large"]);
+});
+
+for (const action of ["reset", "unlink"] as const) {
+  test(`NOC: identity guard drops a build changed by ${action} during the key read`, { timeout: 5_000 }, async (t) => {
+    const f = await observerFixture(t);
+    const entered = signal();
+    const release = signal();
+    let held = false;
+    const observer = createShellConditionObserver({ ...f.observerOptions, cipher: { async keyStatus() {
+      if (!held) { held = true; entered.resolve(); await release.promise; return "missing"; }
+      return "present";
+    } } });
+    const old = observer.observe(f.run(1, "permission-missing"));
+    await entered.promise;
+    f.state.status = action === "unlink" ? null : enrolled({ installationId: "00000000-0000-4000-8000-000000000002", keyAlias: "replacement" });
+    release.resolve();
+    await old;
+    assert.deepEqual(f.notifications, []);
+    assert.deepEqual(conditionNames(await observer.conditions()), []);
+    await observer.observe();
+    assert.deepEqual(conditionNames(await observer.conditions()), []);
+  });
+}
+
+test("NOC: pending observations reread enrollment and keys after an in-flight notification", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal();
+  const release = signal();
+  const aliases: string[] = [];
+  const observer = createShellConditionObserver({ ...f.observerOptions, cipher: { async keyStatus(alias) {
+    aliases.push(alias); return alias === KEY ? "present" : "missing";
+  } }, notifier: { async notify(condition) {
+    f.notifications.push(condition);
+    if (condition === "storage-pressure") { entered.resolve(); await release.promise; }
+  } } });
+  const first = observer.observe(f.run(1, "storage-pressure"));
+  await entered.promise;
+  const stale = observer.observe(f.run(2, "permission-missing"));
+  f.state.status = enrolled({ installationId: "00000000-0000-4000-8000-000000000002", keyAlias: "replacement" });
+  const ui = observer.observe();
+  release.resolve();
+  await Promise.all([first, stale, ui]);
+  assert.deepEqual(f.notifications, ["storage-pressure", "installation-key-unusable"]);
+  assert.deepEqual(aliases, [KEY, "replacement"]);
+});
+
+for (const failure of ["storage", "notifier"] as const) {
+  test(`NOC: ${failure} failure preserves checkpoint, delivery and background success`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    const p = portal(f);
+    f.state.bytes = 0;
+    const shell = await composeSender({ ...p.options,
+      conditionNotifier: { async notify() { if (failure === "notifier") throw new Error("synthetic notification failure"); } },
+      async openDatabase() {
+        const database = await f.options.openDatabase();
+        const transaction = database.transaction.bind(database);
+        database.transaction = (body) => transaction((tx) => body({ ...tx, async execute(sql, params) {
+          if (failure === "storage" && /^(INSERT INTO|UPDATE|DELETE FROM) operator_conditions/.test(sql)) throw new Error("synthetic condition write failure");
+          return tx.execute(sql, params);
+        } }));
+        return database;
+      },
+    });
+    checkpoint(await shell.manualSync());
+    assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "success");
+    assert.equal((await runs(f.database())).length, 2);
+    assert.equal((await query(f.database(), "SELECT * FROM run_checkpoints")).length, 2);
+    assert.equal(p.requests.length, 2);
+    assert.deepEqual(await outboxMessages(f.database()), []);
+  });
+}
+
+test("NOC: a rejected observation is isolated and a later observation still runs", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  let reject = true;
+  const observer = createShellConditionObserver({ ...f.observerOptions, now() {
+    if (reject) throw new TypeError("synthetic observation clock failure");
+    return f.clock.now();
+  } });
+  await observer.observe(f.run(1, "projection-refusal"));
+  reject = false;
+  await observer.observe(f.run(2, "storage-pressure"));
+  assert.deepEqual(f.notifications, ["storage-pressure"]);
+});
+
+for (const remaining of [CONDITION_OBSERVATION_BUDGET_MS - 1, CONDITION_OBSERVATION_BUDGET_MS]) {
+  test(`NOC: background observation admission with ${remaining}ms left`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    const notifications: string[] = [];
+    const shell = await composeSender({ ...f.options, conditionNotifier: { async notify(condition) {
+      assert.ok(f.clock.monotonicNow() + CONDITION_NOTIFICATION_TIMEOUT_MS + CONDITION_FINISH_RESERVE_MS <= began + BACKGROUND_BUDGET_MS);
+      notifications.push(condition);
+    } } });
+    const began = f.clock.monotonicNow();
+    f.sources.next("snapshot", "steps", () => {
+      f.clock.advance(BACKGROUND_BUDGET_MS - remaining);
+      return { outcome: "not-permitted", failure: "read-permission-missing" };
+    });
+    assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "success");
+    assert.equal((await runs(f.database())).length, 1);
+    assert.deepEqual(notifications, remaining === CONDITION_OBSERVATION_BUDGET_MS ? ["permission-missing"] : []);
+  });
+}
+
+test("NOC: a queued background observation expires before its task window and does not post later", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal();
+  const release = signal();
+  const observer = createShellConditionObserver({ ...f.observerOptions, notifier: { async notify(condition) {
+    f.notifications.push(condition);
+    if (condition === "storage-pressure") { entered.resolve(); await release.promise; }
+  } } });
+  const foreground = observer.observe(f.run(1, "storage-pressure"));
+  await entered.promise;
+  const deadline = f.clock.monotonicNow() + CONDITION_FINISH_RESERVE_MS + 20;
+  await observer.observe(f.run(2, "permission-missing"), deadline);
+  f.clock.advance(21);
+  release.resolve();
+  await foreground;
+  await observer.observe();
+  assert.deepEqual(f.notifications, ["storage-pressure"]);
+});
+
+
+test("NOC: native adapter rejects disabled notifications and post failures and forwards only a condition", { timeout: 5_000 }, async () => {
+  let enabled = false;
+  let fail = false;
+  const names: string[] = [];
+  const notifier = conditionNotifier({
+    async notificationsEnabled() { return enabled; },
+    async postOperatorNotification(condition) {
+      names.push(condition);
+      if (fail) throw new Error("synthetic post failure");
+    },
+  });
+  await assert.rejects(notifier.notify("enrollment-refused"), /not enabled/);
+  assert.deepEqual(names, []);
+  enabled = true;
+  fail = true;
+  await assert.rejects(notifier.notify("drain-complete"), /synthetic post failure/);
+  fail = false;
+  await notifier.notify("storage-pressure");
+  assert.deepEqual(names, ["drain-complete", "storage-pressure"]);
+});
+
+test("NOC: the coalesced run supplies its own newest summary once for all joined entry points", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const admissions = submissionClock(f.clock.now);
+  const notifications: string[] = [];
+  const shell = await composeSender({ ...f.options, onRunSubmitted: admissions.admitted,
+    conditionNotifier: { async notify(condition) { notifications.push(condition); } },
+  });
+  const activeRead = f.sources.hold("snapshot", "steps");
+  const followUpRead = f.sources.hold("snapshot", "steps");
+  f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "read-permission-missing" });
+  f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "read-permission-missing" });
+  try {
+    const active = shell.manualSync();
+    await activeRead.arrived;
+    const polling = (await shell.backgroundPollingProvider())!;
+    const background = await admissions.submit(() => polling.runTask());
+    const manual = await admissions.submit(() => shell.manualSync());
+    activeRead.release();
+    checkpoint(await active);
+    await followUpRead.arrived;
+    f.clock.advance(100);
+    followUpRead.release();
+    const result = checkpoint(await manual.result);
+    assert.equal(await background.result, "success");
+    assert.equal(result.runSequence, 2);
+    assert.deepEqual(notifications, ["permission-missing"]);
+    const records = await shell.conditions();
+    assert.ok(Array.isArray(records));
+    assert.equal((records as readonly ConditionRecord[])[0].lastSeenMs, result.summary.endedAtMs);
+  } finally { activeRead.release(); followUpRead.release(); }
+});
+
+
+test("NOC: native adapter bounds a never-settling post and retries through a later call", { timeout: 5_000 }, async () => {
+  let posts = 0;
+  const notifier = conditionNotifier({
+    async notificationsEnabled() { return true; },
+    async postOperatorNotification() { if (++posts === 1) await new Promise<void>(() => {}); },
+  });
+  await assert.rejects(notifier.notify("permission-missing"), /timed out/);
+  await notifier.notify("permission-missing");
+  assert.equal(posts, 2);
+});
+
+test("NOC: even a duplicate run's background caller has its own bounded wait", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal();
+  const release = signal();
+  const observer = createShellConditionObserver({ ...f.observerOptions, notifier: { async notify(condition) {
+    f.notifications.push(condition); entered.resolve(); await release.promise;
+  } } });
+  const foreground = observer.observe(f.run(1, "storage-pressure"));
+  await entered.promise;
+  await observer.observe(f.run(1, "storage-pressure"), f.clock.monotonicNow() + CONDITION_FINISH_RESERVE_MS + 20);
+  release.resolve();
+  await foreground;
+  assert.deepEqual(f.notifications, ["storage-pressure"]);
+});
+
+test("NOC: a failed onset cannot consume background delivery's last full exchange window", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const p = portal(f);
+  let notified = false;
+  p.state.answer = async (_url, init) => {
+    assert.equal(notified, false, "the existing delivery pass precedes condition effects");
+    f.clock.advance(DELIVERY_TIMEOUT_MS);
+    return receipt(init.body!);
+  };
+  const shell = await composeSender({ ...p.options, conditionNotifier: { async notify() {
+    notified = true;
+    throw new Error("synthetic notification failure");
+  } } });
+  f.sources.next("snapshot", "steps", () => {
+    f.clock.advance(BACKGROUND_BUDGET_MS - DELIVERY_TIMEOUT_MS - DELIVERY_FINISH_RESERVE_MS);
+    return { outcome: "not-permitted", failure: "read-permission-missing" };
+  });
+  assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "success");
+  assert.equal(p.requests.length, 1);
+  assert.deepEqual(await outboxMessages(f.database()), []);
+  assert.equal(notified, false, "no observation is admitted in the bookkeeping reserve");
+});
+
+
+test("NOC: a manual trigger observes a lifecycle change since the process-start observation", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const notifications: string[] = [];
+  const shell = await composeSender({ ...f.options, conditionNotifier: { async notify(condition) { notifications.push(condition); } } });
+  f.state.status = enrolled({ phase: "refused" });
+  assert.deepEqual(await shell.manualSync(), { outcome: "skipped" });
+  assert.deepEqual(notifications, ["enrollment-refused"]);
+  assert.deepEqual(conditionNames(await shell.conditions()), ["enrollment-refused"]);
 });

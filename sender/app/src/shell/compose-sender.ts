@@ -1,3 +1,5 @@
+import { createShellConditionObserver, installationIdentity } from "./operator-condition-observer.ts";
+import type { ConditionNotifier, OperatorConditions } from "../notifications/notify-operator-conditions.ts";
 import type { InstallationCipher } from "../installation-cipher.ts";
 import { createOutboxSender, DELIVERY_TIMEOUT_MS } from "../delivery/send-outbox-message.ts";
 import type { DeliveryNotifier, OutboxSender } from "../delivery/send-outbox-message.ts";
@@ -33,6 +35,7 @@ export interface ComposeSenderOptions {
   readonly enrollment: (database: SenderDatabase, transport: HttpTransport) => ShellEnrollment;
   readonly fetch: HttpFetch;
   readonly deliveryNotifier: DeliveryNotifier;
+  readonly conditionNotifier: ConditionNotifier;
   readonly cipher: InstallationCipher;
   readonly sources: SyncSources;
   readonly projectionSchemaVersions: () => Promise<Readonly<Record<string, number>>>;
@@ -42,6 +45,8 @@ export interface ComposeSenderOptions {
   readonly now: () => number;
   readonly monotonicNow: () => number;
   readonly randomUUID: () => string;
+  /** Optional health-data-free admission trace; diagnostics cannot affect a run. */
+  readonly onRunSubmitted?: (kind: TriggerRequest["kind"]) => void;
 }
 
 export interface SenderShell {
@@ -49,6 +54,9 @@ export interface SenderShell {
   foreground(): Promise<ShellRunResult>;
   manualSync(): Promise<ShellRunResult>;
   readonly backgroundPollingProvider: BackgroundPollingProvider;
+  /** Call after a screen performs any enrollment action, including reset/unlink. */
+  observeConditions(): Promise<void>;
+  conditions: OperatorConditions["conditions"];
 }
 
 function isStatus(status: Status): status is EnrollmentStatus {
@@ -93,9 +101,32 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     throw error;
   }
 
-  async function status(): Promise<Status> {
+  async function readStatus(): Promise<Status> {
     try { return await enrollment.status(); }
     catch { return { outcome: "storage-failed" }; }
+  }
+
+  // expoSender owns this migrated handle and this observer for the process. App
+  // and TaskManager never open a second handle. Separate processes/handles are
+  // outside this composition; Android schedules this module in the app process.
+  let observedPhase: string | undefined;
+  let phaseChanged = false;
+  const operator = createShellConditionObserver({
+    database, notifier: options.conditionNotifier, cipher: options.cipher,
+    status, now: options.now, monotonicNow: options.monotonicNow,
+  });
+  async function status(): Promise<Status> {
+    const current = await readStatus();
+    if (current && "outcome" in current) return current;
+    const phase = JSON.stringify([installationIdentity(current), current?.phase, current?.finalSequence]);
+    phaseChanged ||= observedPhase !== undefined && phase !== observedPhase;
+    observedPhase = phase;
+    return current;
+  }
+  async function observePhase(deadline = Infinity): Promise<void> {
+    if (!phaseChanged) return;
+    phaseChanged = false;
+    await operator.observe(undefined, deadline);
   }
 
   let sender: OutboxSender | null = null;
@@ -167,22 +198,36 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   let coordinatorIdentity: string | null = null;
   let preparation: Promise<unknown> = Promise.resolve();
   const inFlight = new Set<Promise<RunResult>>();
+  let coordinatorInstallation: string | null = null;
+  type BackgroundCompletion = { deadline: number; observe?: () => Promise<void> };
+  let backgroundCompletion: BackgroundCompletion | null = null;
   function startRun(request: TriggerRequest, onDelivery?: (pass: DeliveryPass) => void): Promise<RunResult> {
     if (!coordinator) throw new Error("Sender coordinator is unavailable");
+    const runIdentity = coordinatorInstallation!;
+    const completion = request.kind === "background" ? backgroundCompletion : null;
     const run = coordinator.trigger(request);
+    try { options.onRunSubmitted?.(request.kind); } catch { /* Diagnostics are isolated. */ }
     // Adoption and refresh wait only for Polling Runs, including coalesced
     // follow-ups. A slow network drain must not extend the active-run set.
     inFlight.add(run);
     void run.then(() => inFlight.delete(run), () => inFlight.delete(run));
     return run.then(async (result) => {
-      // Background delivery belongs to the callback's task-start window.
-      if (request.kind !== "background") {
+      const observe = result.outcome === "checkpointed"
+        ? () => operator.observe({ summary: result.summary, identity: runIdentity }, completion?.deadline)
+        : undefined;
+      if (completion) {
+        // The published polling adapter maps the result, while its shell callback
+        // retains the summary until its deadline-bound delivery pass has finished.
+        completion.observe = observe;
+      } else {
         const pass = await deliver();
         onDelivery?.(pass);
+        await observe?.();
       }
       return result;
     });
   }
+
   function identity(current: EnrollmentStatus): string {
     const context = current.stagingContext;
     if (!context) throw new Error("Sender staging context is unavailable");
@@ -214,6 +259,8 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
             if (current.phase === "confirming") {
               confirmationAttempted = true;
               await enrollment.confirm();
+              if (kind === "background") phaseChanged = true;
+              else await operator.observe();
             }
           }
         } catch { /* An unavailable Portal does not disable the adopted generation. */ }
@@ -235,10 +282,14 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       if (kind === "foreground" && !refreshAfter && !confirmationAttempted &&
           isStatus(current) && current.phase === "enrolled") {
         try {
-          if (hasTime(deadline, ENROLLMENT_TIMEOUT_MS)) await enrollment.refreshCapabilities();
+          if (hasTime(deadline, ENROLLMENT_TIMEOUT_MS)) {
+            await enrollment.refreshCapabilities();
+            await operator.observe(undefined, deadline);
+          }
         } catch { /* An unavailable Portal does not disable the adopted generation. */ }
         current = await status();
       }
+      if (kind !== "background" && phaseChanged) await observePhase();
       if (current && "outcome" in current) return { outcome: "failed", failure: "storage-failed" } as const;
       if (!collectionEnabled(current) || !isStatus(current)) return { outcome: "skipped" } as const;
       if (!refreshAfter) await prepare(current);
@@ -292,9 +343,11 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       now: options.now, monotonicNow: options.monotonicNow, randomUUID: options.randomUUID,
     });
     coordinatorIdentity = identity;
+    coordinatorInstallation = installationIdentity(current);
   }
 
   async function trigger(kind: "foreground" | "manual"): Promise<ShellRunResult> {
+    if (kind === "foreground") await operator.observe();
     let deliveredAfterRefresh = false;
     try {
       let pass: DeliveryPass = "stopped";
@@ -310,7 +363,10 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
               const current = await status();
               let adopted = false;
               if (isStatus(current) && current.phase === "enrolled") {
-                try { adopted = (await enrollment.refreshCapabilities()).outcome === "adopted"; }
+                try {
+                  adopted = (await enrollment.refreshCapabilities()).outcome === "adopted";
+                  await operator.observe();
+                }
                 catch { /* Keep the adopted generation. */ }
               }
               // A drained pass may pick up a new acknowledgement. Adoption can
@@ -332,7 +388,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       // Preserve the caller's original rejection after this failure-safe pass.
       if (!deliveredAfterRefresh) await deliver();
       throw error;
-    }
+    } finally { await observePhase(); }
   }
 
   // The provider is safe for headless execution and for a retained registration
@@ -343,18 +399,33 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     condition: () => currentPolling().condition(),
     async runTask() {
       const deadline = options.monotonicNow() + BACKGROUND_BUDGET_MS;
+      const completion: BackgroundCompletion = { deadline };
       try {
         // Polling Runs follow coordinate-sender-sync@1's relative budget and R8
-        // merging; absolute deadlines belong to activity_tracker_portal-pv2.8.
-        const ready = await prepareAndStart("background", () => currentPolling().runTask(), deadline);
+        // merging; this callback retains the task-start deadline for shell effects.
+        const ready = await prepareAndStart("background", () => {
+          // schedule-background-polling calls sync.trigger synchronously, so
+          // startRun captures this callback's context before another admission.
+          backgroundCompletion = completion;
+          try { return currentPolling().runTask(); }
+          finally { backgroundCompletion = null; }
+        }, deadline);
         const result = "pending" in ready ? await ready.pending : "failed";
         return result;
       } catch { return "failed"; }
-      finally { await deliver(deadline); }
+      finally {
+        await deliver(deadline);
+        if (completion.observe) await completion.observe();
+        await observePhase(deadline);
+      }
     },
   });
 
+  await operator.observe(); // App/headless process start, without inventing a run summary.
+
   return {
+    observeConditions: () => operator.observe(),
+    conditions: operator.conditions,
     foreground: () => trigger("foreground"),
     manualSync: () => trigger("manual"),
     backgroundPollingProvider,
