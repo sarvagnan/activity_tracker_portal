@@ -196,15 +196,14 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   > {
     const ready = preparation.then(async () => {
       let current = await status();
-      const refreshAfter = kind === "foreground" && inFlight.size > 0;
+      let confirmationAttempted = false;
       // Register from the initial installation observation before contacting the Portal.
       if (isStatus(current) && kind === "foreground") {
         await currentPolling().ensureRegistered();
         current = await status();
       }
-      if (isStatus(current) && (current.phase === "confirming" ||
-          kind === "foreground" && !refreshAfter && current.phase === "enrolled")) {
-        // Enrollment pack R4 and Decision 6: retry confirmation; refresh on start/return.
+      if (isStatus(current) && current.phase === "confirming") {
+        // Enrollment pack R4: retry confirmation on every trigger.
         // Adoption must wait for all old-generation runs before preparation can resume.
         if (inFlight.size > 0) {
           await Promise.allSettled(inFlight);
@@ -212,8 +211,10 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
         }
         try {
           if (isStatus(current) && hasTime(deadline, ENROLLMENT_TIMEOUT_MS)) {
-            if (current.phase === "confirming") await enrollment.confirm();
-            else if (kind === "foreground" && current.phase === "enrolled") await enrollment.refreshCapabilities();
+            if (current.phase === "confirming") {
+              confirmationAttempted = true;
+              await enrollment.confirm();
+            }
           }
         } catch { /* An unavailable Portal does not disable the adopted generation. */ }
         current = await status();
@@ -225,9 +226,22 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
         await Promise.allSettled(inFlight);
         current = await status();
       }
+      // Decide only after registration, confirmation and identity waits. An active
+      // run now has this identity's prepared coordinator: coalesce without another
+      // await that could let it settle. With no active run, preparation bars new
+      // triggers while refresh and coordinator setup await their results.
+      const refreshAfter = kind === "foreground" && inFlight.size > 0;
+      // Confirmation already requested capabilities; do not request them twice.
+      if (kind === "foreground" && !refreshAfter && !confirmationAttempted &&
+          isStatus(current) && current.phase === "enrolled") {
+        try {
+          if (hasTime(deadline, ENROLLMENT_TIMEOUT_MS)) await enrollment.refreshCapabilities();
+        } catch { /* An unavailable Portal does not disable the adopted generation. */ }
+        current = await status();
+      }
       if (current && "outcome" in current) return { outcome: "failed", failure: "storage-failed" } as const;
       if (!collectionEnabled(current) || !isStatus(current)) return { outcome: "skipped" } as const;
-      await prepare(current);
+      if (!refreshAfter) await prepare(current);
       return { pending: start(), refreshAfter };
     });
     preparation = ready.catch(() => undefined);

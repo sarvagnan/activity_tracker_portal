@@ -888,7 +888,110 @@ test("the shared HTTP transport retries confirmation on every trigger and refres
   assert.equal(refreshes(), 2, "enrollment pack Decision 7 freezes the final sequence while draining");
 });
 
-test("a foreground refresh arriving during a Polling Run waits for its coalesced follow-up before adoption", async (t) => {
+test("foreground return refreshes before its run when the active run finishes during registration", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  f.state.versions = { steps: 1, weight: 1 };
+  const p = portal(f);
+  let arrive!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let refreshes = 0;
+  const refreshRunCounts: number[] = [];
+  const shell = await composeSender({ ...p.options,
+    platform: { ...f.options.platform, async register(name, minutes) {
+      arrive();
+      await released;
+      await f.options.platform.register(name, minutes);
+    } },
+    enrollment(database, transport) {
+      return { ...f.options.enrollment(database, transport), async refreshCapabilities() {
+        refreshRunCounts.push((await runs(f.database())).length);
+        refreshes++;
+        f.state.status = enrolled({ stagingContext: { ...enrolled().stagingContext!, generation: {
+          generation: 2, maxRecordCount: 100, maxMessageBytes: 65_536, projectionSchemas: { weight: [1] },
+        } } });
+        return { outcome: "adopted", generation: 2 };
+      } };
+    },
+  });
+  const held = f.sources.hold("snapshot", "steps");
+  const active = shell.manualSync();
+  let returning: Promise<ShellRunResult> | undefined;
+  try {
+    await held.arrived;
+    returning = shell.foreground();
+    await arrived;
+    assert.equal(f.sources.inFlight, 1, "registration starts while the first run is active");
+    held.release();
+    checkpoint(await active);
+    assert.equal(refreshes, 0, "registration is still pending after the active run settles");
+    release();
+    const result = checkpoint(await returning);
+    assert.deepEqual(refreshRunCounts, [1], "refresh precedes the independent run and never repeats afterwards");
+    assert.deepEqual(result.summary.recordTypes.map((type) => type.recordType), ["weight"], "the new run uses generation 2");
+    assert.equal(result.runSequence, 2);
+    assert.equal(refreshes, 1, "no deferred refresh follows the new run");
+  } finally {
+    release();
+    held.release();
+    await Promise.allSettled([active, ...(returning ? [returning] : [])]);
+  }
+});
+
+test("foreground refresh follows the identity-change wait before opening an independent run", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  f.state.versions = { steps: 1, weight: 1 };
+  const p = portal(f);
+  let arrive!: () => void;
+  const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+  let refreshes = 0;
+  const refreshRunCounts: number[] = [];
+  const shell = await composeSender({ ...p.options,
+    platform: { ...f.options.platform, async register(name, minutes) {
+      await f.options.platform.register(name, minutes);
+      f.state.status = enrolled({ stagingContext: { ...enrolled().stagingContext!, generation: {
+        generation: 2, maxRecordCount: 100, maxMessageBytes: 65_536, projectionSchemas: { steps: [1] },
+      } } });
+    } },
+    enrollment(database, transport) {
+      return { ...f.options.enrollment(database, transport), async status() {
+        // The observation after registration sees a new identity while the old
+        // coordinator is active, forcing preparation to wait for that run.
+        if (f.state.registered && f.sources.inFlight > 0) arrive();
+        return f.state.status;
+      }, async refreshCapabilities() {
+        refreshRunCounts.push((await runs(f.database())).length);
+        refreshes++;
+        f.state.status = enrolled({ stagingContext: { ...enrolled().stagingContext!, generation: {
+          generation: 3, maxRecordCount: 100, maxMessageBytes: 65_536, projectionSchemas: { weight: [1] },
+        } } });
+        return { outcome: "adopted", generation: 3 };
+      } };
+    },
+  });
+  const held = f.sources.hold("snapshot", "steps");
+  const active = shell.manualSync();
+  let returning: Promise<ShellRunResult> | undefined;
+  try {
+    await held.arrived;
+    returning = shell.foreground();
+    await arrived;
+    assert.equal(refreshes, 0, "adoption waits for the old coordinator");
+    held.release();
+    checkpoint(await active);
+    const result = checkpoint(await returning);
+    assert.deepEqual(refreshRunCounts, [1], "refresh precedes the new run after the old identity settles");
+    assert.deepEqual(result.summary.recordTypes.map((type) => type.recordType), ["weight"]);
+    assert.equal(result.runSequence, 2);
+    assert.equal(refreshes, 1);
+  } finally {
+    held.release();
+    await Promise.allSettled([active, ...(returning ? [returning] : [])]);
+  }
+});
+
+test("a foreground refresh arriving during a Polling Run waits for its coalesced follow-up before adoption", { timeout: 5_000 }, async (t) => {
   const f = await fixture(t);
   f.state.versions = { steps: 1, weight: 1 };
   const p = portal(f);
@@ -914,7 +1017,9 @@ test("a foreground refresh arriving during a Polling Run waits for its coalesced
     assert.equal(refreshes, 0);
     held.release();
     checkpoint(await active);
-    checkpoint(await returning.result);
+    const coalesced = checkpoint(await returning.result);
+    assert.equal(coalesced.runSequence, 2);
+    assert.deepEqual(coalesced.summary.recordTypes.map((type) => type.recordType), ["steps"], "the coalesced run retains its generation until deferred refresh");
     assert.equal(refreshes, 1);
     assert.deepEqual(checkpoint(await shell.manualSync()).summary.recordTypes.map((type) => type.recordType), ["weight"]);
     assert.equal(p.state.maxInFlight, 1);
