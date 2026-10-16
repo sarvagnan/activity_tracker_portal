@@ -633,6 +633,22 @@ class R6GenerationAndVersion(Case):
         self.deliverBlocked(checkpoint(2, generation=3), "unsupported-wire-protocol", minute=6)
         self.assertReceipt(self.accept(checkpoint(2, generation=2), minute=7), checkpoint(2, generation=2))
 
+    def test_ingest_batch_limits_do_not_apply(self) -> None:
+        # The generation's record-count, byte, and Source Projection schema limits govern Ingest Batches only.
+        self.activate()
+        tight = {**advertisement(3), "max_record_count": 1, "max_message_bytes": 4096}
+        self.store.honor_generation(3, encode_message(tight), at(1))
+        two = checkpoint(1, generation=3, types=[type_status("sleep", "no-change"), type_status("weight", "completed", True)])
+        many = checkpoint(2, generation=3, types=[type_status(f"synthetic-type-{n:03d}-" + "x" * 40, "no-change") for n in range(60)])
+        self.assertGreater(len(many), tight["max_message_bytes"])
+        state = new_delivery_state([tight])
+        for minute, data in enumerate((two, many), start=2):
+            expected = evaluate_delivery(state, data)
+            self.assertEqual((expected.outcome, expected.response), ("receipt", receipt_for(data)))
+            state = expected.state
+            self.assertReceipt(self.accept(data, minute=minute), data)
+            self.assertEqual(self.latest(), ArchivedCheckpoint(minute - 1, at(minute), record_of(data)))
+
 
 # R7 — Archival
 

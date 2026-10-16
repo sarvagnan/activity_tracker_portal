@@ -91,7 +91,9 @@ Tests: `test_older_unseen_sequence_is_blocked`, `test_gap_is_accepted_and_report
 
 The checkpoint's staged generation must be honored, and its advertisement must list the message's Wire Protocol Version. Otherwise the checkpoint is blocked as `unsupported-wire-protocol`.
 
-Tests: `test_unhonored_generation_is_unsupported`.
+The generation's record-count, message-byte, and Source Projection schema limits govern Ingest Batches only, so they never block a checkpoint (Decision 5). That includes a checkpoint reporting more record types than the record-count limit, longer than the byte limit, or naming record types the advertisement does not list.
+
+Tests: `test_unhonored_generation_is_unsupported`, `test_ingest_batch_limits_do_not_apply`.
 
 ### R7 — Archival
 
