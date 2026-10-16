@@ -213,12 +213,18 @@ def create_app(
     async def outbox_messages(request: Request) -> Response:
         # Older generations remain usable until acknowledged past. Bound the
         # transport before entering the writer, using an independent snapshot.
-        with request.app.state.writer.store.read() as view:
-            limit = max(
-                [settings.capabilities.max_message_bytes]
-                + [ingest_protocol.decode_message(item.advertisement)["max_message_bytes"]
-                   for item in view.honored_generations()]
-            )
+        def body_limit() -> int:
+            with request.app.state.writer.store.read() as view:
+                return max(
+                    [settings.capabilities.max_message_bytes]
+                    + [ingest_protocol.decode_message(item.advertisement)["max_message_bytes"]
+                       for item in view.honored_generations()]
+                )
+
+        try:
+            limit = await asyncio.to_thread(body_limit)
+        except operational_store.StoreRetryable:
+            return Response(content=RETRYABLE_BODY, status_code=503, media_type="application/json")
 
         encodings = request.headers.getlist("content-encoding")
         encoding = encodings[0].strip().lower() if len(encodings) == 1 else "identity"

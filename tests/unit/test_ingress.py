@@ -357,6 +357,111 @@ class OutboxRouteTests(Case):
         self.assertEqual(response.content, expected.body)
         self.assertEqual(response.headers["content-type"], "application/json")
 
+    async def post_asgi(self, app, receive, *, headers=()):
+        sent = []
+        async def send(message):
+            sent.append(message)
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "POST", "scheme": "http", "path": "/v1/outbox-messages",
+            "raw_path": b"/v1/outbox-messages", "query_string": b"", "root_path": "",
+            "headers": list(headers), "server": ("testserver", 80), "client": ("testclient", 1),
+        }
+        await app(scope, receive, send)
+        return sent
+
+    def test_slow_preflight_read_keeps_event_loop_responsive(self) -> None:
+        app = self.app()
+        with TestClient(app):
+            real_read = app.state.writer.store.read
+            for stage in ("enter", "query"):
+                with self.subTest(stage=stage):
+                    delays = []
+                    def pause():
+                        started = time.monotonic()
+                        time.sleep(0.2)
+                        delays.append(time.monotonic() - started)
+
+                    @contextmanager
+                    def slow_read():
+                        if stage == "enter":
+                            pause()
+                        with real_read() as view:
+                            real_generations = view.honored_generations
+                            def slow_generations():
+                                pause()
+                                return real_generations()
+                            with ExitStack() as stack:
+                                if stage == "query":
+                                    stack.enter_context(patch.object(view, "honored_generations", side_effect=slow_generations))
+                                yield view
+
+                    async def receive():
+                        self.fail("body read before transport rejection")
+
+                    async def probe():
+                        async def heartbeat():
+                            started = time.monotonic()
+                            await asyncio.sleep(0.02)
+                            return time.monotonic() - started
+                        beat = asyncio.create_task(heartbeat())
+                        # Start the timer before the request reaches preflight.
+                        await asyncio.sleep(0)
+                        sent = await self.post_asgi(app, receive, headers=[(b"content-encoding", b"br")])
+                        return sent, await beat
+
+                    with patch.object(app.state.writer.store, "read", side_effect=slow_read), patch.object(
+                        app.state.writer, "run", side_effect=AssertionError("writer used"),
+                    ):
+                        sent, gap = asyncio.run(probe())
+                    self.assertEqual(sent[0]["status"], 415)
+                    self.assertEqual(len(delays), 1)
+                    self.assertGreaterEqual(delays[0], 0.2)
+                    # Allow 7.5 times the heartbeat interval, still below the
+                    # injected blocking delay. No request-duration assertion.
+                    self.assertLess(gap, 0.15, f"heartbeat delayed by {gap:.3f}s during {stage}")
+
+    def test_preflight_contention_returns_retryable_without_body_or_writer(self) -> None:
+        self.check_preflight_failure(operational_store.StoreRetryable("store-busy"))
+
+    def test_other_preflight_failures_still_propagate(self) -> None:
+        self.check_preflight_failure(RuntimeError("synthetic preflight failure"))
+
+    def check_preflight_failure(self, failure) -> None:
+        app = self.app()
+        with TestClient(app):
+            real_read = app.state.writer.store.read
+            for stage in ("enter", "query"):
+                with self.subTest(stage=stage):
+                    @contextmanager
+                    def failing_read():
+                        if stage == "enter":
+                            raise failure
+                        with real_read() as view, patch.object(view, "honored_generations", side_effect=failure):
+                            yield view
+
+                    reads = []
+                    async def receive():
+                        reads.append(True)
+                        self.fail("body read after preflight failure")
+
+                    with patch.object(app.state.writer.store, "read", side_effect=failing_read) as read, patch.object(
+                        app.state.writer, "run", side_effect=AssertionError("writer used"),
+                    ) as run:
+                        if isinstance(failure, operational_store.StoreRetryable):
+                            sent = asyncio.run(self.post_asgi(app, receive))
+                            self.assertEqual(sent[0]["status"], 503)
+                            self.assertIn((b"content-type", b"application/json"), sent[0]["headers"])
+                            self.assertEqual(sent[1]["body"], RETRYABLE)
+                            self.assertEqual(sent[1]["body"], ingress.RETRYABLE_BODY)
+                        else:
+                            with self.assertRaises(type(failure)) as raised:
+                                asyncio.run(self.post_asgi(app, receive))
+                            self.assertIs(raised.exception, failure)
+                        read.assert_called_once_with()
+                        run.assert_not_called()
+                    self.assertEqual(reads, [])
+
     def test_each_kind_and_retry_match_direct_units_over_the_same_history(self) -> None:
         app = self.app()
         reference = self.reference()
