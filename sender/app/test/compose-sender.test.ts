@@ -4,21 +4,29 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { URL } from "node:url";
-import { test } from "node:test";
-import type { TestContext } from "node:test";
+import { test as nodeTest } from "node:test";
+import type { TestContext, TestFn, TestOptions } from "node:test";
 import { decodeMessage, encodeMessage, messageSha256 } from "@activity-tracker-portal/ingest-protocol";
-import { composeSender, PROJECTION_IMPLEMENTATION_VERSION, readSyncConditions, STORAGE_PRESSURE_FREE_BYTES } from "../src/shell/compose-sender.ts";
+import { composeSender, MAX_DELIVERY_ATTEMPTS, DELIVERY_FINISH_RESERVE_MS, PROJECTION_IMPLEMENTATION_VERSION, readSyncConditions, STORAGE_PRESSURE_FREE_BYTES } from "../src/shell/compose-sender.ts";
 import type { ComposeSenderOptions, ShellRunResult } from "../src/shell/compose-sender.ts";
 import { startForegroundLifecycle } from "../src/shell/foreground-lifecycle.ts";
 import { backgroundTaskBody } from "../src/background/background-task-body.ts";
 import { createSenderEnrollment } from "../src/enrollment/manage-sender-enrollment.ts";
 import type { EnrollmentStatus, SenderEnrollment } from "../src/enrollment/manage-sender-enrollment.ts";
+import type { HttpFetchInit } from "../src/transport/http-transport.ts";
+import { DELIVERY_TIMEOUT_MS } from "../src/delivery/send-outbox-message.ts";
+import { BACKGROUND_BUDGET_MS } from "../src/scheduling/schedule-background-polling.ts";
 import { createOutboxSender } from "../src/delivery/send-outbox-message.ts";
-import { outboxAad, outboxMessages } from "../src/outbox/stage-outbox-batch.ts";
+import { appendOutboxMessages, lastOutboxSequence, outboxAad, outboxMessages } from "../src/outbox/stage-outbox-batch.ts";
 import type { SenderDatabase } from "../src/storage/database.ts";
 import { openNodeDatabase } from "./support/node-database.ts";
 import { NodeInstallationCipher } from "./support/node-installation-cipher.ts";
 import { SyntheticClock, SyntheticSources } from "./support/synthetic-sync-sources.ts";
+
+function test(name: string, options: TestFn | TestOptions, body?: TestFn): void {
+  if (typeof options === "function") void nodeTest(name, { timeout: 5_000 }, options);
+  else void nodeTest(name, { timeout: 5_000, ...options }, body!);
+}
 
 const INSTALLATION = "00000000-0000-4000-8000-000000000001";
 const KEY = "synthetic-key";
@@ -52,7 +60,13 @@ async function fixture(t: TestContext, initial: Status = enrolled()) {
   };
   const options: ComposeSenderOptions = {
     async openDatabase() { state.opened++; database = await openNodeDatabase(join(directory, "sender.db")); return database; },
-    enrollment(handle) { assert.equal(handle, database); return { async status() { return state.status; } }; },
+    enrollment(handle) { assert.equal(handle, database); return {
+      async status() { return state.status; },
+      async confirm() { return { outcome: "retryable", failure: "transport-failed" }; },
+      async refreshCapabilities() { return { outcome: "current" }; },
+    }; },
+    fetch: async () => { throw new Error("Synthetic offline Portal"); },
+    deliveryNotifier: { async notify(failure) { state.notifications.push(failure); } },
     cipher, sources,
     async projectionSchemaVersions() { state.versionReads++; return state.versions; },
     async availableStorageBytes() { return state.bytes; },
@@ -195,7 +209,7 @@ test("generation replacement waits for the old run and routes waiting triggers t
   let generationRead!: () => void;
   const observed = new Promise<void>((resolve) => { generationRead = resolve; });
   const shell = await composeSender({ ...f.options,
-    enrollment() { return { async status() {
+    enrollment(handle, transport) { return { ...f.options.enrollment(handle, transport), async status() {
       const current = f.state.status;
       if (current && !("outcome" in current) && current.stagingContext?.generation.generation === 2) generationRead();
       return current;
@@ -357,7 +371,7 @@ test("a real headBlock storage read failure blocks sources and reports delivery-
       if (sql.includes("outbox_head_block")) throw new Error("synthetic read failure");
       return database.query(sql, args);
     } };
-  }, enrollment() { return { async status() { return f.state.status; } }; } });
+  }, enrollment(_handle, transport) { return f.options.enrollment(f.database(), transport); } });
   assert.equal(checkpoint(await shell.manualSync()).summary.recordTypes[0].reason, "delivery-blocked");
   assert.deepEqual(f.sources.calls, []);
 });
@@ -437,4 +451,369 @@ test("published enrollment confirmation gates collection until its acknowledgeme
   assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2);
   assert.deepEqual(await runs(f.database()), beforeDrain);
   assert.deepEqual(await outboxMessages(f.database()), beforeMessages);
+});
+
+
+function response(body: Uint8Array) {
+  return { status: 200, redirected: false, body: new ReadableStream<Uint8Array>({ start(stream) {
+    stream.enqueue(body); stream.close();
+  } }) };
+}
+function receipt(body: Uint8Array): Uint8Array {
+  const message = decodeMessage(body);
+  return encodeMessage({ wire_version: 1, kind: "delivery-receipt",
+    sender_installation: message.sender_installation, sequence: message.sequence, message_sha256: messageSha256(body),
+  });
+}
+async function acknowledgements(f: Awaited<ReturnType<typeof fixture>>, count: number, installation = INSTALLATION, key = KEY) {
+  for (let n = 0; n < count; n++) {
+    const last = await lastOutboxSequence(f.database(), installation);
+    const body = encodeMessage({ wire_version: 1, kind: "capability-acknowledgement",
+      sender_installation: installation, sequence: last + 1, capability_generation: 1,
+    });
+    const sealed = await f.cipher.seal(key, body, outboxAad(installation, last + 1));
+    assert.equal(sealed.status, "ok");
+    if (sealed.status !== "ok") throw new Error("Synthetic sealing failed");
+    assert.equal(await f.database().transaction((tx) => appendOutboxMessages(tx, installation, last, [{
+      kind: "capability-acknowledgement", sealed: sealed.value, messageBytes: body.length,
+    }])), true);
+  }
+}
+function portal(f: Awaited<ReturnType<typeof fixture>>) {
+  const requests: { url: string; method: string; body: Uint8Array }[] = [];
+  const state = {
+    answer: async (_url: string, init: HttpFetchInit) => receipt(init.body!),
+    inFlight: 0, maxInFlight: 0,
+  };
+  return { requests, state, options: { ...f.options, async fetch(url: string, init: HttpFetchInit) {
+    requests.push({ url, method: init.method, body: new Uint8Array(init.body!) });
+    state.maxInFlight = Math.max(state.maxInFlight, ++state.inFlight);
+    try { return response(await state.answer(url, init)); }
+    finally { state.inFlight--; }
+  } } };
+}
+
+for (const trigger of ["foreground", "manual", "background"] as const) {
+  test(`${trigger} delivers every staged message and its checkpoint`, async (t) => {
+    const f = await fixture(t);
+    const p = portal(f);
+    const shell = await composeSender(p.options);
+    await acknowledgements(f, 3);
+    if (trigger === "foreground") checkpoint(await shell.foreground());
+    else if (trigger === "manual") checkpoint(await shell.manualSync());
+    else assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 1);
+    assert.deepEqual(await outboxMessages(f.database()), []);
+    assert.ok(p.requests.length >= 4);
+    assert.deepEqual(p.requests.map(({ body }) => decodeMessage(body).sequence),
+      Array.from({ length: p.requests.length }, (_, n) => n + 1));
+    assert.equal((await f.database().query("SELECT * FROM run_checkpoints")).length, 1);
+  });
+}
+
+test("a blocked head stops the loop, notifies once, and the next trigger retries it before later messages", async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  p.state.answer = async (_url, init) => encodeMessage({ wire_version: 1, kind: "delivery-block",
+    failure: "sequence-out-of-order", message_sha256: messageSha256(init.body!),
+    sender_installation: INSTALLATION, sequence: decodeMessage(init.body!).sequence,
+  });
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, 3);
+  assert.deepEqual(await shell.manualSync(), { outcome: "skipped" });
+  assert.equal(p.requests.length, 1);
+  assert.equal((await outboxMessages(f.database())).length, 3);
+  assert.deepEqual(f.state.notifications, ["sequence-out-of-order"]);
+  p.state.answer = async (_url, init) => receipt(init.body!);
+  assert.deepEqual(await shell.manualSync(), { outcome: "skipped" });
+  assert.equal(p.requests.length, 4);
+  assert.deepEqual(p.requests[0].body, p.requests[1].body);
+  assert.deepEqual(await outboxMessages(f.database()), []);
+  assert.deepEqual(await f.database().query("SELECT * FROM outbox_head_block"), []);
+});
+
+test("retryable delivery stops after one attempt and never changes a successful checkpoint result", async (t) => {
+  const f = await fixture(t);
+  f.state.registered = true;
+  const p = portal(f);
+  p.state.answer = async () => encodeMessage({ wire_version: 1, kind: "retryable-failure", reason: "temporarily-unavailable" });
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, 2);
+  const first = checkpoint(await shell.manualSync());
+  assert.equal(first.runSequence, 1);
+  assert.equal(p.requests.length, 1);
+  assert.ok((await outboxMessages(f.database())).length >= 3);
+  assert.equal((await f.database().query("SELECT * FROM run_checkpoints")).length, 1);
+  assert.deepEqual(f.state.notifications, []);
+  p.state.answer = async () => { throw new Error("Synthetic network failure"); };
+  assert.equal(checkpoint(await shell.manualSync()).runSequence, 2);
+  assert.equal(p.requests.length, 2);
+});
+
+test("each loop is bounded and another trigger drains the remainder", async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, MAX_DELIVERY_ATTEMPTS + 2);
+  await shell.manualSync();
+  assert.equal(p.requests.length, MAX_DELIVERY_ATTEMPTS);
+  assert.equal((await outboxMessages(f.database())).length, 2);
+  await shell.foreground();
+  assert.equal(p.requests.length, MAX_DELIVERY_ATTEMPTS + 2);
+  assert.deepEqual(await outboxMessages(f.database()), []);
+  assert.deepEqual(await runs(f.database()), []);
+});
+
+test("background delivery spends only the remaining shared task budget and reserves a full exchange", async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  const began = f.clock.mono;
+  p.state.answer = async (_url, init) => {
+    assert.ok(f.clock.mono + DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS <= began + BACKGROUND_BUDGET_MS);
+    f.clock.advance(DELIVERY_TIMEOUT_MS);
+    return receipt(init.body!);
+  };
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, 12);
+  assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2); // Still no Polling Run.
+  assert.equal(p.requests.length, 7);
+  assert.equal((await outboxMessages(f.database())).length, 5);
+  p.state.answer = async (_url, init) => receipt(init.body!);
+  await shell.manualSync();
+  assert.deepEqual(await outboxMessages(f.database()), []);
+});
+
+test("a Polling Run that spends the background budget leaves delivery for the next trigger", async (t) => {
+  const f = await fixture(t);
+  const p = portal(f);
+  f.sources.callCostMs = BACKGROUND_BUDGET_MS;
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, 2);
+  assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 1);
+  assert.equal(p.requests.length, 0);
+  assert.ok((await outboxMessages(f.database())).length >= 3);
+  f.state.status = enrolled({ phase: "draining" });
+  await shell.manualSync();
+  assert.deepEqual(await outboxMessages(f.database()), []);
+});
+
+test("overlapping triggers coalesce onto delivery without concurrent sendNext calls", async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  let arrive!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  p.state.answer = async (_url, init) => { arrive(); await released; return receipt(init.body!); };
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, 4);
+  try {
+    const first = shell.manualSync();
+    await arrived;
+    const others = [shell.manualSync(), shell.foreground(), backgroundTaskBody(shell.backgroundPollingProvider)()];
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(p.requests.length, 1);
+    release();
+    await Promise.all([first, ...others]);
+    assert.equal(p.requests.length, 4);
+    assert.equal(p.state.maxInFlight, 1);
+    assert.deepEqual(await outboxMessages(f.database()), []);
+  } finally { release(); }
+});
+
+for (const phase of ["confirming", "refused", "absent"] as const) {
+  test(`${phase} does not deliver queued messages`, async (t) => {
+    const f = await fixture(t, phase === "absent" ? null : enrolled({ phase, confirmed: false, stagingContext: null }));
+    const p = portal(f);
+    const shell = await composeSender(p.options);
+    await acknowledgements(f, 2);
+    await shell.foreground(); await shell.manualSync();
+    assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2);
+    assert.equal(p.requests.length, 0);
+    assert.equal((await outboxMessages(f.database())).length, 2);
+  });
+}
+
+test("delivery context replacement uses the new URL, installation and key without overlapping sends", async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, 1);
+  await shell.manualSync();
+  const installation = "00000000-0000-4000-8000-000000000002";
+  const key = "replacement-key";
+  const url = "https://replacement.synthetic.invalid";
+  await f.cipher.create(key);
+  f.state.status = enrolled({ phase: "draining", deliveryContext: { installationId: installation, keyAlias: key, portalUrl: url } });
+  await acknowledgements(f, 2, installation, key);
+  await shell.foreground();
+  assert.equal(p.requests[1].url, `${url}/v1/outbox-messages`);
+  assert.equal(decodeMessage(p.requests[1].body).sender_installation, installation);
+  assert.equal(p.requests.length, 3);
+  assert.deepEqual(await outboxMessages(f.database()), []);
+});
+
+
+function advertisement(generation: number, recordType = "steps"): Uint8Array {
+  return encodeMessage({ wire_version: 1, kind: "capability-advertisement", generation, wire_versions: [1],
+    projection_schemas: [{ record_type: recordType, versions: [1] }], max_record_count: 100, max_message_bytes: 65_536,
+  });
+}
+
+test("the shared HTTP transport retries confirmation on every trigger and refreshes at start and return", async (t) => {
+  const f = await fixture(t, null);
+  f.state.versions = { steps: 1, weight: 1 };
+  const p = portal(f);
+  let enrollment!: SenderEnrollment;
+  let confirmationAttempts = 0;
+  let generation = 1;
+  p.state.answer = async (url, init) => {
+    if (url.endsWith("/v1/enrollment-confirmation")) {
+      if (++confirmationAttempts < 5) throw new Error("Synthetic lost confirmation");
+      return advertisement(generation);
+    }
+    if (init.method === "GET") return advertisement(generation, generation === 3 ? "weight" : "steps");
+    return receipt(init.body!);
+  };
+  const shell = await composeSender({ ...p.options, enrollment(database, transport) {
+    enrollment = createSenderEnrollment({ database, transport, cipher: f.cipher, now: f.clock.now, randomUUID: () => INSTALLATION });
+    return enrollment;
+  } });
+  assert.equal((await enrollment.enroll({ kind: "typed", portalUrl: "https://portal.synthetic.invalid",
+    enrollmentCode: "SYNTHETICCODE234",
+  })).outcome, "retryable");
+  assert.deepEqual(await shell.foreground(), { outcome: "skipped" });
+  assert.deepEqual(await shell.manualSync(), { outcome: "skipped" });
+  assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2);
+  assert.equal(confirmationAttempts, 4);
+  assert.deepEqual(await shell.foreground(), { outcome: "skipped" });
+  assert.equal(confirmationAttempts, 5);
+  const confirmations = p.requests.filter((request) => request.url.endsWith("/v1/enrollment-confirmation"));
+  assert.ok(confirmations.every((request) => Buffer.from(request.body).equals(Buffer.from(confirmations[0].body))));
+  const adopted = await enrollment.status();
+  assert.ok(adopted && !("outcome" in adopted) && adopted.confirmed);
+  assert.deepEqual(await outboxMessages(f.database()), []);
+  generation = 2;
+  assert.deepEqual(checkpoint(await shell.foreground()).summary.recordTypes.map((type) => type.recordType), ["steps"]);
+  const refreshes = () => p.requests.filter((request) => request.method === "GET").length;
+  assert.equal(refreshes(), 1);
+  checkpoint(await shell.manualSync());
+  assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 1);
+  assert.equal(refreshes(), 1);
+  generation = 3;
+  assert.deepEqual(checkpoint(await shell.foreground()).summary.recordTypes.map((type) => type.recordType), ["weight"]);
+  assert.equal(refreshes(), 2);
+  assert.deepEqual(await outboxMessages(f.database()), []);
+  await enrollment.beginDrain();
+  await shell.foreground();
+  assert.equal(refreshes(), 2, "enrollment pack Decision 7 freezes the final sequence while draining");
+});
+
+test("a foreground refresh arriving during a Polling Run waits for its coalesced follow-up before adoption", async (t) => {
+  const f = await fixture(t);
+  f.state.versions = { steps: 1, weight: 1 };
+  const p = portal(f);
+  const submissions = submissionClock(f.clock.now);
+  let refreshes = 0;
+  const shell = await composeSender({ ...p.options, now: submissions.now, enrollment(database, transport) {
+    return { ...f.options.enrollment(database, transport), async refreshCapabilities() {
+      assert.equal(f.sources.inFlight, 0);
+      assert.equal((await runs(f.database())).length, 2);
+      assert.equal((await f.database().query("SELECT * FROM run_checkpoints")).length, 2);
+      refreshes++;
+      f.state.status = enrolled({ stagingContext: { ...enrolled().stagingContext!, generation: {
+        generation: 2, maxRecordCount: 100, maxMessageBytes: 65_536, projectionSchemas: { weight: [1] },
+      } } });
+      return { outcome: "adopted", generation: 2 };
+    } };
+  } });
+  const held = f.sources.hold("snapshot", "steps");
+  try {
+    const active = shell.manualSync();
+    await held.arrived;
+    const returning = await submissions.submit(() => shell.foreground(), 2);
+    assert.equal(refreshes, 0);
+    held.release();
+    checkpoint(await active);
+    checkpoint(await returning.result);
+    assert.equal(refreshes, 1);
+    assert.deepEqual(checkpoint(await shell.manualSync()).summary.recordTypes.map((type) => type.recordType), ["weight"]);
+    assert.equal(p.state.maxInFlight, 1);
+    assert.deepEqual(await outboxMessages(f.database()), []);
+  } finally { held.release(); }
+});
+
+test("background confirmation time reduces the delivery budget", async (t) => {
+  const f = await fixture(t, enrolled({ phase: "confirming", confirmed: false, stagingContext: null }));
+  const p = portal(f);
+  p.state.answer = async (_url, init) => { f.clock.advance(DELIVERY_TIMEOUT_MS); return receipt(init.body!); };
+  const shell = await composeSender({ ...p.options, enrollment(database, transport) {
+    return { ...f.options.enrollment(database, transport), async confirm() {
+      f.clock.advance(120_000);
+      f.state.status = enrolled({ confirmed: false });
+      return { outcome: "enrolled", generation: 1 };
+    } };
+  } });
+  await acknowledgements(f, 12);
+  assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2);
+  assert.equal(p.requests.length, 5);
+  assert.equal((await outboxMessages(f.database())).length, 7);
+});
+
+
+for (const remaining of [DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS - 1,
+  DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS]) {
+  test(`background attempts require the full timeout and finish reserve: ${remaining}ms remain`, async (t) => {
+    const f = await fixture(t, enrolled({ phase: "draining" }));
+    const p = portal(f);
+    let first = true;
+    p.state.answer = async (_url, init) => { f.clock.advance(DELIVERY_TIMEOUT_MS); return receipt(init.body!); };
+    const shell = await composeSender({ ...p.options, enrollment(database, transport) {
+      return { ...f.options.enrollment(database, transport), async status() {
+        if (first) { first = false; f.clock.advance(BACKGROUND_BUDGET_MS - remaining); }
+        return f.state.status;
+      } };
+    } });
+    await acknowledgements(f, 2);
+    assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2);
+    assert.equal(p.requests.length, remaining === DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS ? 1 : 0);
+  });
+}
+
+test("a context change during an unanswered request cannot start a second delivery loop", async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  let arrive!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  p.state.answer = async (_url, init) => {
+    if (p.requests.length === 1) { arrive(); await released; }
+    return receipt(init.body!);
+  };
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, 2);
+  const installation = "00000000-0000-4000-8000-000000000002";
+  const key = "replacement-key";
+  await f.cipher.create(key);
+  try {
+    const first = shell.manualSync();
+    await arrived;
+    await acknowledgements(f, 2, installation, key);
+    f.state.status = enrolled({ phase: "draining", deliveryContext: {
+      installationId: installation, keyAlias: key, portalUrl: "https://replacement.synthetic.invalid",
+    } });
+    const next = shell.manualSync();
+    const background = backgroundTaskBody(shell.backgroundPollingProvider)();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(p.requests.length, 1);
+    release();
+    await Promise.all([first, next, background]);
+    assert.equal(p.requests.length, 3);
+    assert.equal(p.state.maxInFlight, 1);
+    assert.ok(p.requests.slice(1).every((request) => request.url === "https://replacement.synthetic.invalid/v1/outbox-messages"));
+    assert.deepEqual((await outboxMessages(f.database())).map((message) => message.installationId), [INSTALLATION]);
+    f.state.status = enrolled({ phase: "draining" });
+    await shell.manualSync();
+    assert.deepEqual(await outboxMessages(f.database()), []);
+  } finally { release(); }
 });

@@ -1,13 +1,16 @@
 import type { InstallationCipher } from "../installation-cipher.ts";
-import { createOutboxSender } from "../delivery/send-outbox-message.ts";
-import type { OutboxSender } from "../delivery/send-outbox-message.ts";
+import { createOutboxSender, DELIVERY_TIMEOUT_MS } from "../delivery/send-outbox-message.ts";
+import type { DeliveryNotifier, OutboxSender } from "../delivery/send-outbox-message.ts";
+import { ENROLLMENT_TIMEOUT_MS } from "../enrollment/manage-sender-enrollment.ts";
 import type { EnrollmentStatus, SenderEnrollment } from "../enrollment/manage-sender-enrollment.ts";
 import type { SenderDatabase } from "../storage/database.ts";
 import { migrate, senderMigrations } from "../storage/migrations.ts";
 import { createSenderSync } from "../sync/coordinate-sender-sync.ts";
 import type { RunResult, SenderSync, SyncConditions, SyncSources, TriggerRequest } from "../sync/coordinate-sender-sync.ts";
-import { createBackgroundPolling } from "../scheduling/schedule-background-polling.ts";
+import { createBackgroundPolling, BACKGROUND_BUDGET_MS } from "../scheduling/schedule-background-polling.ts";
 import type { BackgroundPolling, SchedulingNotifier, SchedulingPlatform } from "../scheduling/schedule-background-polling.ts";
+import { createHttpTransport } from "../transport/http-transport.ts";
+import type { HttpFetch, HttpTransport } from "../transport/http-transport.ts";
 import type { BackgroundPollingProvider } from "../background/background-task-body.ts";
 
 export const PROJECTION_IMPLEMENTATION_VERSION = "activity-tracker-sender/0.1.0";
@@ -16,13 +19,19 @@ export const PROJECTION_IMPLEMENTATION_VERSION = "activity-tracker-sender/0.1.0"
 export const STORAGE_PRESSURE_FREE_BYTES = 536_870_912;
 
 type Status = Awaited<ReturnType<SenderEnrollment["status"]>>;
-type EnrollmentReader = Pick<SenderEnrollment, "status">;
+type ShellEnrollment = Pick<SenderEnrollment, "status" | "confirm" | "refreshCapabilities">;
+
+export const MAX_DELIVERY_ATTEMPTS = 64;
+// Leave time for receipt bookkeeping after the unit's full network timeout.
+export const DELIVERY_FINISH_RESERVE_MS = 1_000;
 export type ShellRunResult = RunResult | { readonly outcome: "skipped" };
 
 export interface ComposeSenderOptions {
   readonly openDatabase: () => Promise<SenderDatabase>;
-  /** Construct the published enrollment observer on the same migrated handle. */
-  readonly enrollment: (database: SenderDatabase) => EnrollmentReader;
+  /** The production boundary constructs the published enrollment on this migrated handle. */
+  readonly enrollment: (database: SenderDatabase, transport: HttpTransport) => ShellEnrollment;
+  readonly fetch: HttpFetch;
+  readonly deliveryNotifier: DeliveryNotifier;
   readonly cipher: InstallationCipher;
   readonly sources: SyncSources;
   readonly projectionSchemaVersions: () => Promise<Readonly<Record<string, number>>>;
@@ -70,12 +79,13 @@ export async function readSyncConditions(options: {
 }
 
 export async function composeSender(options: ComposeSenderOptions): Promise<SenderShell> {
+  const transport = createHttpTransport({ fetch: options.fetch });
   const database = await options.openDatabase();
-  let enrollment: EnrollmentReader;
+  let enrollment: ShellEnrollment;
   try {
     const migration = await migrate(database, senderMigrations);
     if (migration.status !== "ready") throw new Error("Sender database is frozen");
-    enrollment = options.enrollment(database);
+    enrollment = options.enrollment(database, transport);
   } catch (error) {
     await database.close();
     throw error;
@@ -86,13 +96,61 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     catch { return { outcome: "storage-failed" }; }
   }
 
+  let sender: OutboxSender | null = null;
+  let deliveryIdentity: string | null = null;
+  function currentSender(current: EnrollmentStatus): OutboxSender {
+    const context = current.deliveryContext;
+    const identity = JSON.stringify([context.installationId, context.keyAlias, context.portalUrl]);
+    if (!sender || identity !== deliveryIdentity) {
+      sender = createOutboxSender({
+        database, cipher: options.cipher, context: { ...context },
+        transport, notifier: options.deliveryNotifier, now: options.now,
+      });
+      deliveryIdentity = identity;
+    }
+    return sender;
+  }
+
+  let delivery: Promise<void> | null = null;
+  let deliveryDeadline = Infinity;
+  function hasTime(deadline: number, timeout: number): boolean {
+    return options.monotonicNow() + timeout + DELIVERY_FINISH_RESERVE_MS <= deadline;
+  }
+  function deliver(deadline = Infinity): Promise<void> {
+    // All triggers coalesce onto one bounded loop, even across context replacement.
+    if (delivery) {
+      deliveryDeadline = Math.min(deliveryDeadline, deadline);
+      return delivery;
+    }
+    deliveryDeadline = deadline;
+    delivery = Promise.resolve().then(async () => {
+      for (let attempt = 0; attempt < MAX_DELIVERY_ATTEMPTS; attempt++) {
+        if (!hasTime(deliveryDeadline, DELIVERY_TIMEOUT_MS)) return;
+        const current = await status();
+        // Enrollment pack R7–R8 / Decisions 4–7: deliver the pending acknowledgement
+        // and drain queued messages even when collection cannot open a Polling Run.
+        if (!isStatus(current) || !["enrolled", "draining"].includes(current.phase)) return;
+        if (!hasTime(deliveryDeadline, DELIVERY_TIMEOUT_MS)) return;
+        // Delivery pack Decision 4: retry a blocked head on the next trigger.
+        // Decision 3: continue only after a receipt; never skip a blocked head.
+        if ((await currentSender(current).sendNext()).outcome !== "delivered") return;
+      }
+    }).catch(() => { /* Delivery cannot erase a Polling Run's checkpoint result. */ }).finally(() => {
+      delivery = null;
+    });
+    return delivery;
+  }
+
   let coordinator: SenderSync | null = null;
   let coordinatorIdentity: string | null = null;
   let preparation: Promise<unknown> = Promise.resolve();
   const inFlight = new Set<Promise<RunResult>>();
-  function startRun(request: TriggerRequest): Promise<RunResult> {
+  function startRun(request: TriggerRequest, deadline = Infinity): Promise<RunResult> {
     if (!coordinator) throw new Error("Sender coordinator is unavailable");
-    const result = coordinator.trigger(request);
+    const result = coordinator.trigger(request).then(async (result) => {
+      await deliver(deadline);
+      return result;
+    });
     inFlight.add(result);
     void result.then(() => inFlight.delete(result), () => inFlight.delete(result));
     return result;
@@ -104,12 +162,27 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   }
 
   // Return the pending run in an envelope: preparation must never await it.
-  function prepareAndStart<T>(kind: TriggerRequest["kind"], start: () => Promise<T>): Promise<
-    { readonly pending: Promise<T> } | { readonly outcome: "skipped" } |
+  function prepareAndStart<T>(kind: TriggerRequest["kind"], start: () => Promise<T>, deadline = Infinity): Promise<
+    { readonly pending: Promise<T>; readonly refreshAfter: boolean } | { readonly outcome: "skipped" } |
     { readonly outcome: "failed"; readonly failure: "storage-failed" }
   > {
     const ready = preparation.then(async () => {
       let current = await status();
+      const refreshAfter = kind === "foreground" && inFlight.size > 0;
+      if (isStatus(current) && (current.phase === "confirming" ||
+          kind === "foreground" && !refreshAfter && current.phase === "enrolled")) {
+        // Enrollment pack R4 and Decision 6: retry confirmation; refresh on start/return.
+        // Adoption must wait for all old-generation runs before preparation can resume.
+        await Promise.allSettled(inFlight);
+        current = await status();
+        try {
+          if (isStatus(current) && hasTime(deadline, ENROLLMENT_TIMEOUT_MS)) {
+            if (current.phase === "confirming") await enrollment.confirm();
+            else if (kind === "foreground" && current.phase === "enrolled") await enrollment.refreshCapabilities();
+          }
+        } catch { /* An unavailable Portal does not disable the adopted generation. */ }
+        current = await status();
+      }
       if (isStatus(current) && kind === "foreground") {
         await currentPolling().ensureRegistered();
         current = await status();
@@ -124,7 +197,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       if (current && "outcome" in current) return { outcome: "failed", failure: "storage-failed" } as const;
       if (!collectionEnabled(current) || !isStatus(current)) return { outcome: "skipped" } as const;
       await prepare(current);
-      return { pending: start() };
+      return { pending: start(), refreshAfter };
     });
     preparation = ready.catch(() => undefined);
     return ready;
@@ -132,11 +205,13 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
 
   // Construct lazily: registration is expected only with an active installation.
   let polling: BackgroundPolling | null = null;
-  function currentPolling(): BackgroundPolling {
-    polling ??= createBackgroundPolling({
-      database, platform: options.platform, notifier: options.notifier, now: options.now,
-      sync: { trigger: startRun },
+  function makePolling(trigger: (request: TriggerRequest) => Promise<RunResult>): BackgroundPolling {
+    return createBackgroundPolling({
+      database, platform: options.platform, notifier: options.notifier, now: options.now, sync: { trigger },
     });
+  }
+  function currentPolling(): BackgroundPolling {
+    polling ??= makePolling(startRun);
     return polling;
   }
 
@@ -168,12 +243,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
         async headBlock() {
           const latest = await status();
           if (!isStatus(latest)) return { outcome: "storage-failed" };
-          // Only headBlock is exposed here. Delivery composition belongs to 2rv.9.
-          return createOutboxSender({
-            database, cipher: options.cipher, context: latest.deliveryContext, now: options.now,
-            transport: { async send() { throw new Error("Read-only delivery observer"); } },
-            notifier: { async notify() { throw new Error("Read-only delivery observer"); } },
-          }).headBlock();
+          return currentSender(latest).headBlock();
         },
       }),
       backgroundScheduling: () => currentPolling().observe(),
@@ -184,7 +254,26 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
 
   async function trigger(kind: "foreground" | "manual"): Promise<ShellRunResult> {
     const ready = await prepareAndStart(kind, () => startRun({ kind }));
-    return "pending" in ready ? ready.pending : ready;
+    if ("pending" in ready) {
+      const result = await ready.pending;
+      if (ready.refreshAfter) {
+        // Preserve coordinator coalescing when foreground arrives during a run.
+        // Hold preparation after it settles, so adoption cannot race any run opening.
+        const refreshed = preparation.then(async () => {
+          await Promise.allSettled(inFlight);
+          const current = await status();
+          if (isStatus(current) && current.phase === "enrolled") {
+            try { await enrollment.refreshCapabilities(); } catch { /* Keep the adopted generation. */ }
+          }
+          await deliver();
+        });
+        preparation = refreshed.catch(() => undefined);
+        await refreshed;
+      }
+      return result;
+    }
+    await deliver();
+    return ready;
   }
 
   // The provider is safe for headless execution and for a retained registration
@@ -195,8 +284,19 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     condition: () => currentPolling().condition(),
     async runTask() {
       try {
-        const ready = await prepareAndStart("background", () => currentPolling().runTask());
-        return "pending" in ready ? await ready.pending : "failed";
+        // schedule-background-polling@1 supplies eight minutes. Include preparation,
+        // confirmation and delivery in that same soft deadline, never a fresh budget.
+        const deadline = options.monotonicNow() + BACKGROUND_BUDGET_MS;
+        // A task-local trigger seam subtracts preparation time while the published
+        // scheduling unit retains ownership of runTask's budget and result mapping.
+        const taskPolling = makePolling((request) => startRun({
+          ...request, budgetMs: Math.max(0, Math.min(request.budgetMs ?? BACKGROUND_BUDGET_MS,
+            deadline - options.monotonicNow())),
+        }, deadline));
+        const ready = await prepareAndStart("background", () => taskPolling.runTask(), deadline);
+        if ("pending" in ready) return await ready.pending;
+        await deliver(deadline);
+        return "failed";
       } catch { return "failed"; }
     },
   });
