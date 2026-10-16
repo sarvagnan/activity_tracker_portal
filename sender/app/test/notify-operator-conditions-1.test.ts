@@ -479,7 +479,13 @@ test("conditions_are_read_exactly", async (t) => {
   await f.conditions.observe({ enrollment: enrollment("refused"), summary: summary(["blocked", "projection-refusal"]) });
   const before = await contents(f.database);
   const expected = [record("projection-refused", NOW, NOW + 5_000, true), record("enrollment-refused", NOW, NOW + 5_000, true)];
-  for (let read = 0; read < 3; read++) assert.deepEqual(await f.conditions.conditions(), expected);
+  const operations: string[] = [];
+  const reader = f.make({ database: logging(f.database, operations) });
+  for (let read = 0; read < 3; read++) {
+    assert.deepEqual(await f.conditions.conditions(), expected);
+    assert.deepEqual(await reader.conditions(), expected);
+  }
+  assert.deepEqual(operations.filter((sql) => MUTATION.test(sql)), []);
   assert.deepEqual(await contents(f.database), before);
   assert.deepEqual(await f.make().conditions(), expected);
   for (const failure of [new Error(`${SENTINEL} synthetic storage failure`), new TypeError(`${SENTINEL} synthetic storage value`)]) {
@@ -501,9 +507,8 @@ test("storage_failures_change_nothing", async (t) => {
   const { database } = await f.writeFailing();
   assert.deepEqual(await f.make({ database }).observe(changed), { outcome: "storage-failed" });
   assert.deepEqual(await f.make({ database: failingWrites(f.database, { commit: true }) }).observe(changed), { outcome: "storage-failed" });
-  for (let mutation = 1; mutation <= 2; mutation++) {
-    assert.deepEqual(await f.make({ database: failingWrites(f.database, { mutation }) }).observe(changed), { outcome: "storage-failed" }, String(mutation));
-  }
+  // The onset is recorded before any notification, so the first write always belongs to the observation's transaction.
+  assert.deepEqual(await f.make({ database: failingWrites(f.database, { mutation: 1 }) }).observe(changed), { outcome: "storage-failed" });
   assert.equal(f.notifier.calls.length, calls);
   assert.deepEqual(await contents(f.database), before);
   assert.deepEqual(await f.conditions.observe(changed), { outcome: "observed", conditions: ["storage-pressure"] });
@@ -578,6 +583,29 @@ test("the_notifier_does_not_hold_the_storage_lane", async (t) => {
     assert.equal(await Promise.race([instance.conditions().then(() => "read"), settle(1_000).then(() => "held")]), "read");
   } finally { open(); }
   assert.deepEqual(await pending, { outcome: "observed", conditions: ["permission-missing", "storage-pressure"] });
+  // Recording a notification's success waits in the lane too.
+  let finish!: () => void;
+  f.notifier.gate = new Promise<void>((resolve) => { finish = resolve; });
+  const notifying = f.notifier.arrival();
+  const recording = instance.observe(observation({ summary: summary(["blocked", "permission-missing"], ["deferred", "storage-pressure"], ["blocked", "record-too-large"]) }));
+  await notifying;
+  let hold!: () => void;
+  let holdAcquired!: () => void;
+  const holdHeld = new Promise<void>((resolve) => { holdAcquired = resolve; });
+  const holder = lane(() => new Promise<void>((resolve) => { hold = resolve; holdAcquired(); }));
+  await holdHeld;
+  const start = operations.length;
+  finish();
+  let settled = false;
+  void recording.then(() => { settled = true; });
+  try {
+    await settle(50);
+    assert.deepEqual(operations.slice(start), []);
+    assert.equal(settled, false);
+  } finally { hold(); }
+  await holder;
+  assert.deepEqual(await recording, { outcome: "observed", conditions: ["permission-missing", "storage-pressure", "record-too-large"] });
+  assert.equal((await f.conditions.conditions() as ConditionRecord[]).find((entry) => entry.condition === "record-too-large")?.notified, true);
 });
 
 // R10 — The Sender schema migration

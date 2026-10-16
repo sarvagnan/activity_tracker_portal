@@ -50,12 +50,12 @@ Tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_m
 These throw `TypeError` before any storage or notifier call:
 - malformed options;
 - an observation that is not an object;
-- a `summary` whose `recordTypes` is not an array of objects with a string `outcome`;
+- a `summary` whose `recordTypes` is not an array of objects with a string `outcome` and, when present, a string `reason`;
 - an `enrollment` that is neither `null` nor an object with a string `phase`;
 - a `keyStatus` other than `present`, `missing`, `unusable`, or `unavailable`;
 - a clock reading that is not a safe integer.
 
-`observe` checks the observation's shape first, then reads the clock once, before any storage or notifier call.
+Validation checks these types only, not the published vocabulary: an unknown outcome or reason makes no condition (R3). `observe` checks the observation's shape first, then reads the clock once, before any storage or notifier call.
 
 Tests: `malformed_options_and_observations_are_caller_errors`.
 
@@ -68,7 +68,7 @@ When the observation carries a `summary`, these conditions are active exactly wh
 - `record-too-large`: the reason `record-too-large`;
 - `projection-refused`: the reason `projection-refusal`.
 
-Without a `summary`, these five keep their state. Reasons that are transient or already notified elsewhere make no condition: `time-budget-reached`, `changes-token-expired`, `read-failed`, `delivery-blocked`, and `collection-disabled`.
+Without a `summary`, these five keep their state. Unknown outcomes and reasons make no condition. Reasons that are transient or already notified elsewhere make no condition: `time-budget-reached`, `changes-token-expired`, `read-failed`, `delivery-blocked`, and `collection-disabled`.
 
 Tests: `run_conditions_follow_the_latest_summary`, `transient_and_elsewhere_notified_reasons_make_no_condition`.
 
@@ -79,7 +79,7 @@ Every observation updates these:
 - `drain-complete`: the phase is `draining` and the final sequence is known, so the Operator must retire the installation in the Portal and unlink it;
 - `installation-key-unusable`: an enrollment exists that is not `refused`, and `keyStatus` is `missing` or `unusable`.
 
-A `keyStatus` of `unavailable`, or none, keeps `installation-key-unusable`'s state, because the Keystore may be briefly unavailable. Without an enrollment, all three are inactive.
+Without an enrollment, or with a refused one, `installation-key-unusable` is inactive whatever the key status. Otherwise a `keyStatus` of `unavailable`, or none, keeps its state, because the Keystore may be briefly unavailable. Without an enrollment, all three are inactive.
 
 Tests: `lifecycle_and_key_conditions_follow_each_observation`.
 
@@ -90,7 +90,7 @@ A condition's onset is its becoming active while it was inactive. At each onset 
 2. calls the notifier with the condition alone;
 3. records the notification's success.
 
-While the condition stays active, later observations do not notify again. Its last seen time moves only when an observation shows it, not when a condition is merely kept, and it never moves backwards. Onsets are notified in condition order, and a notifier failure for one condition does not stop the others. `observe` still returns `observed` after a notifier failure. If the notifier throws, synchronously or not, the next observation that still shows the condition retries it, until it succeeds. A condition that clears before its notification succeeds is never notified. A condition that clears and becomes active again is a new onset and notifies again.
+While the condition stays active, later observations do not notify again. Its last seen time moves only when an observation shows it, not when a condition is merely kept, and it never moves backwards. Onsets are notified in condition order, and a notifier failure for one condition does not stop the others. `observe` still returns `observed` after a notifier failure. If the notifier throws, synchronously or not, every later observation retries it while the condition stays active, until it succeeds. That includes an observation that only keeps the condition, such as one without a summary, and the retry does not advance its last seen time. A condition that clears before its notification succeeds is never notified. A condition that clears and becomes active again is a new onset and notifies again. An onset is identified by its condition and first seen time. Two onsets of one condition at the same millisecond, from different instances, cannot be told apart, so a late success for the first may count for the second.
 
 Tests: `each_onset_notifies_once`, `a_failed_notification_is_retried`, `a_cleared_condition_notifies_again_on_recurrence`.
 
@@ -102,13 +102,13 @@ Tests: `conditions_survive_a_restart`.
 
 ### R7 — Reading conditions
 
-`conditions()` returns the active conditions exactly, and writes nothing.
+`conditions()` returns the active conditions exactly, and issues no write, not even a write that changes nothing.
 
 Tests: `conditions_are_read_exactly`.
 
 ### R8 — Storage failures
 
-A storage failure in any read or write returns `storage-failed`, leaves the database as it was before that write, and raises no notification for an onset that was not recorded. A notification whose success cannot be recorded is raised again at the next observation, so delivery is at least once. A storage error of any type, including `TypeError`, is a storage failure.
+Each observation commits all of its condition changes, the onsets, clearings, and last seen times, in one transaction before any notification. A storage failure there returns `storage-failed`, leaves the database as it was before the observation, and notifies nothing. Recording a notification's success happens afterwards, in the lane. If that recording fails, the committed conditions stay, and `observe` returns `storage-failed`. A notification whose success cannot be recorded is raised again at the next observation, so delivery is at least once. A storage error of any type, including `TypeError`, is a storage failure.
 
 Tests: `storage_failures_change_nothing`, `an_unrecorded_success_notifies_again`.
 
@@ -179,7 +179,19 @@ After Gate A, the executable pack adds:
 - the runner;
 - the Interface stub `notify-operator-conditions.ts`, whose functions throw and whose types, constants, and migration are declared.
 
-Against the stub, all 16 TypeScript tests fail and the two contract tests pass. A throwaway reference passes every test, and the suite kills all 53 of its non-equivalent mutants. Two more were dropped as equivalent: removing the observation's object check or the summary's shape check still throws `TypeError` from destructuring or iteration. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `operatorConditionsMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did.
+**Implementability review.** GPT 6.1 Sol's read-only review found five blocking gaps, all now resolved:
+- R5 now says every active, unnotified condition is retried at each observation, including one only kept;
+- R4 now says a refused enrollment clears the key condition whatever the key status;
+- R2 now checks a present `reason` is a string, and says validation checks types, not vocabulary;
+- R8 now states the observation's atomic boundary;
+- a storage-failure test no longer assumes how many statements an implementation writes.
+
+Its non-blocking findings are added too:
+- R5 states that an onset's identity is its condition and first seen time, with the same-millisecond limit;
+- a test holds the lane while a notification's success is being recorded;
+- `conditions()` is checked to issue no write.
+
+Against the stub, all 16 TypeScript tests fail and the two contract tests pass. A throwaway reference passes every test, and the suite kills all 55 of its non-equivalent mutants. Two more were dropped as equivalent: removing the observation's object check or the summary's shape check still throws `TypeError` from destructuring or iteration. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `operatorConditionsMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did.
 
 The binding is:
 - spec files: the contract and this pack;
