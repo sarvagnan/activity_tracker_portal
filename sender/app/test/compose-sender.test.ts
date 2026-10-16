@@ -1142,6 +1142,131 @@ for (const trigger of ["foreground", "manual", "background"] as const) {
   });
 }
 
+for (const refresh of ["current", "adopted", "unavailable"] as const) {
+  for (const phase of ["enrolled", "refused"] as const) {
+    test(`rejected coalesced foreground run refreshes ${refresh} capabilities once and delivers only in ${phase}`, { timeout: 5_000 }, async (t) => {
+      const f = await fixture(t);
+      const p = portal(f);
+      const submissions = submissionClock(f.clock.now);
+      const failure = new TypeError("Synthetic coordinator clock failure");
+      let rejectCheckpoint = false;
+      let refreshes = 0;
+      const refreshInFlight: number[] = [];
+      const events: string[] = [];
+      const shell = await composeSender({ ...p.options, now() {
+        if (rejectCheckpoint) { rejectCheckpoint = false; throw failure; }
+        return submissions.now();
+      }, enrollment(database, transport) {
+        return { ...f.options.enrollment(database, transport), async refreshCapabilities() {
+          refreshes++;
+          refreshInFlight.push(f.sources.inFlight);
+          events.push("refresh");
+          f.state.status = enrolled({ phase });
+          if (refresh === "unavailable") throw new Error("Synthetic capability refresh failure");
+          if (refresh === "current") return { outcome: "current" };
+          f.state.status = enrolled({ phase, stagingContext: { ...enrolled().stagingContext!, generation: {
+            ...enrolled().stagingContext!.generation, generation: 2,
+          } } });
+          await acknowledgements(f, 1);
+          return { outcome: "adopted", generation: 2 };
+        } };
+      } });
+      const activeRead = f.sources.hold("snapshot", "steps");
+      const followUpRead = f.sources.hold("snapshot", "steps");
+      const gap = { outcome: "not-permitted", failure: "synthetic-permission-gap" };
+      f.sources.next("snapshot", "steps", gap);
+      f.sources.next("snapshot", "steps", () => { rejectCheckpoint = true; return gap; });
+      try {
+        const active = shell.manualSync();
+        await activeRead.arrived;
+        const returning = await submissions.submit(() => shell.foreground(), 2);
+        const rejected = assert.rejects(returning.result, (error) => {
+          events.push("rejected");
+          return error === failure;
+        });
+        assert.equal(refreshes, 0);
+        activeRead.release();
+        checkpoint(await active);
+        await followUpRead.arrived;
+        await acknowledgements(f, 1);
+        p.requests.length = 0;
+        p.state.answer = async () => {
+          events.push("delivery");
+          return encodeMessage({ wire_version: 1, kind: "retryable-failure", reason: "temporarily-unavailable" });
+        };
+        followUpRead.release();
+        await rejected;
+        assert.equal(refreshes, 1);
+        assert.deepEqual(refreshInFlight, [0]);
+        assert.equal(f.sources.inFlight, 0);
+        assert.equal(p.requests.length, phase === "enrolled" ? 1 : 0);
+        assert.deepEqual(events, phase === "enrolled"
+          ? ["refresh", "delivery", "rejected"] : ["refresh", "rejected"]);
+      } finally { activeRead.release(); followUpRead.release(); }
+    });
+  }
+}
+
+for (const trigger of ["manual", "background", "foreground"] as const) {
+  for (const phase of ["enrolled", "refused"] as const) {
+    test(`${trigger} run rejection delivers at most once in ${phase} and skips refresh outside enrollment`, { timeout: 5_000 }, async (t) => {
+      const f = await fixture(t);
+      const p = portal(f);
+      const submissions = submissionClock(f.clock.now);
+      const failure = new TypeError("Synthetic coordinator clock failure");
+      let rejectCheckpoint = false;
+      let refreshes = 0;
+      const shell = await composeSender({ ...p.options, now() {
+        if (rejectCheckpoint) {
+          rejectCheckpoint = false;
+          f.state.status = enrolled({ phase });
+          throw failure;
+        }
+        return submissions.now();
+      }, enrollment(database, transport) {
+        return { ...f.options.enrollment(database, transport), async refreshCapabilities() {
+          refreshes++;
+          return { outcome: "current" };
+        } };
+      } });
+      const gap = { outcome: "not-permitted", failure: "synthetic-permission-gap" };
+      const held = f.sources.hold("snapshot", "steps");
+      let followUp: ReturnType<typeof f.sources.hold> | undefined;
+      // Foreground must join an active run to defer its refresh.
+      if (trigger === "foreground") f.sources.next("snapshot", "steps", gap);
+      f.sources.next("snapshot", "steps", () => { rejectCheckpoint = true; return gap; });
+      try {
+        let active: Promise<ShellRunResult> | undefined;
+        if (trigger === "foreground") {
+          active = shell.manualSync();
+          await held.arrived;
+        } else await acknowledgements(f, 1);
+        const polling = (await shell.backgroundPollingProvider())!;
+        const request = trigger === "foreground" ? () => shell.foreground()
+          : trigger === "manual" ? () => shell.manualSync() : () => polling.runTask();
+        const submitted = await submissions.submit<unknown>(request, trigger === "foreground" ? 2 : 1);
+        const outcome = trigger === "background"
+          ? submitted.result.then((result) => { assert.equal(result, "failed"); })
+          : assert.rejects(submitted.result, (error) => error === failure);
+        if (active) {
+          // The second source call remains held while the active trigger drains.
+          followUp = f.sources.hold("snapshot", "steps");
+          held.release();
+          checkpoint(await active);
+          await followUp.arrived;
+          await acknowledgements(f, 1);
+          p.requests.length = 0;
+          followUp.release();
+        } else { await held.arrived; held.release(); }
+        p.state.answer = async () => encodeMessage({ wire_version: 1, kind: "retryable-failure", reason: "temporarily-unavailable" });
+        await outcome;
+        assert.equal(p.requests.length, phase === "enrolled" ? 1 : 0);
+        assert.equal(refreshes, trigger === "foreground" && phase === "enrolled" ? 1 : 0);
+      } finally { held.release(); followUp?.release(); }
+    });
+  }
+}
+
 for (const terminal of ["retryable", "blocked"] as const) {
   for (const refresh of ["current", "adopted"] as const) {
     test(`foreground return during an active run attempts its ${terminal} head only once after ${refresh} refresh`, { timeout: 5_000 }, async (t) => {

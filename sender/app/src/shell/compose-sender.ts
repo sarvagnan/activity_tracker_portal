@@ -279,37 +279,42 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   }
 
   async function trigger(kind: "foreground" | "manual"): Promise<ShellRunResult> {
+    let deliveredAfterRefresh = false;
     try {
       let pass: DeliveryPass = "stopped";
       const ready = await prepareAndStart(kind, () => startRun({ kind }, (result) => { pass = result; }));
       if ("pending" in ready) {
-        const result = await ready.pending;
-        if (ready.refreshAfter) {
-          // Preserve coordinator coalescing when foreground arrives during a run.
-          // Hold preparation after it settles, so adoption cannot race any run opening.
-          const refreshed = preparation.then(async () => {
-            await Promise.allSettled(inFlight);
-            const current = await status();
-            let adopted = false;
-            if (isStatus(current) && current.phase === "enrolled") {
-              try { adopted = (await enrollment.refreshCapabilities()).outcome === "adopted"; }
-              catch { /* Keep the adopted generation. */ }
-            }
-            // A drained pass may pick up a new acknowledgement. Adoption can
-            // also resume a capped pass, but never retries its terminal head.
-            if (pass === "drained" || adopted && pass !== "terminal") await deliver();
-          });
-          preparation = refreshed.catch(() => undefined);
-          await refreshed;
+        try { return await ready.pending; }
+        finally {
+          if (ready.refreshAfter) {
+            // Preserve coordinator coalescing even when the follow-up rejects.
+            // Hold preparation after it settles, so adoption cannot race any run opening.
+            const refreshed = preparation.then(async () => {
+              await Promise.allSettled(inFlight);
+              const current = await status();
+              let adopted = false;
+              if (isStatus(current) && current.phase === "enrolled") {
+                try { adopted = (await enrollment.refreshCapabilities()).outcome === "adopted"; }
+                catch { /* Keep the adopted generation. */ }
+              }
+              // A drained pass may pick up a new acknowledgement. Adoption can
+              // also resume a capped pass, but never retries its terminal head.
+              if (pass === "drained" || adopted && pass !== "terminal") {
+                await deliver();
+                deliveredAfterRefresh = true;
+              }
+            });
+            preparation = refreshed.catch(() => undefined);
+            await refreshed;
+          }
         }
-        return result;
       }
       await deliver();
       return ready;
     } catch (error) {
       // Health Connect/coordinator setup cannot strand an already staged queue.
       // Preserve the caller's original rejection after this failure-safe pass.
-      await deliver();
+      if (!deliveredAfterRefresh) await deliver();
       throw error;
     }
   }
