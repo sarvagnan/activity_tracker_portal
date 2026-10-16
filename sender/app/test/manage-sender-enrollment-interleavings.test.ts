@@ -19,6 +19,7 @@ import { schedulingMigration } from "../src/scheduling/schedule-background-polli
 import { snapshotAttemptsMigration } from "../src/snapshot/begin-initial-snapshot.ts";
 import type { SenderDatabase } from "../src/storage/database.ts";
 import { migrate } from "../src/storage/migrations.ts";
+import { storageLane } from "../src/storage/storage-lane.ts";
 import { syncMigration } from "../src/sync/coordinate-sender-sync.ts";
 import { openNodeDatabase } from "./support/node-database.ts";
 import { NodeInstallationCipher } from "./support/node-installation-cipher.ts";
@@ -83,6 +84,21 @@ class Portal implements EnrollmentTransport {
 /** Also holds a successful seal so tests can distinguish a pre-seal check from the transactional check. */
 class GatedCipher extends NodeInstallationCipher {
   pending: ReturnType<typeof gate> | null = null;
+  pendingCreate: ReturnType<typeof gate> | null = null;
+  pendingDelete: ReturnType<typeof gate> | null = null;
+  override async create(alias: string) {
+    const created = await super.create(alias);
+    const pending = this.pendingCreate;
+    this.pendingCreate = null;
+    if (pending) await pending.hold();
+    return created;
+  }
+  override async delete(alias: string) {
+    const pending = this.pendingDelete;
+    this.pendingDelete = null;
+    if (pending) await pending.hold();
+    return super.delete(alias);
+  }
   override async seal(...args: Parameters<InstallationCipher["seal"]>) {
     const sealed = await super.seal(...args);
     const pending = this.pending;
@@ -294,5 +310,147 @@ for (const action of ["drain", "refresh", "confirm", "replace"]) {
       assert.deepEqual(await bounded(pending, "adoption result"), expected);
       assert.deepEqual(await contents(f.database), before);
     } finally { delayed.release(); }
+  });
+}
+
+
+for (const action of ["reset", "unlink"] as const) {
+  test(`a delayed ${action} cannot destroy a replacement enrollment after key deletion`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    await enrolled(f);
+    if (action === "unlink") {
+      await deliverAcknowledgement(f);
+      assert.deepEqual(await f.a.beginDrain(), { outcome: "draining" });
+      assert.equal((await status(f.a)).finalSequence, 1);
+    }
+    const delayed = gate();
+    f.cipher.pendingDelete = delayed;
+    const pending = action === "reset" ? f.a.reset({ acknowledgePossibleLoss: true }) : f.a.unlink();
+    try {
+      await bounded(delayed.entered, "old installation key deletion");
+      assert.deepEqual(await f.b.reset({ acknowledgePossibleLoss: true }), { outcome: "destroyed" });
+      f.portalB.answer = advertisement(1);
+      assert.deepEqual(await f.b.enroll(OFFER), { outcome: "enrolled", generation: 1 });
+      const replacement = await status(f.b);
+      assert.equal(replacement.installationId, REPLACEMENT);
+      assert.deepEqual((await acknowledgements(f)).map((ack) => ack.sender_installation), [REPLACEMENT]);
+      const before = await contents(f.database);
+      delayed.release();
+      assert.deepEqual(await bounded(pending, `${action} result`), { outcome: "destroyed" });
+      assert.deepEqual(await contents(f.database), before);
+      assert.deepEqual(await status(f.b), replacement);
+      assert.equal(await f.cipher.keyStatus(replacement.keyAlias), "present");
+      assert.equal(await f.cipher.keyStatus(`activity-tracker-portal.installation.${IDENTITY}`), "missing");
+      assert.deepEqual((await acknowledgements(f)).map((ack) => ack.sender_installation), [REPLACEMENT]);
+    } finally { delayed.release(); await bounded(pending, `${action} cleanup`); }
+  });
+}
+
+test("a reset that read no enrollment cannot destroy an enrollment queued before its transaction", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const creation = gate();
+  f.cipher.pendingCreate = creation;
+  const enrolling = f.b.enroll(OFFER);
+  await bounded(creation.entered, "replacement key creation");
+
+  const read = gate();
+  const query = f.database.query.bind(f.database);
+  let holdRead = true;
+  t.mock.method(f.database, "query", async (...args: Parameters<SenderDatabase["query"]>) => {
+    const rows = await query(...args);
+    if (holdRead && args[0] === "SELECT * FROM sender_enrollment WHERE singleton = 1") {
+      holdRead = false;
+      assert.deepEqual(rows, []);
+      await read.hold();
+    }
+    return rows;
+  });
+  const pending = f.a.reset({ acknowledgePossibleLoss: true });
+  const committed = gate();
+  let barrier: Promise<void> | undefined;
+  try {
+    await bounded(read.entered, "empty enrollment read");
+    creation.release();
+    // B has already read the empty row and created its key. A still owns the lane.
+    // One event-loop turn drains B's create continuations, queuing its recording transaction first.
+    await bounded(new Promise<void>((resolve) => setImmediate(resolve)), "queue enrollment write");
+    // This idle lane barrier runs after B commits and before A's destruction transaction.
+    // It lets us capture the whole database before allowing the stale reset to continue.
+    barrier = storageLane(f.database)(() => committed.hold());
+    read.release();
+    await bounded(committed.entered, "replacement commit");
+    assert.deepEqual(await bounded(enrolling, "replacement enrollment"),
+      { outcome: "retryable", failure: "temporarily-unavailable" });
+    assert.equal((await query("SELECT installation_id FROM sender_enrollment"))[0]?.installation_id, REPLACEMENT);
+    const before = await contents(f.database);
+    committed.release();
+    assert.deepEqual(await bounded(pending, "empty reset result"), { outcome: "destroyed" });
+    assert.deepEqual(await contents(f.database), before);
+    const replacement = await status(f.b);
+    assert.equal(replacement.installationId, REPLACEMENT);
+    assert.equal(await f.cipher.keyStatus(replacement.keyAlias), "present");
+  } finally {
+    creation.release(); read.release(); committed.release();
+    await bounded(Promise.all([pending, enrolling, barrier]), "empty reset cleanup");
+  }
+});
+
+for (const mode of ["malformed success", "throw", "unusable-key", "keystore-unavailable"] as const) {
+  test(`a create returning ${mode} cleans up an installed key without changing its failure`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    const create = f.cipher.create.bind(f.cipher);
+    const alias = `activity-tracker-portal.installation.${IDENTITY}`;
+    t.mock.method(f.cipher, "create", async (keyAlias: string) => {
+      assert.deepEqual(await create(keyAlias), { status: "ok", value: { strongBox: false } });
+      assert.equal(await f.cipher.keyStatus(keyAlias), "present");
+      if (mode === "throw") throw new Error("Synthetic create failure after installing the key");
+      if (mode === "malformed success") return { status: "ok", value: { strongBox: "false" } };
+      return { status: "error", reason: mode };
+    });
+    const before = await contents(f.database);
+    assert.deepEqual(await f.a.enroll(OFFER), {
+      outcome: "cipher-failed", failure: mode === "unusable-key" ? "unusable-key" : "keystore-unavailable",
+    });
+    assert.equal(await f.cipher.keyStatus(alias), "missing");
+    assert.deepEqual(await contents(f.database), before);
+  });
+}
+
+test("key-exists preserves the pre-existing key and never calls delete", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const alias = `activity-tracker-portal.installation.${IDENTITY}`;
+  assert.equal((await f.cipher.create(alias)).status, "ok");
+  const sealed = await f.cipher.seal(alias, RETRYABLE, new Uint8Array());
+  assert.equal(sealed.status, "ok");
+  const deletion = t.mock.method(f.cipher, "delete");
+  const before = await contents(f.database);
+  assert.deepEqual(await f.a.enroll(OFFER), { outcome: "cipher-failed", failure: "key-exists" });
+  assert.equal(deletion.mock.callCount(), 0);
+  assert.equal(await f.cipher.keyStatus(alias), "present");
+  if (sealed.status === "ok") {
+    assert.deepEqual(await f.cipher.open(alias, sealed.value, new Uint8Array()), { status: "ok", value: RETRYABLE });
+  }
+  assert.deepEqual(await contents(f.database), before);
+});
+
+for (const cleanup of ["error", "throw"] as const) {
+  test(`a cleanup deletion ${cleanup} preserves the original unusable-key create failure`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    const alias = `activity-tracker-portal.installation.${IDENTITY}`;
+    const create = f.cipher.create.bind(f.cipher);
+    t.mock.method(f.cipher, "create", async (keyAlias: string) => {
+      assert.equal((await create(keyAlias)).status, "ok");
+      return { status: "error", reason: "unusable-key" };
+    });
+    const deletion = t.mock.method(f.cipher, "delete", async () => {
+      if (cleanup === "throw") throw new Error("Synthetic cleanup deletion failure");
+      return { status: "error", reason: "keystore-unavailable" };
+    });
+    const before = await contents(f.database);
+    assert.deepEqual(await f.a.enroll(OFFER), { outcome: "cipher-failed", failure: "unusable-key" });
+    assert.equal(deletion.mock.callCount(), 1);
+    assert.deepEqual(deletion.mock.calls[0].arguments, [alias]);
+    assert.equal(await f.cipher.keyStatus(alias), "present");
+    assert.deepEqual(await contents(f.database), before);
   });
 }

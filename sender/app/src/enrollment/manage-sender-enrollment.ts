@@ -345,6 +345,9 @@ export function createSenderEnrollment(options: SenderEnrollmentOptions): Sender
       }
     }
     await lane(() => database.transaction(async (transaction) => {
+      // Key deletion (or waiting for the lane) may outlive the targeted installation.
+      const current = await enrollmentRow(transaction);
+      if (row ? current?.installation_id !== row.installation_id : current !== null) return;
       // Discover later units' tables without knowing their names or choosing a deletion order.
       await transaction.execute("PRAGMA defer_foreign_keys = ON");
       const tables = await transaction.query("SELECT name FROM sqlite_master WHERE type = 'table'");
@@ -373,11 +376,16 @@ export function createSenderEnrollment(options: SenderEnrollmentOptions): Sender
         const keyAlias = "activity-tracker-portal.installation." + installationId;
         let created: Awaited<ReturnType<InstallationCipher["create"]>> | undefined;
         try { created = await cipher.create(keyAlias); } catch { /* A throwing cipher is an unavailable Keystore. */ }
-        if (created?.status === "error" && ["key-exists", "unusable-key", "keystore-unavailable"].includes(created.reason)) {
-          return { outcome: "cipher-failed", failure: created.reason };
-        }
         if (created?.status !== "ok" || typeof created.value !== "object" || created.value === null ||
-            typeof created.value.strongBox !== "boolean") return unavailableCipher();
+            typeof created.value.strongBox !== "boolean") {
+          // Creation may have installed the key before failing or returning malformed metadata.
+          // key-exists is different: that key predates this call and must be preserved.
+          if (!(created?.status === "error" && created.reason === "key-exists")) {
+            try { await cipher.delete(keyAlias); } catch { /* Cleanup cannot override the create failure. */ }
+          }
+          return created?.status === "error" && ["key-exists", "unusable-key", "keystore-unavailable"].includes(created.reason)
+            ? { outcome: "cipher-failed", failure: created.reason } : unavailableCipher();
+        }
         const confirmation = encodeMessage({
           wire_version: 1, kind: "enrollment-confirmation", enrollment_code: details.enrollmentCode,
           sender_installation: installationId, fingerprint,
