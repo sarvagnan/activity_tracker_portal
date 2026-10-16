@@ -30,13 +30,14 @@ The others had no owner. A background Polling Run could reach them and stop coll
   - `enrollment` is `manage-sender-enrollment@1`'s `EnrollmentStatus`, or `null` without an enrollment;
   - `keyStatus` is the cipher's `InstallationKeyStatus` for the enrollment's key alias, when it was read.
 - `createOperatorConditions({ database, notifier, now })` returns:
-  - `observe(observation)`, which returns `{ outcome: "observed", conditions }` with the active conditions sorted, or `{ outcome: "storage-failed" }`;
+  - `observe(observation)`, which returns `{ outcome: "observed", conditions }` with the active conditions in condition order, or `{ outcome: "storage-failed" }`;
   - `conditions()`, which returns the active conditions, each as `{ condition, firstSeenMs, lastSeenMs, notified }` in condition order, or `{ outcome: "storage-failed" }`.
+- `OPERATOR_CONDITIONS`: the eight conditions in condition order, the order listed above.
 - `operatorConditionsMigration`: Sender schema version 9.
 
 ## Requirements
 
-TypeScript `node:test` suites in `notify-operator-conditions-1.test.ts` use the 3ug `node:sqlite` substitute and a synthetic notifier. Their observations are built with the published types. Tests migrate an explicit list to version 9. Assertions that something wrote nothing compare the whole database. `tests/acceptance/test_notify_operator_conditions_1.py` checks the contract. The runner verifies a fresh JUnit report under an external deadline. Fixtures are synthetic.
+The 16 TypeScript `node:test` tests in `notify-operator-conditions-1.test.ts` use the 3ug `node:sqlite` substitute and a synthetic notifier. Their observations are built with the published types. Tests migrate an explicit list to version 9. Assertions that something wrote nothing compare the whole database. `tests/acceptance/test_notify_operator_conditions_1.py` checks the contract. The runner verifies a fresh JUnit report under an external deadline. Fixtures are synthetic.
 
 ### R1 — Governed Scope contract
 
@@ -54,7 +55,7 @@ These throw `TypeError` before any storage or notifier call:
 - a `keyStatus` other than `present`, `missing`, `unusable`, or `unavailable`;
 - a clock reading that is not a safe integer.
 
-`observe` reads the clock once, before any other call.
+`observe` checks the observation's shape first, then reads the clock once, before any storage or notifier call.
 
 Tests: `malformed_options_and_observations_are_caller_errors`.
 
@@ -89,7 +90,7 @@ A condition's onset is its becoming active while it was inactive. At each onset 
 2. calls the notifier with the condition alone;
 3. records the notification's success.
 
-While the condition stays active, later observations update its last seen time and do not notify again. If the notifier throws, synchronously or not, the next observation that still shows the condition retries it, until it succeeds. A condition that clears before its notification succeeds is never notified. A condition that clears and becomes active again is a new onset and notifies again.
+While the condition stays active, later observations do not notify again. Its last seen time moves only when an observation shows it, not when a condition is merely kept, and it never moves backwards. Onsets are notified in condition order, and a notifier failure for one condition does not stop the others. `observe` still returns `observed` after a notifier failure. If the notifier throws, synchronously or not, the next observation that still shows the condition retries it, until it succeeds. A condition that clears before its notification succeeds is never notified. A condition that clears and becomes active again is a new onset and notifies again.
 
 Tests: `each_onset_notifies_once`, `a_failed_notification_is_retried`, `a_cleared_condition_notifies_again_on_recurrence`.
 
@@ -178,4 +179,8 @@ After Gate A, the executable pack adds:
 - the runner;
 - the Interface stub `notify-operator-conditions.ts`, whose functions throw and whose types, constants, and migration are declared.
 
-Against the stub, every behaviour test fails and the two contract tests pass. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `operatorConditionsMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did.
+Against the stub, all 16 TypeScript tests fail and the two contract tests pass. A throwaway reference passes every test, and the suite kills all 53 of its non-equivalent mutants. Two more were dropped as equivalent: removing the observation's object check or the summary's shape check still throws `TypeError` from destructuring or iteration. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `operatorConditionsMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did.
+
+The binding is:
+- spec files: the contract and this pack;
+- test files: `notify-operator-conditions-1.test.ts`, its 3ug substitute `sender/app/test/support/node-database.ts`, `test_notify_operator_conditions_1.py`, and the runner.
