@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import gzip
 import io
+import random
 import json
 import logging
 import sqlite3
@@ -11,7 +14,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +22,10 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from activity_tracker_portal import cli, ingress, operational_store, sender_installation
+from activity_tracker_portal import (
+    accept_capability_acknowledgement, accept_ingest_batch, accept_sync_checkpoint,
+    accept_sync_completion, cli, ingress, ingest_protocol, operational_store, sender_installation,
+)
 from activity_tracker_portal.ingest_protocol import encode_message, installation_fingerprint
 
 NOW = datetime(2026, 10, 14, 9, tzinfo=timezone.utc)
@@ -239,6 +245,9 @@ class RouteTests(Case):
                     ("POST", "/v1/enrollment-confirmation", body_marker * 4097, 413),
                     ("POST", "/v1/enrollment-confirmation", pending_body, 200),
                     ("GET", "/v1/capabilities", b"", 200),
+                    ("POST", "/v1/outbox-messages", body_marker, 409),
+                    ("POST", "/v1/outbox-messages", body_marker * 50000, 413),
+                    ("POST", "/v1/outbox-messages", outbox("capability-acknowledgement"), 503),
                 )
                 for method, path, body, status in requests:
                     with self.subTest(method=method, path=path, status=status):
@@ -280,6 +289,358 @@ class RouteTests(Case):
                 with TestClient(self.app()):
                     self.fail("startup unexpectedly succeeded")
         self.writer().close()
+
+
+def outbox(kind: str, sequence: int = 1, *, cycle: int = 100, **changes) -> bytes:
+    """Small synthetic messages; completions describe empty cycles by default."""
+    message = {
+        "wire_version": 1, "kind": kind, "sender_installation": identity(1),
+        "sequence": sequence, "capability_generation": 1,
+    }
+    if kind == "ingest-batch":
+        message.update({
+            "record_type": "steps", "projection_schema_version": 1,
+            "cycle_kind": "initial-snapshot", "cycle_id": identity(cycle),
+            "source_page_index": 1, "fragment_index": 1,
+            "previous_chain": ingest_protocol.chain_start(identity(cycle)),
+            "items": [{"kind": "retraction", "source_identity": "synthetic-record"}],
+        })
+    elif kind in ("snapshot-completion", "change-completion"):
+        message.update({
+            "record_type": "steps", "cycle_id": identity(cycle),
+            "page_count": 0, "fragment_count": 0, "record_count": 0,
+            "final_chain": ingest_protocol.chain_start(identity(cycle)),
+        })
+        if kind == "snapshot-completion":
+            message["snapshot_kind"] = "initial"
+    elif kind == "sync-checkpoint":
+        message.update({
+            "run_sequence": 1, "trigger": "manual",
+            "started_at": "2026-10-14T09:00:00.000Z", "ended_at": "2026-10-14T09:00:00.000Z",
+            "elapsed_ms": 0, "background_scheduling": "available",
+            "record_types": [{"record_type": "steps", "outcome": "no-change", "source_data_staged": False}],
+            "outbox_messages_before_checkpoint": 0, "outbox_bytes_before_checkpoint": 0,
+        })
+    message.update(changes)
+    return encode_message(message)
+
+
+ACCEPT_UNITS = (
+    (accept_ingest_batch, "accept_ingest_batch"),
+    (accept_sync_completion, "accept_sync_completion"),
+    (accept_sync_checkpoint, "accept_sync_checkpoint"),
+    (accept_capability_acknowledgement, "accept_capability_acknowledgement"),
+)
+
+
+class OutboxRouteTests(Case):
+    def enroll(self, writer, *, active=True) -> None:
+        offer = self.offer(writer)
+        answer = writer.run(lambda store: sender_installation.answer_enrollment_confirmation(
+            store, confirmation(offer.code, 1), NOW,
+        ))
+        self.assertEqual(answer.outcome, "pending")
+        if active:
+            writer.run(lambda store: sender_installation.confirm_installation(
+                store, identity(1), installation_fingerprint(identity(1)), NOW,
+            ))
+
+    def reference(self):
+        writer = ingress.PortalWriter(self.path.with_name("reference.db"), reserve_bytes=0)
+        self.addCleanup(writer.close)
+        writer.run(lambda store: sender_installation.honor_capabilities(store, self.settings.capabilities, NOW))
+        self.enroll(writer)
+        return writer
+
+    def assert_answer(self, response, expected) -> None:
+        self.assertEqual(response.status_code, {"receipt": 200, "retryable": 503, "block": 409}[expected.outcome])
+        self.assertEqual(response.content, expected.body)
+        self.assertEqual(response.headers["content-type"], "application/json")
+
+    def test_each_kind_and_retry_match_direct_units_over_the_same_history(self) -> None:
+        app = self.app()
+        reference = self.reference()
+        batch = outbox("ingest-batch", 2)
+        chain = ingest_protocol.chain_next(
+            ingest_protocol.chain_start(identity(100)), ingest_protocol.message_sha256(batch),
+        )
+        history = (
+            (outbox("capability-acknowledgement"), 3),
+            (batch, 0),
+            (outbox("snapshot-completion", 3, page_count=1, fragment_count=1, record_count=1, final_chain=chain), 1),
+            (outbox("change-completion", 4, cycle=101), 1),
+            (outbox("sync-checkpoint", 5), 2),
+        )
+        with TestClient(app) as client:
+            self.enroll(app.state.writer)
+            for data, unit_index in history:
+                module, name = ACCEPT_UNITS[unit_index]
+                accept = getattr(module, name)
+                expected = reference.run(lambda store: accept(store, data, NOW))
+                self.assertEqual(expected.outcome, "receipt")
+                with self.subTest(kind=ingest_protocol.decode_message(data)["kind"]), ExitStack() as stack:
+                    calls = [stack.enter_context(patch.object(mod, attr, wraps=getattr(mod, attr)))
+                             for mod, attr in ACCEPT_UNITS]
+                    run = stack.enter_context(patch.object(app.state.writer, "run", wraps=app.state.writer.run))
+                    for headers in ({}, {"Content-Encoding": "identity"}):
+                        for call in calls:
+                            call.reset_mock()
+                        run.reset_mock()
+                        response = client.post("/v1/outbox-messages", content=data, headers=headers)
+                        self.assert_answer(response, expected)
+                        run.assert_called_once()
+                        self.assertEqual([call.call_count for call in calls],
+                                         [int(index == unit_index) for index in range(4)])
+                        self.assertEqual(calls[unit_index].call_args.args[1:], (data, NOW))
+                with app.state.writer.store.read() as view:
+                    archived = view.archived_message(identity(1), ingest_protocol.decode_message(data)["sequence"])
+                    self.assertEqual(archived.envelope, data)
+                    self.assertEqual(archived.receipt, expected.body)
+
+    def test_non_outbox_and_undecodable_bytes_reach_ingest_batch(self) -> None:
+        app = self.app()
+        reference = self.reference()
+        cases = (advertisement(), b"not JSON", b"\xff", b" " + outbox("snapshot-completion"))
+        with TestClient(app) as client:
+            for data in cases:
+                with self.subTest(data=data):
+                    expected = reference.run(lambda store: accept_ingest_batch.accept_ingest_batch(store, data, NOW))
+                    self.assertEqual(expected.outcome, "block")
+                    with ExitStack() as stack:
+                        calls = [stack.enter_context(patch.object(mod, attr, wraps=getattr(mod, attr)))
+                                 for mod, attr in ACCEPT_UNITS]
+                        run = stack.enter_context(patch.object(app.state.writer, "run", wraps=app.state.writer.run))
+                        self.assert_answer(client.post("/v1/outbox-messages", content=data), expected)
+                        self.assertEqual([call.call_count for call in calls], [1, 0, 0, 0])
+                        self.assertEqual(calls[0].call_args.args[1], data)
+                        run.assert_called_once()
+
+    def test_pending_installation_returns_exact_retryable_for_every_kind(self) -> None:
+        app = self.app()
+        with TestClient(app) as client:
+            self.enroll(app.state.writer, active=False)
+            for kind, index in (("ingest-batch", 0), ("snapshot-completion", 1),
+                                ("change-completion", 1), ("sync-checkpoint", 2),
+                                ("capability-acknowledgement", 3)):
+                with self.subTest(kind=kind):
+                    data = outbox(kind)
+                    module, name = ACCEPT_UNITS[index]
+                    expected = app.state.writer.run(lambda store: getattr(module, name)(store, data, NOW))
+                    self.assertEqual(expected.outcome, "retryable")
+                    self.assertEqual(expected.failure, "installation-pending")
+                    self.assert_answer(client.post("/v1/outbox-messages", content=data), expected)
+
+    def test_body_limit_is_inclusive_and_rejection_never_enters_writer(self) -> None:
+        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
+        app = self.app()
+        with TestClient(app) as client:
+            data = b"x" * 4096
+            with patch.object(accept_ingest_batch, "accept_ingest_batch", wraps=accept_ingest_batch.accept_ingest_batch) as accept:
+                self.assertEqual(client.post("/v1/outbox-messages", content=data).status_code, 409)
+                self.assertEqual(accept.call_args.args[1], data)
+            with patch.object(app.state.writer, "run", side_effect=AssertionError("writer used")):
+                for data in (b"x" * 4097, iter([b"x" * 2048, b"x" * 2049])):
+                    response = client.post("/v1/outbox-messages", content=data)
+                    self.assertEqual(response.status_code, 413)
+                    self.assertEqual(response.content, b"")
+
+    def test_largest_honored_limit_survives_smaller_configuration(self) -> None:
+        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=8192))
+        old_app = self.app()
+        with TestClient(old_app):
+            self.enroll(old_app.state.writer)
+        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
+        app = self.app()
+        with TestClient(app) as client:
+            with app.state.writer.store.read() as view:
+                self.assertEqual([g.generation for g in view.honored_generations()], [1, 2])
+            data = outbox("ingest-batch", items=[
+                {"kind": "retraction", "source_identity": f"synthetic-{number}-" + "x" * 100}
+                for number in range(40)
+            ])
+            self.assertGreater(len(data), 4096)
+            self.assertLess(len(data), 8192)
+            self.assertEqual(client.post("/v1/outbox-messages", content=data).status_code, 200)
+            with patch.object(accept_ingest_batch, "accept_ingest_batch", wraps=accept_ingest_batch.accept_ingest_batch) as accept:
+                self.assertEqual(client.post("/v1/outbox-messages", content=b"x" * 8192).status_code, 409)
+                self.assertEqual(len(accept.call_args.args[1]), 8192)
+            with patch.object(app.state.writer, "run", side_effect=AssertionError("writer used")):
+                self.assertEqual(client.post("/v1/outbox-messages", content=b"x" * 8193).status_code, 413)
+
+    def test_configured_limit_applies_without_honored_generations(self) -> None:
+        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
+        app = self.app()
+        with patch.object(sender_installation, "honor_capabilities", return_value=None), TestClient(app) as client:
+            self.assertEqual(client.post("/v1/outbox-messages", content=b"x" * 4096).status_code, 409)
+            with patch.object(app.state.writer, "run", side_effect=AssertionError("writer used")):
+                self.assertEqual(client.post("/v1/outbox-messages", content=b"x" * 4097).status_code, 413)
+
+    def test_gzip_and_identity_return_same_receipt_and_archive_uncompressed_bytes(self) -> None:
+        app = self.app()
+        reference = self.reference()
+        data = outbox("ingest-batch")
+        expected = reference.run(lambda store: accept_ingest_batch.accept_ingest_batch(store, data, NOW))
+        with TestClient(app) as client:
+            self.enroll(app.state.writer)
+            compressed = gzip.compress(data)
+            with patch.object(accept_ingest_batch, "accept_ingest_batch", wraps=accept_ingest_batch.accept_ingest_batch) as accept:
+                self.assert_answer(client.post("/v1/outbox-messages", content=compressed,
+                                               headers={"Content-Encoding": "gzip"}), expected)
+                self.assertEqual(accept.call_args.args[1], data)
+            self.assert_answer(client.post("/v1/outbox-messages", content=data), expected)
+            with app.state.writer.store.read() as view:
+                self.assertEqual(view.archived_message(identity(1), 1).envelope, data)
+
+    def test_gzip_inclusive_output_limit_and_incompressible_overhead(self) -> None:
+        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
+        app = self.app()
+        data = random.Random(42).randbytes(4096)
+        compressed = gzip.compress(data)
+        self.assertGreater(len(compressed), len(data))
+        with TestClient(app) as client:
+            with patch.object(accept_ingest_batch, "accept_ingest_batch", wraps=accept_ingest_batch.accept_ingest_batch) as accept:
+                response = client.post("/v1/outbox-messages", content=compressed, headers={"Content-Encoding": "GZip"})
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(accept.call_args.args[1], data)
+
+    def test_invalid_transport_never_enters_writer(self) -> None:
+        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
+        compressed = gzip.compress(b"x" * 4096)
+        damaged = bytearray(compressed)
+        damaged[-8] ^= 1  # Invalid CRC, with otherwise intact gzip framing.
+        cases = (
+            (gzip.compress(b"x" * 4097), [("Content-Encoding", "gzip")], 413),
+            (gzip.compress(b"x" * 1_000_000), [("Content-Encoding", "gzip")], 413),
+            (b"x" * 5121, [("Content-Encoding", "gzip")], 413),
+            (b"not gzip", [("Content-Encoding", "gzip")], 400),
+            (bytes(damaged), [("Content-Encoding", "gzip")], 400),
+            (compressed[:-1], [("Content-Encoding", "gzip")], 400),
+            (compressed + b"trailing", [("Content-Encoding", "gzip")], 400),
+            (compressed + gzip.compress(b"second member"), [("Content-Encoding", "gzip")], 400),
+            (compressed, [("Content-Encoding", "br")], 415),
+            (compressed, [("Content-Encoding", "gzip, identity")], 415),
+            (compressed, [("Content-Encoding", "gzip"), ("Content-Encoding", "gzip")], 415),
+            (b"x", [("Content-Encoding", "")], 415),
+        )
+        app = self.app()
+        with TestClient(app) as client:
+            with patch.object(app.state.writer, "run", side_effect=AssertionError("writer used")):
+                for data, headers, status in cases:
+                    with self.subTest(headers=headers, status=status, length=len(data)):
+                        response = client.post("/v1/outbox-messages", content=data, headers=headers)
+                        self.assertEqual(response.status_code, status)
+                        self.assertEqual(response.content, b"")
+
+    def test_stream_stops_on_first_over_limit_chunk(self) -> None:
+        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
+        app = self.app()
+        with TestClient(app), patch.object(app.state.writer, "run", side_effect=AssertionError("writer used")):
+            for headers, chunks in (
+                ([], [b"x" * 4096, b"x"]),
+                ([(b"content-encoding", b"gzip")], [b"x" * 5120, b"x"]),
+            ):
+                with self.subTest(headers=headers):
+                    pending = iter(chunks)
+                    sent = []
+                    async def receive():
+                        # A third read fails: the route must stop on chunk two.
+                        return {"type": "http.request", "body": next(pending), "more_body": True}
+                    async def send(message):
+                        sent.append(message)
+                    scope = {
+                        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+                        "method": "POST", "scheme": "http", "path": "/v1/outbox-messages",
+                        "raw_path": b"/v1/outbox-messages", "query_string": b"", "root_path": "",
+                        "headers": headers, "server": ("testserver", 80), "client": ("testclient", 1),
+                    }
+                    asyncio.run(app(scope, receive, send))
+                    self.assertEqual(sent[0]["status"], 413)
+                    self.assertEqual(sent[1]["body"], b"")
+
+    def test_store_busy_returns_exact_retryable_bytes(self) -> None:
+        real_open = operational_store.open_store
+        def short_timeout(path, *, reserve_bytes):
+            return real_open(path, reserve_bytes=reserve_bytes, busy_timeout_ms=50)
+        app = self.app()
+        with patch.object(operational_store, "open_store", side_effect=short_timeout), TestClient(app) as client:
+            self.enroll(app.state.writer)
+            connection = sqlite3.connect(self.path, isolation_level=None)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                for kind in ("ingest-batch", "snapshot-completion", "change-completion",
+                             "sync-checkpoint", "capability-acknowledgement"):
+                    with self.subTest(kind=kind):
+                        response = client.post("/v1/outbox-messages", content=outbox(kind))
+                        self.assertEqual(response.status_code, 503)
+                        self.assertEqual(response.content, RETRYABLE)
+                        self.assertEqual(response.headers["content-type"], "application/json")
+                with app.state.writer.store.read() as view:
+                    self.assertIsNone(view.archived_message(identity(1), 1))
+            finally:
+                connection.rollback()
+                connection.close()
+            self.assertEqual(client.post("/v1/outbox-messages", content=outbox("ingest-batch")).status_code, 200)
+
+    def test_concurrent_deliveries_and_intents_share_one_writer(self) -> None:
+        app = self.app()
+        trace = WriteTrace()
+        data = outbox("capability-acknowledgement")
+        real_accept = accept_capability_acknowledgement.accept_capability_acknowledgement
+        count = 6
+        barrier = threading.Barrier(count * 2)
+        with TestClient(app) as client:
+            self.enroll(app.state.writer)
+            def traced_accept(store, data, now):
+                # Widen the first delivery's read/transaction race window
+                # and keep retries inside the same observed call boundary.
+                return trace.operation("http", lambda proxy: real_accept(proxy, data, now), store)
+            def request(number):
+                barrier.wait(timeout=10)
+                return client.post("/v1/outbox-messages", content=data)
+            def intent(number):
+                barrier.wait(timeout=10)
+                return app.state.writer.run(lambda store: trace.operation(
+                    f"offer-{number}", lambda proxy: sender_installation.offer_enrollment(
+                        proxy, URL, NOW, random_bytes=lambda size: bytes([100 + number]) * size,
+                    ), store,
+                ))
+            with patch.object(accept_capability_acknowledgement, "accept_capability_acknowledgement", side_effect=traced_accept):
+                with ThreadPoolExecutor(max_workers=count * 2) as callers:
+                    requests = [callers.submit(request, number) for number in range(count)]
+                    intents = [callers.submit(intent, number) for number in range(count)]
+                    receipts = [future.result(timeout=15) for future in requests]
+                    for future in intents:
+                        future.result(timeout=15)
+            self.assertEqual(trace.maximum, 1)
+            self.assertEqual(trace.inside, 0)
+            self.assertEqual(sum(kind == "enter" for kind, _ in trace.events), count * 2)
+            active = None
+            for kind, name in trace.events:
+                if kind == "enter":
+                    self.assertIsNone(active)
+                    active = name
+                else:
+                    self.assertEqual(name, active)
+                    if kind == "exit":
+                        active = None
+            self.assertIsNone(active)
+            for response in receipts:
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.content, receipts[0].content)
+
+    def test_clock_is_read_inside_writer_operation(self) -> None:
+        moments = []
+        writer_thread = []
+        def clock():
+            moments.append(threading.get_ident())
+            return NOW
+        app = ingress.create_app(self.settings, clock=clock)
+        with TestClient(app) as client:
+            app.state.writer.run(lambda store: writer_thread.append(threading.get_ident()))
+            moments.clear()
+            response = client.post("/v1/outbox-messages", content=b"malformed")
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(moments, writer_thread)
 
 
 class WriteTrace:

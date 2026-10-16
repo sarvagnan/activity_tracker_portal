@@ -12,6 +12,7 @@ import fcntl
 import json
 import secrets
 import threading
+import zlib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -24,7 +25,15 @@ from typing import TypeVar
 import uvicorn
 from fastapi import FastAPI, Request, Response
 
-from activity_tracker_portal import ingest_protocol, operational_store, sender_installation
+from activity_tracker_portal import (
+    accept_capability_acknowledgement,
+    accept_ingest_batch,
+    accept_sync_checkpoint,
+    accept_sync_completion,
+    ingest_protocol,
+    operational_store,
+    sender_installation,
+)
 from activity_tracker_portal.operational_store import OperationalStore
 
 T = TypeVar("T")
@@ -199,6 +208,63 @@ def create_app(
         if result.outcome == "refused":
             return Response(content=b"", status_code=409)
         return Response(content=result.body, status_code=200 if result.outcome == "pending" else 503, media_type="application/json")
+
+    @app.post("/v1/outbox-messages")
+    async def outbox_messages(request: Request) -> Response:
+        # Older generations remain usable until acknowledged past. Bound the
+        # transport before entering the writer, using an independent snapshot.
+        with request.app.state.writer.store.read() as view:
+            limit = max(
+                [settings.capabilities.max_message_bytes]
+                + [ingest_protocol.decode_message(item.advertisement)["max_message_bytes"]
+                   for item in view.honored_generations()]
+            )
+
+        encodings = request.headers.getlist("content-encoding")
+        encoding = encodings[0].strip().lower() if len(encodings) == 1 else "identity"
+        if len(encodings) > 1 or encoding not in ("identity", "gzip"):
+            return Response(content=b"", status_code=415)
+        transport_limit = limit + 1024 if encoding == "gzip" else limit
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > transport_limit:
+                return Response(content=b"", status_code=413)
+            body.extend(chunk)
+        data = bytes(body)
+        if encoding == "gzip":
+            decoder = zlib.decompressobj(wbits=31)
+            try:
+                data = decoder.decompress(data, max_length=limit + 1)
+            except zlib.error:
+                return Response(content=b"", status_code=400)
+            if len(data) > limit:
+                return Response(content=b"", status_code=413)
+            # eof excludes truncation; unused_data excludes both another
+            # member and arbitrary trailing bytes. Do not normalize the bytes.
+            if not decoder.eof or decoder.unused_data:
+                return Response(content=b"", status_code=400)
+
+        def deliver(store: OperationalStore) -> accept_ingest_batch.DeliveryResponse:
+            try:
+                kind = ingest_protocol.decode_message(data)["kind"]
+            except ingest_protocol.ProtocolRefusal:
+                kind = None
+            if kind in ("snapshot-completion", "change-completion"):
+                accept = accept_sync_completion.accept_sync_completion
+            elif kind == "sync-checkpoint":
+                accept = accept_sync_checkpoint.accept_sync_checkpoint
+            elif kind == "capability-acknowledgement":
+                accept = accept_capability_acknowledgement.accept_capability_acknowledgement
+            else:
+                accept = accept_ingest_batch.accept_ingest_batch
+            return accept(store, data, clock())
+
+        result = await asyncio.to_thread(request.app.state.writer.run, deliver)
+        return Response(
+            content=result.body,
+            status_code={"receipt": 200, "retryable": 503, "block": 409}[result.outcome],
+            media_type="application/json",
+        )
 
     @app.get("/v1/capabilities")
     def capabilities(request: Request) -> Response:
