@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_accept_sync_checkpoint_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"cd8217d84fb3461616a25b3d532ce4648b459fd2c7564f107792884850ce7c21","parent":"GENESIS","recorded_at":"2026-10-16T07:01:37+00:00","sequence":1,"unit":{"name":"accept-sync-checkpoint","version":"1"}}
