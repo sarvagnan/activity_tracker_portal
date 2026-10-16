@@ -85,7 +85,7 @@ test("projection implementation identity matches the Sender package version", ()
 test("opens and migrates once; start and foreground return ensure registration and manual triggers share the run sequence", async (t) => {
   const f = await fixture(t);
   const shell = await composeSender(f.options);
-  assert.equal((await f.database().query("PRAGMA user_version"))[0].user_version, 8);
+  assert.equal((await f.database().query("PRAGMA user_version"))[0].user_version, 9);
   assert.equal(checkpoint(await shell.foreground()).summary.trigger, "foreground");
   assert.equal(checkpoint(await shell.foreground()).runSequence, 2);
   assert.equal(f.state.registerCalls, 1);

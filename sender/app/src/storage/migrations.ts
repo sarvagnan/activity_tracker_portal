@@ -1,5 +1,6 @@
 import { enrollmentMigration } from "../enrollment/manage-sender-enrollment.ts";
 import { deliveryMigration } from "../delivery/send-outbox-message.ts";
+import { operatorConditionsMigration } from "../notifications/notify-operator-conditions.ts";
 import { checkpointMigration } from "../outbox/stage-sync-checkpoint.ts";
 import { completionMigration } from "../outbox/stage-sync-completion.ts";
 import { outboxMigration } from "../outbox/stage-outbox-batch.ts";
@@ -16,8 +17,8 @@ export type MigrationResult =
   | { status: "ready"; version: number }
   | { status: "frozen"; version: number; reason: "migration-failed" | "newer-schema" };
 
-/** Governed units append migrations: snapshot attempts, then the Sender Outbox and cycle progress, then cycle completions, then run checkpoints, then synchronization runs, ring, cycles, and blocks, then background scheduling state, then outbox head blocks, then enrollment state. */
-export const senderMigrations: readonly Migration[] = Object.freeze([snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration, deliveryMigration, enrollmentMigration]);
+/** Governed units append migrations: snapshot attempts, then the Sender Outbox and cycle progress, then cycle completions, then run checkpoints, then synchronization runs, ring, cycles, and blocks, then background scheduling state, then outbox head blocks, then enrollment state, then Operator conditions. */
+export const senderMigrations: readonly Migration[] = Object.freeze([snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration, deliveryMigration, enrollmentMigration, operatorConditionsMigration]);
 
 export async function migrate(
   database: SenderDatabase,

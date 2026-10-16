@@ -1,0 +1,1 @@
+{"actor":"claude","event":"UnitSpecified","pack_digest":"","payload":{"depends_on":["coordinate-sender-sync","stage-sync-checkpoint","manage-sender-enrollment"],"name":"notify-operator-conditions","version":"1"},"prev":"b5c9fd8438581728792ebdbe3687b611b8db49d50ec0bff84bf518b9d0b0a463","recorded_at":"2026-10-16T16:51:07+00:00","revision":331,"run_id":""}

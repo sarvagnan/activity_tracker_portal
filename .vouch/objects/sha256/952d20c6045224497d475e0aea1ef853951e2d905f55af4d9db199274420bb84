@@ -1,0 +1,1 @@
+{"actor":"claude","event":"MergeRecorded","pack_digest":"","payload":{"ours_head":"b5c9fd8438581728792ebdbe3687b611b8db49d50ec0bff84bf518b9d0b0a463","theirs_head":"9a3f7870fba3429a4930ed18497a0050713c24eaee0e474d2a259d61d53eef14"},"prev":"f12ab1bee599390ac2294ad655d815fbe939293193a25e1626670a204198c40c","recorded_at":"2026-10-16T16:51:07+00:00","revision":343,"run_id":""}
