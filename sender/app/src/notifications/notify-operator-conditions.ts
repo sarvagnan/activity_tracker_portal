@@ -126,6 +126,10 @@ async function readConditions(database: SenderDatabase): Promise<ConditionRecord
   });
 }
 
+// Claims coordinate instances sharing this database object in this process only.
+// The Sender shell must coordinate separate handles or processes (Beads 2rv.10).
+const notificationClaims = new WeakMap<SenderDatabase, Set<string>>();
+
 export function createOperatorConditions(options: OperatorConditionsOptions): OperatorConditions {
   if (!object(options) || !hasMethods(options.database, ["execute", "query", "transaction", "close"]) ||
       !hasMethods(options.notifier, ["notify"]) || typeof options.now !== "function") {
@@ -133,6 +137,8 @@ export function createOperatorConditions(options: OperatorConditionsOptions): Op
   }
   const { database, notifier, now } = options;
   const lane = storageLane(database);
+  const claims = notificationClaims.get(database) ?? new Set<string>();
+  notificationClaims.set(database, claims);
   let observations: Promise<void> = Promise.resolve();
 
   async function observe(states: ReadonlyMap<OperatorCondition, boolean>, instant: number): Promise<ObserveResult> {
@@ -155,18 +161,24 @@ export function createOperatorConditions(options: OperatorConditionsOptions): Op
       }));
       for (const row of active) {
         if (row.notified) continue;
-        // Another instance may clear or replace an onset while an earlier notifier is pending.
-        const current = await lane(() => database.query(
-          "SELECT condition FROM operator_conditions WHERE condition = ? AND first_seen_ms = ? AND notified = 0",
-          [row.condition, row.firstSeenMs],
-        ));
-        if (current.length === 0) continue;
-        try { await notifier.notify(row.condition); }
-        catch { continue; }
-        await lane(() => database.execute(
-          "UPDATE operator_conditions SET notified = 1 WHERE condition = ? AND first_seen_ms = ? AND notified = 0",
-          [row.condition, row.firstSeenMs],
-        ));
+        const claim = `${row.condition}:${row.firstSeenMs}`;
+        if (claims.has(claim)) continue;
+        claims.add(claim);
+        try {
+          // Claim before the guard: a prior claimant records success before releasing it.
+          // Another instance may also clear or replace an onset while a notifier is pending.
+          const current = await lane(() => database.query(
+            "SELECT condition FROM operator_conditions WHERE condition = ? AND first_seen_ms = ? AND notified = 0",
+            [row.condition, row.firstSeenMs],
+          ));
+          if (current.length === 0) continue;
+          try { await notifier.notify(row.condition); }
+          catch { continue; }
+          await lane(() => database.execute(
+            "UPDATE operator_conditions SET notified = 1 WHERE condition = ? AND first_seen_ms = ? AND notified = 0",
+            [row.condition, row.firstSeenMs],
+          ));
+        } finally { claims.delete(claim); }
       }
       return { outcome: "observed", conditions: active.map((row) => row.condition) };
     } catch { return { outcome: "storage-failed" }; }
