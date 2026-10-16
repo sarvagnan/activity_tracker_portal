@@ -1,0 +1,76 @@
+{
+  "contract_schema": 1,
+  "scope": "send-outbox-message",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Make one delivery attempt for the oldest Outbox Message of one Sender Installation: open its sealed bytes with the installation key, send exactly those uncompressed bytes to the Portal, and interpret the Portal's answer with ingest-protocol's response rules, removing the message locally only on a Delivery Receipt that echoes its exact installation, sequence, and SHA-256. Retryable failures, timeouts, and unknown or mismatched answers keep identical bytes for a later retry. A Delivery Block, or a head that cannot be opened or is not its own valid message, keeps the message intact, prevents later messages from being sent, and sets a persistent Operator-action-required head block with one local notification at its onset, which only the blocked head's receipt clears.",
+  "inputs": [
+    { "name": "delivery_context", "mode": "pure", "description": "The installation's identity, installation key alias, and Portal URL from its enrollment offer, supplied by the shell from manage-sender-enrollment." },
+    { "name": "outbox_head", "mode": "effectful", "description": "The installation's lowest-sequence Outbox Message row, read from stage-outbox-batch@1's Sender Outbox." },
+    { "name": "installation_key", "mode": "effectful", "description": "The installation cipher that opens the sealed head with its Outbox AAD." },
+    { "name": "portal_transport", "mode": "effectful", "description": "A seam that performs one HTTP request to the Portal and returns its response body, or reports that no response arrived." },
+    { "name": "portal_response", "mode": "volatile", "description": "The Portal's response body to the attempt, or its absence after a timeout or network failure." },
+    { "name": "local_notifier", "mode": "effectful", "description": "A seam that raises one health-data-free local notification naming a head block's failure." },
+    { "name": "sender_storage", "mode": "effectful", "description": "The Sender's SQLite database: the Outbox rows this unit removes and this unit's head-block state, behind the 3ug seam and storage lane." },
+    { "name": "clock", "mode": "volatile", "description": "The Sender wall clock for the head block's first and last seen times." }
+  ],
+  "outputs": [
+    { "name": "delivery_request", "description": "At most one POST of the head's exact uncompressed plaintext bytes to the Portal's /v1/outbox-messages route per attempt, with a JSON content type and a 60-second timeout." },
+    { "name": "attempt_outcome", "description": "Exactly one of empty, delivered, retryable, blocked, cipher-failed, or storage-failed, naming the head's sequence and failure where one applies." },
+    { "name": "receipt_bound_removal", "description": "Removal of exactly the head's Outbox row, only after a Delivery Receipt matching its installation, sequence, and SHA-256, leaving the Outbox high-water mark and every other row unchanged." },
+    { "name": "head_block_condition", "description": "A persistent, health-data-free head block for the installation (sequence, origin, failure, message SHA-256 when known, first and last seen times, and count) with one local notification at its onset, cleared only when the blocked head is removed by its receipt." }
+  ],
+  "named_failures": [
+    { "name": "transport-failed", "outcome": "retryable" },
+    { "name": "receipt-mismatch", "outcome": "retryable" },
+    { "name": "temporarily-unavailable", "outcome": "retryable" },
+    { "name": "storage-reserve-exhausted", "outcome": "retryable" },
+    { "name": "keystore-unavailable", "outcome": "retryable" },
+    { "name": "delivery-blocked", "outcome": "head-block" },
+    { "name": "head-unreadable", "outcome": "head-block" },
+    { "name": "head-invalid", "outcome": "head-block" },
+    { "name": "missing-key", "outcome": "cipher-failure" },
+    { "name": "unusable-key", "outcome": "cipher-failure" },
+    { "name": "storage-failed", "outcome": "storage-failure" }
+  ],
+  "observable_effects": [
+    { "name": "portal-delivery-request", "description": "Sends at most one HTTP request per attempt, carrying the head's exact uncompressed message bytes and nothing else." },
+    { "name": "local-notification", "description": "Raises one health-data-free local notification at the onset of each head block." },
+    { "name": "sender-storage-write", "description": "Applies this unit's Sender schema migration, removes a receipted head's Outbox row, and writes only its own head-block state." }
+  ],
+  "authority": {
+    "owns": [
+      "choosing the installation's oldest Outbox Message and making one attempt for it",
+      "the delivery request's method, path, content type, uncompressed body, and timeout, and the largest response body it reads",
+      "checking that the opened head is the canonical Outbox Message its row names",
+      "receipt-bound removal of the head",
+      "the persistent head block, its notification rule, and its clearing rule",
+      "this unit's Sender schema migration"
+    ],
+    "does_not_own": [
+      "wire schemas, message identity, the Delivery Receipt, retryable-failure, and Delivery Block vocabularies, and the interpretation of a response, which belong to ingest-protocol",
+      "the Sender Outbox's schema, sealing, AAD, sequences, and high-water mark, and the staging of each message kind, which belong to stage-outbox-batch, stage-sync-completion, and stage-sync-checkpoint",
+      "installation identity, the Portal URL, capability adoption and acknowledgement, key lifecycle, freezing an installation, drain, and reset, which belong to manage-sender-enrollment",
+      "acceptance, archival, and Delivery Blocks on the Portal, which belong to the accept-* units",
+      "the Portal route, decompression, request limits, and Authorized Ingress, which belong to the Portal ingress shell",
+      "the HTTP client, timeout enforcement, TLS, Tailscale reachability, the notification adapter, and when and how often to attempt delivery, which belong to the Sender shell enabling task",
+      "pausing collection under a head block, which belongs to coordinate-sender-sync",
+      "the end-to-end proof that Sender removal and Portal acknowledgement share one durability meaning, which belongs to receipt-bound-delivery"
+    ]
+  },
+  "dependencies": [
+    { "scope": "ingest-protocol", "version": "1" },
+    { "scope": "stage-outbox-batch", "version": "1" },
+    { "scope": "stage-sync-completion", "version": "1" },
+    { "scope": "stage-sync-checkpoint", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/send-outbox-message-1.spec.md",
+    "executable_tests": {
+      "typescript": "sender/app/test/send-outbox-message-1.test.ts",
+      "python": "tests/acceptance/test_send_outbox_message_1.py"
+    },
+    "runner": "tests/acceptance/run_send_outbox_message_1.sh",
+    "languages": ["python", "typescript"]
+  }
+}

@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_send_outbox_message_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"c4d3b86359a57534b7b3eb372ba8e0f3a33e83d138c2bb858ed0f96798b6af27","parent":"GENESIS","recorded_at":"2026-10-16T08:57:48+00:00","sequence":1,"unit":{"name":"send-outbox-message","version":"1"}}
