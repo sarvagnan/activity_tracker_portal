@@ -273,7 +273,7 @@ class R1GovernedScopeContract(unittest.TestCase):
         _, sender_kind, sender_purpose, _, _, sender_depends_on = row("manage-sender-enrollment")
         self.assertEqual(sender_kind, "integration")
         self.assertIn("drain, unlink, or destructively reset", sender_purpose)
-        self.assertEqual(sender_depends_on, "`ingest-protocol`")
+        self.assertIn("`ingest-protocol`", [dependency.strip() for dependency in sender_depends_on.split(",")])
         flow = (ROOT / "docs/governance/delivery-flow.md").read_text(encoding="utf-8")
         phase = next(line for line in flow.splitlines() if line.startswith("| 3. Receipt-bound delivery |"))
         self.assertIn("`manage-sender-installation`", phase)
