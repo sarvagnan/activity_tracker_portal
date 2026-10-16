@@ -1923,7 +1923,7 @@ for (const remaining of [CONDITION_OBSERVATION_BUDGET_MS - 1, CONDITION_OBSERVAT
   });
 }
 
-test("NOC: a queued background observation expires before its task window and does not post later", { timeout: 5_000 }, async (t) => {
+test("NOC: a queued background caller expires within its bound and lifecycle recovers its summary", { timeout: 5_000 }, async (t) => {
   const f = await observerFixture(t);
   const entered = signal();
   const release = signal();
@@ -1934,12 +1934,123 @@ test("NOC: a queued background observation expires before its task window and do
   const foreground = observer.observe(f.run(1, "storage-pressure"));
   await entered.promise;
   const deadline = f.clock.monotonicNow() + CONDITION_FINISH_RESERVE_MS + 20;
+  const began = performance.now();
   await observer.observe(f.run(2, "permission-missing"), deadline);
+  assert.ok(performance.now() - began < 500, "the background caller returns while foreground notification is held");
+  assert.deepEqual(f.notifications, ["storage-pressure"]);
   f.clock.advance(21);
   release.resolve();
   await foreground;
   await observer.observe();
-  assert.deepEqual(f.notifications, ["storage-pressure"]);
+  assert.deepEqual(f.notifications, ["storage-pressure", "permission-missing"]);
+  assert.deepEqual(conditionNames(await observer.conditions()), ["permission-missing"]);
+});
+
+for (const recovery of ["coalesced", "lifecycle", "background"] as const) {
+  test(`NOC: ${recovery} caller recovers a summary denied background admission`, { timeout: 5_000 }, async (t) => {
+    const f = await observerFixture(t);
+    const observer = createShellConditionObserver(f.observerOptions);
+    const run = f.run(1, "permission-missing");
+    await observer.observe(run, f.clock.monotonicNow() + CONDITION_OBSERVATION_BUDGET_MS - 1);
+    assert.deepEqual(conditionNames(await observer.conditions()), []);
+    assert.deepEqual(f.notifications, []);
+    await observer.observe(recovery === "coalesced" ? run : undefined,
+      recovery === "background" ? f.clock.monotonicNow() + CONDITION_OBSERVATION_BUDGET_MS : Infinity);
+    assert.deepEqual(conditionNames(await observer.conditions()), ["permission-missing"]);
+    assert.deepEqual(f.notifications, ["permission-missing"]);
+    await observer.observe(run);
+    await observer.observe();
+    assert.deepEqual(f.notifications, ["permission-missing"]);
+  });
+}
+
+test("NOC: an expired pending background caller cannot discard a newer foreground summary", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal();
+  const release = signal();
+  const observer = createShellConditionObserver({ ...f.observerOptions, notifier: { async notify(condition) {
+    f.notifications.push(condition);
+    if (condition === "storage-pressure") { entered.resolve(); await release.promise; }
+  } } });
+  const active = observer.observe(f.run(2, "storage-pressure"));
+  await entered.promise;
+  const deadline = f.clock.monotonicNow() + CONDITION_FINISH_RESERVE_MS + 20;
+  const background = observer.observe(f.run(3, "permission-missing"), deadline);
+  const foreground = observer.observe(f.run(4, "record-too-large"));
+  await background;
+  f.clock.advance(21);
+  release.resolve();
+  await Promise.all([active, foreground]);
+  assert.deepEqual(conditionNames(await observer.conditions()), ["record-too-large"]);
+  assert.deepEqual(f.notifications, ["storage-pressure", "record-too-large"]);
+  await observer.observe();
+  assert.deepEqual(f.notifications, ["storage-pressure", "record-too-large"]);
+});
+
+test("NOC: a background duplicate during native reads preserves foreground admission", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal();
+  const release = signal();
+  const notified = signal();
+  let held = false;
+  const observer = createShellConditionObserver({ ...f.observerOptions, cipher: { async keyStatus() {
+    if (!held) { held = true; entered.resolve(); await release.promise; }
+    return "present";
+  } }, notifier: { async notify(condition) { f.notifications.push(condition); notified.resolve(); } } });
+  const run = f.run(1, "permission-missing");
+  const foreground = observer.observe(run);
+  await entered.promise;
+  await observer.observe(run, f.clock.monotonicNow() + CONDITION_FINISH_RESERVE_MS + 20);
+  f.clock.advance(21);
+  release.resolve();
+  await foreground;
+  await notified.promise;
+  assert.deepEqual(f.notifications, ["permission-missing"]);
+});
+
+test("NOC: a removed identity cannot replace retained work for the current installation", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const observer = createShellConditionObserver(f.observerOptions);
+  const removed = f.run(9, "permission-missing");
+  f.state.status = enrolled({ installationId: "00000000-0000-4000-8000-000000000002", keyAlias: "replacement" });
+  await f.cipher.create("replacement");
+  const current = { summary: summary(1, "record-too-large"), identity: installationIdentity(f.state.status)! };
+  await observer.observe(current, f.clock.monotonicNow());
+  await observer.observe(removed, f.clock.monotonicNow());
+  await observer.observe();
+  assert.deepEqual(conditionNames(await observer.conditions()), ["record-too-large"]);
+  assert.deepEqual(f.notifications, ["record-too-large"]);
+});
+
+test("NOC: a retained summary is dropped after its installation is reset", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const observer = createShellConditionObserver(f.observerOptions);
+  const removed = f.run(9, "permission-missing");
+  await observer.observe(removed, f.clock.monotonicNow());
+  f.state.status = enrolled({ installationId: "00000000-0000-4000-8000-000000000002", keyAlias: "replacement" });
+  await f.cipher.create("replacement");
+  await observer.observe();
+  await observer.observe(removed);
+  assert.deepEqual(conditionNames(await observer.conditions()), []);
+  assert.deepEqual(f.notifications, []);
+  const replacement = { summary: summary(1, "record-too-large"), identity: installationIdentity(f.state.status)! };
+  await observer.observe(replacement);
+  await observer.observe(removed);
+  await observer.observe();
+  assert.deepEqual(conditionNames(await observer.conditions()), ["record-too-large"]);
+  assert.deepEqual(f.notifications, ["record-too-large"]);
+});
+
+test("NOC: older and duplicate summaries cannot overwrite a newer submitted sequence", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const observer = createShellConditionObserver(f.observerOptions);
+  await observer.observe(f.run(2, "storage-pressure"));
+  await observer.observe(f.run(4, "record-too-large"));
+  await observer.observe(f.run(3, "permission-missing"));
+  await observer.observe(f.run(4, "storage-pressure"));
+  await observer.observe();
+  assert.deepEqual(conditionNames(await observer.conditions()), ["record-too-large"]);
+  assert.deepEqual(f.notifications, ["storage-pressure", "record-too-large"]);
 });
 
 

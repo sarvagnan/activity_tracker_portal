@@ -85,26 +85,26 @@ export function createShellConditionObserver(options: {
       });
     },
   } });
-  type Pending = { run?: Run; lifecycle: boolean; deadline: number; revision: number; promise: Promise<void>; resolve: () => void };
+  type Pending = { deadline: number; revision: number; promise: Promise<void>; resolve: () => void };
   let pending: Pending | null = null;
   let active: Pending | null = null;
   let submitted = false;
   let revision = 0;
-  let latestRun: Run | undefined;
+  // Receiving is not applying. Keep the newest summary for each supplied
+  // identity until fresh status reads select the current installation. A late
+  // removed-identity caller must not replace the current one's retained work.
+  let receivedRuns = new Map<string, Run>();
+  let appliedRun: Run | undefined;
 
   function hasTime(deadline: number): boolean {
     return options.monotonicNow() + CONDITION_OBSERVATION_BUDGET_MS <= deadline;
   }
 
   async function process(item: Pending): Promise<void> {
-    if (!hasTime(item.deadline)) { item.run = undefined; return; }
+    if (!hasTime(item.deadline)) return;
     const current = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
     if (current && "outcome" in current) return; // Unknown is not unlink.
     const identity = installationIdentity(current);
-    const run = item.run?.identity === identity ? item.run : undefined;
-    // A run for a removed installation must not reintroduce its conditions.
-    // A fresh lifecycle-only request still observes the new/null enrollment.
-    if (item.run && !run && !item.lifecycle) { item.run = undefined; return; }
     let keyStatus;
     if (current) {
       try { keyStatus = await within(() => options.cipher.keyStatus(current.keyAlias), CONDITION_READ_TIMEOUT_MS); }
@@ -112,13 +112,21 @@ export function createShellConditionObserver(options: {
     }
     const latest = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
     if (latest && "outcome" in latest) return;
-    if (installationIdentity(latest) !== identity) return;
+    const latestIdentity = installationIdentity(latest);
+    // Only keep the current identity, including when a reset invalidates this
+    // build. Unknown status above never discards retained work.
+    const received = latestIdentity === null ? undefined : receivedRuns.get(latestIdentity);
+    receivedRuns = received ? new Map([[received.identity, received]]) : new Map();
+    if (appliedRun?.identity !== latestIdentity) appliedRun = undefined;
+    if (latestIdentity !== identity) return;
     // Requests arriving during native reads supersede this unsubmitted build.
     if (item.revision !== revision || !hasTime(item.deadline)) return;
+    const run = received && (!appliedRun || received.summary.runSequence > appliedRun.summary.runSequence) ? received : undefined;
     submittingIdentity = identity;
     submittingDeadline = item.deadline;
     submitted = true;
-    await conditions.observe({ enrollment: latest, keyStatus, ...(run ? { summary: run.summary } : {}) });
+    const result = await conditions.observe({ enrollment: latest, keyStatus, ...(run ? { summary: run.summary } : {}) });
+    if (run && result.outcome === "observed") appliedRun = run;
   }
 
   function drain(): void {
@@ -136,32 +144,32 @@ export function createShellConditionObserver(options: {
 
   function waitFor(result: Promise<void>, deadline: number): Promise<void> {
     // A background caller may be queued behind foreground work. Its wait ends
-    // inside its own task window; the queued item's deadline also bars late posts.
+    // inside its own task window, independently of other callers' admission.
     if (!Number.isFinite(deadline)) return result;
     const remaining = Math.max(0, deadline - options.monotonicNow() - CONDITION_FINISH_RESERVE_MS);
     return remaining === 0 ? Promise.resolve() : within(() => result, remaining).catch(() => undefined);
   }
 
   function observe(run?: Run, deadline = Infinity): Promise<void> {
-    const lifecycle = run === undefined;
     if (run) {
-      if (latestRun?.identity === run.identity && latestRun.summary.runSequence >= run.summary.runSequence) {
-        return waitFor(pending?.promise ?? active?.promise ?? Promise.resolve(), deadline); // Coalesced callers share the summary.
+      const received = receivedRuns.get(run.identity);
+      if (!received || received.summary.runSequence < run.summary.runSequence) {
+        receivedRuns.set(run.identity, run);
       }
-      latestRun = run;
     }
-    // Carry forward a summary superseded during fresh native/status reads.
-    run ??= pending?.run ?? (!submitted && active && hasTime(active.deadline) ? active.run : undefined);
     revision++;
+    // A request superseding native reads also inherits the still-waiting
+    // caller's admission. Once submitted, that allowance belongs to that
+    // observation only; a later background request needs its own allowance.
+    const admissionDeadline = Math.max(deadline, active && !submitted ? active.deadline : -Infinity);
     if (!pending) {
       let resolve!: () => void;
       const promise = new Promise<void>((done) => { resolve = done; });
-      pending = { run, lifecycle, deadline, revision, promise, resolve };
+      pending = { deadline: admissionDeadline, revision, promise, resolve };
     } else {
-      // R3 / Decision 4: lifecycle-only signals must not erase a pending summary.
-      if (run) pending.run = run;
-      pending.lifecycle ||= lifecycle;
-      pending.deadline = Math.min(pending.deadline, deadline);
+      // Any eligible waiter may admit the retained work. An expiring background
+      // caller bounds only its own wait, never a foreground/lifecycle caller.
+      pending.deadline = Math.max(pending.deadline, admissionDeadline);
       pending.revision = revision;
     }
     const result = pending.promise;
