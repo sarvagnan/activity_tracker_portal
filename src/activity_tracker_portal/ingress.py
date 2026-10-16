@@ -38,6 +38,10 @@ from activity_tracker_portal.operational_store import OperationalStore
 
 T = TypeVar("T")
 ENROLLMENT_BODY_LIMIT = 4096
+# Control messages are not bound by max_message_bytes. Oversized Ingest
+# Batches should reach accept-ingest-batch for a visible
+# uncompressed-byte-limit-exceeded Delivery Block instead of an empty 413.
+DELIVERY_BODY_FLOOR = 1_048_576
 RETRYABLE_BODY = ingest_protocol.encode_message({
     "wire_version": 1, "kind": "retryable-failure", "reason": "temporarily-unavailable",
 })
@@ -216,7 +220,7 @@ def create_app(
         def body_limit() -> int:
             with request.app.state.writer.store.read() as view:
                 return max(
-                    [settings.capabilities.max_message_bytes]
+                    [DELIVERY_BODY_FLOOR, settings.capabilities.max_message_bytes]
                     + [ingest_protocol.decode_message(item.advertisement)["max_message_bytes"]
                        for item in view.honored_generations()]
                 )
@@ -230,7 +234,10 @@ def create_app(
         encoding = encodings[0].strip().lower() if len(encodings) == 1 else "identity"
         if len(encodings) > 1 or encoding not in ("identity", "gzip"):
             return Response(content=b"", status_code=415)
-        transport_limit = limit + 1024 if encoding == "gzip" else limit
+        # Deflate stored blocks need five framing bytes per 65535 input
+        # bytes; gzip adds an 18-byte header/trailer. Reserve another 1 KiB
+        # for optional header fields, including level-0 encoder overhead.
+        transport_limit = limit + 5 * ((limit + 65534) // 65535) + 18 + 1024 if encoding == "gzip" else limit
         body = bytearray()
         async for chunk in request.stream():
             if len(body) + len(chunk) > transport_limit:
@@ -238,17 +245,24 @@ def create_app(
             body.extend(chunk)
         data = bytes(body)
         if encoding == "gzip":
-            decoder = zlib.decompressobj(wbits=31)
-            try:
-                data = decoder.decompress(data, max_length=limit + 1)
-            except zlib.error:
-                return Response(content=b"", status_code=400)
-            if len(data) > limit:
-                return Response(content=b"", status_code=413)
-            # eof excludes truncation; unused_data excludes both another
-            # member and arbitrary trailing bytes. Do not normalize the bytes.
-            if not decoder.eof or decoder.unused_data:
-                return Response(content=b"", status_code=400)
+            def decompress() -> bytes | Response:
+                decoder = zlib.decompressobj(wbits=31)
+                try:
+                    output = decoder.decompress(data, max_length=limit + 1)
+                except zlib.error:
+                    return Response(content=b"", status_code=400)
+                if len(output) > limit:
+                    return Response(content=b"", status_code=413)
+                # eof excludes truncation; unused_data excludes both another
+                # member and arbitrary trailing bytes. Preserve exact bytes.
+                if not decoder.eof or decoder.unused_data:
+                    return Response(content=b"", status_code=400)
+                return output
+
+            decompressed = await asyncio.to_thread(decompress)
+            if isinstance(decompressed, Response):
+                return decompressed
+            data = decompressed
 
         def deliver(store: OperationalStore) -> accept_ingest_batch.DeliveryResponse:
             try:

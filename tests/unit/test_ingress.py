@@ -535,22 +535,63 @@ class OutboxRouteTests(Case):
                     self.assertEqual(expected.failure, "installation-pending")
                     self.assert_answer(client.post("/v1/outbox-messages", content=data), expected)
 
+    def test_checkpoint_above_batch_limit_gets_exact_receipt(self) -> None:
+        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
+        app = self.app()
+        reference = self.reference()
+        data = outbox("sync-checkpoint", record_types=[
+            {"record_type": f"synthetic-{number:03d}", "outcome": "no-change", "source_data_staged": False}
+            for number in range(64)
+        ])
+        self.assertGreater(len(data), self.settings.capabilities.max_message_bytes)
+        self.assertLessEqual(len(data), ingress.DELIVERY_BODY_FLOOR)
+        expected = reference.run(lambda store: accept_sync_checkpoint.accept_sync_checkpoint(store, data, NOW))
+        self.assertEqual(expected.outcome, "receipt")
+        with TestClient(app) as client:
+            self.enroll(app.state.writer)
+            with patch.object(accept_sync_checkpoint, "accept_sync_checkpoint", wraps=accept_sync_checkpoint.accept_sync_checkpoint) as accept:
+                self.assert_answer(client.post("/v1/outbox-messages", content=data), expected)
+                self.assertEqual(accept.call_args.args[1], data)
+                accept.assert_called_once()
+
+    def test_batch_above_advertised_limit_gets_exact_delivery_block(self) -> None:
+        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
+        app = self.app()
+        reference = self.reference()
+        data = outbox("ingest-batch", items=[
+            {"kind": "retraction", "source_identity": f"synthetic-{number}-" + "x" * 100}
+            for number in range(40)
+        ])
+        self.assertGreater(len(data), self.settings.capabilities.max_message_bytes)
+        self.assertLessEqual(len(data), ingress.DELIVERY_BODY_FLOOR)
+        expected = reference.run(lambda store: accept_ingest_batch.accept_ingest_batch(store, data, NOW))
+        self.assertEqual(expected.outcome, "block")
+        self.assertEqual(expected.failure, "uncompressed-byte-limit-exceeded")
+        with TestClient(app) as client:
+            self.enroll(app.state.writer)
+            with patch.object(accept_ingest_batch, "accept_ingest_batch", wraps=accept_ingest_batch.accept_ingest_batch) as accept:
+                self.assert_answer(client.post("/v1/outbox-messages", content=data), expected)
+                self.assertEqual(accept.call_args.args[1], data)
+                accept.assert_called_once()
+
     def test_body_limit_is_inclusive_and_rejection_never_enters_writer(self) -> None:
         self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
         app = self.app()
+        limit = ingress.DELIVERY_BODY_FLOOR
         with TestClient(app) as client:
-            data = b"x" * 4096
+            data = b"x" * limit
             with patch.object(accept_ingest_batch, "accept_ingest_batch", wraps=accept_ingest_batch.accept_ingest_batch) as accept:
                 self.assertEqual(client.post("/v1/outbox-messages", content=data).status_code, 409)
                 self.assertEqual(accept.call_args.args[1], data)
             with patch.object(app.state.writer, "run", side_effect=AssertionError("writer used")):
-                for data in (b"x" * 4097, iter([b"x" * 2048, b"x" * 2049])):
+                for data in (b"x" * (limit + 1), iter([b"x" * (limit // 2), b"x" * (limit // 2 + 1)])):
                     response = client.post("/v1/outbox-messages", content=data)
                     self.assertEqual(response.status_code, 413)
                     self.assertEqual(response.content, b"")
 
     def test_largest_honored_limit_survives_smaller_configuration(self) -> None:
-        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=8192))
+        limit = ingress.DELIVERY_BODY_FLOOR * 2
+        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=limit))
         old_app = self.app()
         with TestClient(old_app):
             self.enroll(old_app.state.writer)
@@ -564,21 +605,28 @@ class OutboxRouteTests(Case):
                 for number in range(40)
             ])
             self.assertGreater(len(data), 4096)
-            self.assertLess(len(data), 8192)
+            self.assertLess(len(data), limit)
             self.assertEqual(client.post("/v1/outbox-messages", content=data).status_code, 200)
             with patch.object(accept_ingest_batch, "accept_ingest_batch", wraps=accept_ingest_batch.accept_ingest_batch) as accept:
-                self.assertEqual(client.post("/v1/outbox-messages", content=b"x" * 8192).status_code, 409)
-                self.assertEqual(len(accept.call_args.args[1]), 8192)
+                self.assertEqual(client.post("/v1/outbox-messages", content=b"x" * limit).status_code, 409)
+                self.assertEqual(len(accept.call_args.args[1]), limit)
             with patch.object(app.state.writer, "run", side_effect=AssertionError("writer used")):
-                self.assertEqual(client.post("/v1/outbox-messages", content=b"x" * 8193).status_code, 413)
+                response = client.post("/v1/outbox-messages", content=b"x" * (limit + 1))
+                self.assertEqual(response.status_code, 413)
+                self.assertEqual(response.content, b"")
 
     def test_configured_limit_applies_without_honored_generations(self) -> None:
-        self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
-        app = self.app()
-        with patch.object(sender_installation, "honor_capabilities", return_value=None), TestClient(app) as client:
-            self.assertEqual(client.post("/v1/outbox-messages", content=b"x" * 4096).status_code, 409)
-            with patch.object(app.state.writer, "run", side_effect=AssertionError("writer used")):
-                self.assertEqual(client.post("/v1/outbox-messages", content=b"x" * 4097).status_code, 413)
+        for configured in (4096, ingress.DELIVERY_BODY_FLOOR * 2):
+            with self.subTest(configured=configured):
+                self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=configured))
+                limit = max(ingress.DELIVERY_BODY_FLOOR, configured)
+                app = self.app()
+                with patch.object(sender_installation, "honor_capabilities", return_value=None), TestClient(app) as client:
+                    self.assertEqual(client.post("/v1/outbox-messages", content=b"x" * limit).status_code, 409)
+                    with patch.object(app.state.writer, "run", side_effect=AssertionError("writer used")):
+                        response = client.post("/v1/outbox-messages", content=b"x" * (limit + 1))
+                        self.assertEqual(response.status_code, 413)
+                        self.assertEqual(response.content, b"")
 
     def test_gzip_and_identity_return_same_receipt_and_archive_uncompressed_bytes(self) -> None:
         app = self.app()
@@ -599,7 +647,7 @@ class OutboxRouteTests(Case):
     def test_gzip_inclusive_output_limit_and_incompressible_overhead(self) -> None:
         self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
         app = self.app()
-        data = random.Random(42).randbytes(4096)
+        data = random.Random(42).randbytes(ingress.DELIVERY_BODY_FLOOR)
         compressed = gzip.compress(data)
         self.assertGreater(len(compressed), len(data))
         with TestClient(app) as client:
@@ -608,15 +656,98 @@ class OutboxRouteTests(Case):
                 self.assertEqual(response.status_code, 409)
                 self.assertEqual(accept.call_args.args[1], data)
 
+    def test_level_zero_gzip_over_one_kib_overhead_gets_identity_receipt(self) -> None:
+        data = outbox("ingest-batch", items=[
+            {"kind": "retraction", "source_identity": f"synthetic-{number:05d}-" + "x" * 240}
+            for number in range(55_000)
+        ])
+        self.settings = replace(self.settings, capabilities=replace(
+            CAPABILITIES, max_record_count=60_000, max_message_bytes=len(data),
+        ))
+        app = self.app()
+        compressed = gzip.compress(data, compresslevel=0)
+        self.assertLessEqual(len(data), self.settings.capabilities.max_message_bytes)
+        self.assertGreater(len(compressed) - len(data), 1024)
+        with TestClient(app) as client:
+            self.enroll(app.state.writer)
+            identity_response = client.post("/v1/outbox-messages", content=data)
+            self.assertEqual(identity_response.status_code, 200)
+            with patch.object(accept_ingest_batch, "accept_ingest_batch", wraps=accept_ingest_batch.accept_ingest_batch) as accept:
+                response = client.post("/v1/outbox-messages", content=compressed, headers={"Content-Encoding": "gzip"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.content, identity_response.content)
+                self.assertEqual(accept.call_args.args[1], data)
+                accept.assert_called_once()
+            with app.state.writer.store.read() as view:
+                self.assertEqual(view.archived_message(identity(1), 1).envelope, data)
+
+    def test_slow_gzip_decompression_keeps_event_loop_responsive(self) -> None:
+        app = self.app()
+        compressed = gzip.compress(outbox("ingest-batch"))
+        real_factory = ingress.zlib.decompressobj
+        delays = []
+        decoder_threads = []
+
+        class SlowDecoder:
+            def __init__(self, *args, **kwargs):
+                self.decoder = real_factory(*args, **kwargs)
+
+            def decompress(self, *args, **kwargs):
+                decoder_threads.append(threading.get_ident())
+                started = time.monotonic()
+                time.sleep(0.2)
+                delays.append(time.monotonic() - started)
+                return self.decoder.decompress(*args, **kwargs)
+
+            def __getattr__(self, name):
+                decoder_threads.append(threading.get_ident())
+                return getattr(self.decoder, name)
+
+        async def receive():
+            return {"type": "http.request", "body": compressed, "more_body": False}
+
+        async def probe():
+            gaps = []
+            done = asyncio.Event()
+            async def heartbeat():
+                previous = time.monotonic()
+                while not done.is_set():
+                    await asyncio.sleep(0.02)
+                    current = time.monotonic()
+                    gaps.append(current - previous)
+                    previous = current
+            beat = asyncio.create_task(heartbeat())
+            await asyncio.sleep(0)
+            try:
+                sent = await self.post_asgi(app, receive, headers=[(b"content-encoding", b"gzip")])
+            finally:
+                done.set()
+                await beat
+            return sent, max(gaps), threading.get_ident()
+
+        with TestClient(app):
+            self.enroll(app.state.writer)
+            with patch.object(ingress.zlib, "decompressobj", side_effect=SlowDecoder):
+                sent, gap, loop_thread = asyncio.run(probe())
+        self.assertEqual(sent[0]["status"], 200)
+        self.assertEqual(len(delays), 1)
+        self.assertGreaterEqual(delays[0], 0.2)
+        self.assertEqual(len(decoder_threads), 3)  # decompress, eof, unused_data.
+        self.assertNotIn(loop_thread, decoder_threads)
+        self.assertLess(gap, 0.15, f"heartbeat delayed by {gap:.3f}s during decompression")
+
     def test_invalid_transport_never_enters_writer(self) -> None:
         self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
-        compressed = gzip.compress(b"x" * 4096)
+        limit = ingress.DELIVERY_BODY_FLOOR
+        compressed_limit = limit + 5 * ((limit + 65534) // 65535) + 18 + 1024
+        compressed = gzip.compress(b"x" * limit)
         damaged = bytearray(compressed)
         damaged[-8] ^= 1  # Invalid CRC, with otherwise intact gzip framing.
         cases = (
-            (gzip.compress(b"x" * 4097), [("Content-Encoding", "gzip")], 413),
-            (gzip.compress(b"x" * 1_000_000), [("Content-Encoding", "gzip")], 413),
-            (b"x" * 5121, [("Content-Encoding", "gzip")], 413),
+            (gzip.compress(b"x" * (limit + 1)), [("Content-Encoding", "gzip")], 413),
+            (gzip.compress(b"x" * (limit * 2)), [("Content-Encoding", "gzip")], 413),
+            (b"x" * compressed_limit, [("Content-Encoding", "gzip")], 400),
+            (b"x" * (compressed_limit + 1), [("Content-Encoding", "gzip")], 413),
             (b"not gzip", [("Content-Encoding", "gzip")], 400),
             (bytes(damaged), [("Content-Encoding", "gzip")], 400),
             (compressed[:-1], [("Content-Encoding", "gzip")], 400),
@@ -639,10 +770,12 @@ class OutboxRouteTests(Case):
     def test_stream_stops_on_first_over_limit_chunk(self) -> None:
         self.settings = replace(self.settings, capabilities=replace(CAPABILITIES, max_message_bytes=4096))
         app = self.app()
+        limit = ingress.DELIVERY_BODY_FLOOR
+        compressed_limit = limit + 5 * ((limit + 65534) // 65535) + 18 + 1024
         with TestClient(app), patch.object(app.state.writer, "run", side_effect=AssertionError("writer used")):
             for headers, chunks in (
-                ([], [b"x" * 4096, b"x"]),
-                ([(b"content-encoding", b"gzip")], [b"x" * 5120, b"x"]),
+                ([], [b"x" * limit, b"x"]),
+                ([(b"content-encoding", b"gzip")], [b"x" * compressed_limit, b"x"]),
             ):
                 with self.subTest(headers=headers):
                     pending = iter(chunks)
