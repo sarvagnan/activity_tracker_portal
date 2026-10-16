@@ -248,7 +248,7 @@ test("safe integer limits match protocol numbers exactly and reject larger or fr
   await assert.rejects(database.query("SELECT 1.5 AS value"), TypeError);
 });
 
-test("production migrations create only the fifteen version eight tables and automatic indexes", async (t) => {
+test("production migrations create only the sixteen version nine tables and automatic indexes", async (t) => {
   const { snapshotAttemptsMigration } = await import("../src/snapshot/begin-initial-snapshot.ts");
   const { outboxMigration } = await import("../src/outbox/stage-outbox-batch.ts");
   const { completionMigration } = await import("../src/outbox/stage-sync-completion.ts");
@@ -257,9 +257,10 @@ test("production migrations create only the fifteen version eight tables and aut
   const { schedulingMigration } = await import("../src/scheduling/schedule-background-polling.ts");
   const { deliveryMigration } = await import("../src/delivery/send-outbox-message.ts");
   const { enrollmentMigration } = await import("../src/enrollment/manage-sender-enrollment.ts");
+  const { operatorConditionsMigration } = await import("../src/notifications/notify-operator-conditions.ts");
   const { database } = await fixture(t);
-  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration, deliveryMigration, enrollmentMigration]);
-  assert.deepEqual(await migrate(database), { status: "ready", version: 8 });
+  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration, deliveryMigration, enrollmentMigration, operatorConditionsMigration]);
+  assert.deepEqual(await migrate(database), { status: "ready", version: 9 });
   const schema = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name");
   const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
   assert.deepEqual(schema.map((row) => ({ ...row, sql: typeof row.sql === "string" ? normalize(row.sql) : row.sql })), [
@@ -293,6 +294,16 @@ test("production migrations create only the fifteen version eight tables and aut
   CHECK (CASE WHEN cycle_kind = 'change-cycle'
     THEN position IS NULL AND changes_token IS NOT NULL AND unread_since_ms IS NOT NULL
     ELSE position IS NOT NULL AND changes_token IS NULL AND unread_since_ms IS NULL END)) STRICT`),
+    },
+    {
+      type: "table", name: "operator_conditions", tbl_name: "operator_conditions",
+      sql: normalize(`CREATE TABLE operator_conditions (
+  condition TEXT PRIMARY KEY NOT NULL CHECK (condition IN ('permission-missing', 'screen-lock-removed', 'storage-pressure',
+    'record-too-large', 'projection-refused', 'installation-key-unusable', 'enrollment-refused', 'drain-complete')),
+  first_seen_ms INTEGER NOT NULL,
+  last_seen_ms INTEGER NOT NULL,
+  notified INTEGER NOT NULL CHECK (notified IN (0, 1)),
+  CHECK (last_seen_ms >= first_seen_ms)) STRICT`),
     },
     {
       type: "table", name: "outbox_head_block", tbl_name: "outbox_head_block",
@@ -376,6 +387,7 @@ test("production migrations create only the fifteen version eight tables and aut
     { type: "index", name: "sqlite_autoindex_cycle_completions_2", tbl_name: "cycle_completions", sql: null },
     { type: "index", name: "sqlite_autoindex_cycle_progress_1", tbl_name: "cycle_progress", sql: null },
     { type: "index", name: "sqlite_autoindex_cycle_progress_2", tbl_name: "cycle_progress", sql: null },
+    { type: "index", name: "sqlite_autoindex_operator_conditions_1", tbl_name: "operator_conditions", sql: null },
     { type: "index", name: "sqlite_autoindex_outbox_head_block_1", tbl_name: "outbox_head_block", sql: null },
     { type: "index", name: "sqlite_autoindex_outbox_high_water_1", tbl_name: "outbox_high_water", sql: null },
     { type: "index", name: "sqlite_autoindex_outbox_messages_1", tbl_name: "outbox_messages", sql: null },

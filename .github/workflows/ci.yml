@@ -93,6 +93,8 @@ jobs:
         run: tests/acceptance/run_send_outbox_message_1.sh
       - name: Run manage-sender-enrollment@1 acceptance
         run: tests/acceptance/run_manage_sender_enrollment_1.sh
+      - name: Run notify-operator-conditions@1 acceptance
+        run: tests/acceptance/run_notify_operator_conditions_1.sh
 
   vouch:
     needs: [test, sender]
