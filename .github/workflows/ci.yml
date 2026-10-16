@@ -91,6 +91,8 @@ jobs:
         run: tests/acceptance/run_schedule_background_polling_1.sh
       - name: Run send-outbox-message@1 acceptance
         run: tests/acceptance/run_send_outbox_message_1.sh
+      - name: Run manage-sender-enrollment@1 acceptance
+        run: tests/acceptance/run_manage_sender_enrollment_1.sh
 
   vouch:
     needs: [test, sender]

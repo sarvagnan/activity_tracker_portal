@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_manage_sender_enrollment_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"8a82521e8b58bdda5d119e7b663e1b45e243053c76ee61b489297b7bcf88f05f","parent":"GENESIS","recorded_at":"2026-10-16T12:09:08+00:00","sequence":1,"unit":{"name":"manage-sender-enrollment","version":"1"}}

@@ -263,3 +263,9 @@ Against the `pack/1` implementation, the replacement regression fails and the ot
 The binding is:
 - spec files: the contract and this pack;
 - test files: `test_manage_sender_installation_1.py` and the runner.
+
+## Rebind after publication
+
+On the Operator's decision of 2026-10-16 (`manage-sender-enrollment@1` Decision 1), this pack was rebound after publication. Its scope-map test required the neighbouring `manage-sender-enrollment` row to depend on exactly `ingest-protocol`. That pinned a row that its own unit grows: `manage-sender-enrollment@1` appends its capability acknowledgement through `stage-outbox-batch@1`, so the row must also depend on `stage-outbox-batch` (DEV-sob-01, Beads `ae2`).
+
+The rebind changes only that one assertion. The test now requires `ingest-protocol` to be among the row's dependencies, and no longer requires it to be the only one. Every requirement, decision, test name, and assertion about this unit's behavior is unchanged.

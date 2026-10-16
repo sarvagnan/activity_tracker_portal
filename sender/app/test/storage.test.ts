@@ -248,7 +248,7 @@ test("safe integer limits match protocol numbers exactly and reject larger or fr
   await assert.rejects(database.query("SELECT 1.5 AS value"), TypeError);
 });
 
-test("production migrations create only the fourteen version seven tables and automatic indexes", async (t) => {
+test("production migrations create only the fifteen version eight tables and automatic indexes", async (t) => {
   const { snapshotAttemptsMigration } = await import("../src/snapshot/begin-initial-snapshot.ts");
   const { outboxMigration } = await import("../src/outbox/stage-outbox-batch.ts");
   const { completionMigration } = await import("../src/outbox/stage-sync-completion.ts");
@@ -256,9 +256,10 @@ test("production migrations create only the fourteen version seven tables and au
   const { syncMigration } = await import("../src/sync/coordinate-sender-sync.ts");
   const { schedulingMigration } = await import("../src/scheduling/schedule-background-polling.ts");
   const { deliveryMigration } = await import("../src/delivery/send-outbox-message.ts");
+  const { enrollmentMigration } = await import("../src/enrollment/manage-sender-enrollment.ts");
   const { database } = await fixture(t);
-  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration, deliveryMigration]);
-  assert.deepEqual(await migrate(database), { status: "ready", version: 7 });
+  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration, deliveryMigration, enrollmentMigration]);
+  assert.deepEqual(await migrate(database), { status: "ready", version: 8 });
   const schema = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name");
   const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
   assert.deepEqual(schema.map((row) => ({ ...row, sql: typeof row.sql === "string" ? normalize(row.sql) : row.sql })), [
@@ -338,6 +339,28 @@ test("production migrations create only the fourteen version seven tables and au
   notified_condition TEXT CHECK (notified_condition IN ('restricted', 'unregistered')),
   CHECK (action_condition IS (CASE WHEN observed_status = 'available' THEN NULL ELSE observed_status END)),
   CHECK (notified_condition IS NULL OR notified_condition IS action_condition)) STRICT`),
+    },
+    {
+      type: "table", name: "sender_enrollment", tbl_name: "sender_enrollment",
+      sql: normalize(`CREATE TABLE sender_enrollment (
+  singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+  installation_id TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  key_alias TEXT NOT NULL,
+  portal_url TEXT NOT NULL,
+  confirmation BLOB NOT NULL,
+  phase TEXT NOT NULL CHECK (phase IN ('confirming', 'refused', 'enrolled', 'draining')),
+  refusal TEXT CHECK (refusal IN ('enrollment-refused', 'capabilities-unsupported')),
+  advertisement BLOB,
+  generation INTEGER CHECK (generation > 0),
+  acknowledgement_sequence INTEGER CHECK (acknowledgement_sequence > 0),
+  enrolled_at_ms INTEGER NOT NULL,
+  adopted_at_ms INTEGER,
+  CHECK ((phase = 'refused') = (refusal IS NOT NULL)),
+  CHECK ((phase IN ('enrolled', 'draining')) = (advertisement IS NOT NULL)),
+  CHECK ((advertisement IS NULL) = (generation IS NULL)),
+  CHECK ((advertisement IS NULL) = (acknowledgement_sequence IS NULL)),
+  CHECK ((advertisement IS NULL) = (adopted_at_ms IS NULL))) STRICT`),
     },
     {
       type: "table", name: "snapshot_attempts", tbl_name: "snapshot_attempts",
