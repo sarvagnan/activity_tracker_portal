@@ -54,6 +54,9 @@ jobs:
       - name: Install pinned Sender dependencies
         run: npm ci --prefix sender
       - name: Check TypeScript and run synthetic Node suites
+        # The workspace suites run without the acceptance runners' watchdogs, so bound the step:
+        # a hanging regression fails here instead of stalling the job before its runners.
+        timeout-minutes: 15
         run: |
           npm run typecheck --prefix sender
           npm test --prefix sender
