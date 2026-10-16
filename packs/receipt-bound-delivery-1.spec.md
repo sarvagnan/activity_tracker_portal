@@ -87,7 +87,7 @@ Tests: `redirects_are_refused_and_never_followed`.
 
 ### R5 — One timeout over the whole exchange
 
-The transport aborts the exchange `timeoutMs` after `send` begins, whether headers or body bytes are outstanding, and returns `failed` (`request-timed-out`). A response completed before the deadline is unaffected. Under mocked timers, the abort comes exactly at the deadline and not one millisecond before, whether headers or body bytes are outstanding. Over real sockets, a stalled exchange ends no earlier than 50 ms before its deadline and within a generous margin after it, on a monotonic clock.
+The transport aborts the exchange `timeoutMs` after `send` begins, whether headers or body bytes are outstanding, and returns `failed` (`request-timed-out`). A response completed before the deadline is unaffected. Under mocked timers, the abort comes exactly at the deadline and not one millisecond before, whether headers or body bytes are outstanding. That includes headers that arrive 4,000 ms into a 5,000 ms exchange: the deadline stays 5,000 ms from the call and does not restart. Over real sockets, a stalled exchange ends no earlier than 50 ms before its deadline and within a generous margin after it, on a monotonic clock.
 
 Tests: `a_stalled_exchange_times_out`.
 
@@ -235,7 +235,7 @@ Its non-blocking findings are added too:
 - the deadline is checked exactly under mocked timers, with generous monotonic bounds on real sockets;
 - the device smoke run (Beads `kv7`) must exercise `expo/fetch` on Android for a truncation before the reader is obtained, a stalled body's abort, and an oversized body's cancellation.
 
-Against the stub, all nine transport tests and all nine end-to-end tests fail, and the two contract tests pass. A throwaway reference transport passes every test in about 40 seconds. The transport suite kills all 28 of its non-equivalent mutants, and the end-to-end suite is run for any mutant the transport suite misses. The runner gives each half an external deadline, because the end-to-end suite starts Node processes. The Portal's Outbox Message route (Beads `2rv.4`) is merged (PR #38), and this branch includes it. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A.
+Against the stub, all nine transport tests and all nine end-to-end tests fail, and the two contract tests pass. A throwaway reference transport passes every test in about 40 seconds. The transport suite kills all 29 of its non-equivalent mutants, and the end-to-end suite is run for any mutant the transport suite misses. The runner gives each half an external deadline, because the end-to-end suite starts Node processes. The Portal's Outbox Message route (Beads `2rv.4`) is merged (PR #38), and this branch includes it. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A.
 
 The binding is:
 - spec files: the contract and this pack;
