@@ -153,21 +153,15 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     return delivery;
   }
 
-  // Admitted background work holds preparation until it settles, so this
-  // absolute source boundary never constrains an unbudgeted coordinator run.
-  let backgroundSourceDeadline = Infinity;
-  function checkSourceDeadline(): void {
-    if (options.monotonicNow() >= backgroundSourceDeadline) throw new Error("Background source deadline reached");
-  }
-
   let coordinator: SenderSync | null = null;
   let coordinatorIdentity: string | null = null;
   let preparation: Promise<unknown> = Promise.resolve();
   const inFlight = new Set<Promise<RunResult>>();
-  function startRun(request: TriggerRequest, deadline = Infinity): Promise<RunResult> {
+  function startRun(request: TriggerRequest): Promise<RunResult> {
     if (!coordinator) throw new Error("Sender coordinator is unavailable");
     const result = coordinator.trigger(request).then(async (result) => {
-      await deliver(deadline);
+      // Background delivery belongs to the callback's task-start window.
+      if (request.kind !== "background") await deliver();
       return result;
     });
     inFlight.add(result);
@@ -186,13 +180,6 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     { readonly outcome: "failed"; readonly failure: "storage-failed" }
   > {
     const ready = preparation.then(async () => {
-      if (kind === "background") {
-        // The published coordinator starts relative budgets only when a run
-        // opens. Admit background work only when all submitted runs are done.
-        // Holding preparation here prevents another caller racing admission.
-        await Promise.allSettled(inFlight);
-        if (options.monotonicNow() >= deadline) return { outcome: "skipped" } as const;
-      }
       let current = await status();
       const refreshAfter = kind === "foreground" && inFlight.size > 0;
       if (isStatus(current) && (current.phase === "confirming" ||
@@ -225,21 +212,17 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       await prepare(current);
       return { pending: start(), refreshAfter };
     });
-    preparation = ready.then(async (result) => {
-      if (kind === "background" && "pending" in result) await result.pending;
-    }).catch(() => undefined);
+    preparation = ready.catch(() => undefined);
     return ready;
   }
 
   // Construct lazily: registration is expected only with an active installation.
   let polling: BackgroundPolling | null = null;
-  function makePolling(trigger: (request: TriggerRequest) => Promise<RunResult>): BackgroundPolling {
-    return createBackgroundPolling({
-      database, platform: options.platform, notifier: options.notifier, now: options.now, sync: { trigger },
-    });
-  }
   function currentPolling(): BackgroundPolling {
-    polling ??= makePolling(startRun);
+    polling ??= createBackgroundPolling({
+      database, platform: options.platform, notifier: options.notifier, now: options.now,
+      sync: { trigger: startRun },
+    });
     return polling;
   }
 
@@ -255,12 +238,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     ).sort();
     const schemaVersions = Object.fromEntries(recordTypes.map((type) => [type, versions[type]]));
     coordinator = createSenderSync({
-      database, cipher: options.cipher, recordTypes,
-      sources: {
-        async issue(type) { checkSourceDeadline(); return options.sources.issue(type); },
-        async readSnapshotPage(request) { checkSourceDeadline(); return options.sources.readSnapshotPage(request); },
-        async readChangePage(request) { checkSourceDeadline(); return options.sources.readChangePage(request); },
-      },
+      database, cipher: options.cipher, sources: options.sources, recordTypes,
       projection: { implementationVersion: PROJECTION_IMPLEMENTATION_VERSION, schemaVersions },
       async context() {
         const latest = await status();
@@ -317,24 +295,13 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     condition: () => currentPolling().condition(),
     async runTask() {
       try {
-        // schedule-background-polling@1 supplies eight minutes. Include preparation,
-        // confirmation and delivery in that same soft deadline, never a fresh budget.
+        // Polling Runs follow coordinate-sender-sync@1's relative budget and R8
+        // merging; absolute deadlines belong to activity_tracker_portal-pv2.8.
         const deadline = options.monotonicNow() + BACKGROUND_BUDGET_MS;
-        // A task-local trigger seam subtracts preparation time while the published
-        // scheduling unit retains ownership of runTask's budget and result mapping.
-        const taskPolling = makePolling(async (request) => {
-          const budgetMs = Math.floor(Math.min(request.budgetMs ?? BACKGROUND_BUDGET_MS,
-            deadline - options.monotonicNow()));
-          // Never submit zero: the coordinator correctly rejects it as a caller error.
-          if (budgetMs <= 0) throw new Error("Background admission deadline reached");
-          backgroundSourceDeadline = deadline;
-          try { return await startRun({ ...request, budgetMs }, deadline); }
-          finally { backgroundSourceDeadline = Infinity; }
-        });
-        const ready = await prepareAndStart("background", () => taskPolling.runTask(), deadline);
-        if ("pending" in ready) return await ready.pending;
+        const ready = await prepareAndStart("background", () => currentPolling().runTask(), deadline);
+        const result = "pending" in ready ? await ready.pending : "failed";
         await deliver(deadline);
-        return "failed";
+        return result;
       } catch { return "failed"; }
     },
   });
