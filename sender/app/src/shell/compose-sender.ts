@@ -200,6 +200,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       // Register from the initial installation observation before contacting the Portal.
       if (isStatus(current) && kind === "foreground") {
         await currentPolling().ensureRegistered();
+        current = await status();
       }
       if (isStatus(current) && (current.phase === "confirming" ||
           kind === "foreground" && !refreshAfter && current.phase === "enrolled")) {

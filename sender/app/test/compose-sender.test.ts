@@ -688,6 +688,72 @@ function advertisement(generation: number, recordType = "steps"): Uint8Array {
   });
 }
 
+for (const [transition, status] of [
+  ["drain", enrolled({ phase: "draining" })],
+  ["reset", null],
+] as const) {
+  test(`foreground skips ${transition} during registration while an active run defers refresh`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    let arrive!: () => void;
+    let release!: () => void;
+    const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let admit!: (result: { outcome: "admitted" }) => void;
+    const admitted = new Promise<{ outcome: "admitted" }>((resolve) => { admit = resolve; });
+    let watchAdmissions = false;
+    let admissions = 0;
+    let refreshes = 0;
+    const shell = await composeSender({ ...f.options,
+      now() {
+        // Registration reads its clock before the gate. While the source is
+        // held and delivery has not begun, only coordinator admission reads now().
+        if (watchAdmissions) { admissions++; admit({ outcome: "admitted" }); }
+        return f.clock.now();
+      },
+      monotonicNow() {
+        // Delivery checks its deadline before reading its own wall clock.
+        watchAdmissions = false;
+        return f.clock.monotonicNow();
+      },
+      platform: { ...f.options.platform, async register(name, minutes) {
+        arrive();
+        await released;
+        await f.options.platform.register(name, minutes);
+      } },
+      enrollment(database, transport) {
+        return { ...f.options.enrollment(database, transport), async refreshCapabilities() {
+          refreshes++;
+          return { outcome: "current" };
+        } };
+      },
+    });
+    const activeRead = f.sources.hold("snapshot", "steps");
+    const active = shell.manualSync();
+    let foreground: Promise<ShellRunResult> | undefined;
+    try {
+      await activeRead.arrived;
+      foreground = shell.foreground();
+      const result = foreground.then((value) => value, (error: unknown) => ({ outcome: "rejected", error }));
+      await arrived;
+      assert.equal(f.sources.inFlight, 1, "the initial observation occurs during an active Polling Run");
+      assert.equal(refreshes, 0, "capability refresh is deferred");
+      f.state.status = status;
+      watchAdmissions = true;
+      release();
+      assert.deepEqual(await Promise.race([result, admitted]), { outcome: "skipped" });
+      assert.equal(admissions, 0, "no coordinator trigger is admitted after registration");
+      assert.equal(f.sources.inFlight, 1, "skipping does not wait for the active Polling Run");
+    } finally {
+      watchAdmissions = false;
+      release();
+      activeRead.release();
+      await Promise.allSettled([active, ...(foreground ? [foreground] : [])]);
+    }
+    assert.equal(refreshes, 0);
+    assert.equal((await runs(f.database())).length, 1, "no follow-up Polling Run opens");
+  });
+}
+
 for (const phase of ["confirming", "enrolled"] as const) {
   for (const foreground of ["start", "return"] as const) {
     test(`foreground ${foreground} registers before the ${phase} Portal request, even while unreachable`, { timeout: 5_000 }, async (t) => {
