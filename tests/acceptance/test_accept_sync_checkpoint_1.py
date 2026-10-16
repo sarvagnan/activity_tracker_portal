@@ -164,19 +164,42 @@ def record_of(data: bytes) -> SyncCheckpointRecord:
     )
 
 
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def days_from_civil(year: int, month: int, day: int) -> int:
+    """Days from 1970-01-01 in the proleptic Gregorian calendar, where year 0000 is a leap year."""
+    year -= month <= 2
+    era = year // 400
+    year_of_era = year - era * 400
+    day_of_year = (153 * (month + (-3 if month > 2 else 9)) + 2) // 5 + day - 1
+    return era * 146097 + year_of_era * 365 + year_of_era // 4 - year_of_era // 100 + day_of_year - 719468
+
+
+def sender_microseconds(value: str) -> int:
+    """A Sender time as microseconds from 1970, for any protocol year from 0000, which datetime cannot hold."""
+    days = days_from_civil(int(value[0:4]), int(value[5:7]), int(value[8:10]))
+    seconds = days * 86400 + int(value[11:13]) * 3600 + int(value[14:16]) * 60 + int(value[17:19])
+    return seconds * 1_000_000 + int(value[20:23]) * 1000
+
+
+def portal_microseconds(value: datetime) -> int:
+    return (value - EPOCH) // US
+
+
 def expected_clock_conditions(item: ArchivedCheckpoint, enrolled_at: datetime) -> frozenset[str]:
     """R10's three rules, with the five-minute tolerance."""
-    started = datetime.fromisoformat(item.record.started_at)
-    ended = datetime.fromisoformat(item.record.ended_at)
+    started, ended = sender_microseconds(item.record.started_at), sender_microseconds(item.record.ended_at)
+    tolerance = TOLERANCE // US
     conditions = set()
-    if ended - item.receipt_time > TOLERANCE:
+    if ended - portal_microseconds(item.receipt_time) > tolerance:
         conditions.add("sender-clock-ahead")
-    if enrolled_at - ended > TOLERANCE:
+    if portal_microseconds(enrolled_at) - ended > tolerance:
         conditions.add("sender-clock-behind")
     if item.record.elapsed_ms is None:
-        if started - ended > TOLERANCE:
+        if started - ended > tolerance:
             conditions.add("sender-times-inconsistent")
-    elif abs((ended - started) - item.record.elapsed_ms * MS) > TOLERANCE:
+    elif abs((ended - started) - item.record.elapsed_ms * 1000) > tolerance:
         conditions.add("sender-times-inconsistent")
     return frozenset(conditions)
 
@@ -684,6 +707,7 @@ class R7Archival(Case):
             checkpoint(3, ended="2020-01-01T00:00:00.000Z", started="2020-01-01T00:00:00.000Z"),  # before enrollment
             checkpoint(4, elapsed=9 * DAY // MS),                               # elapsed disagrees
             checkpoint(5, started="1970-01-01T00:00:00.000Z", ended="9999-12-31T23:59:59.999Z", elapsed=None),
+            checkpoint(6, started="0000-02-29T00:00:00.000Z", ended="0000-02-29T00:00:30.000Z"),  # the protocol's first year
         ]
         for minute, data in enumerate(implausible, start=1):
             self.assertReceipt(self.accept(data, minute=minute), data)
@@ -764,6 +788,12 @@ class R8PollingFreshness(Case):
         self.accept(checkpoint(3), receipt + 30 * HOUR)
         self.assertEqual(self.poll(receipt + 36 * HOUR).freshness, "current")
         self.assertEqual(self.poll(receipt + 36 * HOUR + US).freshness, "delayed")
+        # The latest checkpoint is the one with the highest sequence, even when Portal time steps back.
+        stepped_back = checkpoint(4)
+        self.accept(stepped_back, receipt + 29 * HOUR)
+        state = self.poll(receipt + 35 * HOUR + US)
+        self.assertEqual((state.freshness, state.latest_checkpoint),
+                         ("delayed", ArchivedCheckpoint(4, receipt + 29 * HOUR, record_of(stepped_back))))
 
     def test_first_poll_in_progress_and_overdue(self) -> None:
         self.enroll(A, minute=0)
@@ -789,6 +819,16 @@ class R8PollingFreshness(Case):
         self.store.withdraw_installation(B, activation + 29 * HOUR)
         self.assertEqual(self.poll(activation + 300 * HOUR, B),
                          PollingState(B, "never-reported", None, False, False, None, frozenset()))
+        # An installation that never reported stays overdue after it drains and retires.
+        self.store.retire_installation(A, "destructive", activation + 30 * HOUR)
+        replacement = activation + 31 * HOUR
+        self.activate(C, replacement)
+        self.store.begin_draining(C, replacement + 25 * HOUR)
+        draining = self.poll(replacement + 26 * HOUR, C)
+        self.store.retire_installation(C, "drained", replacement + 27 * HOUR)
+        retired = self.poll(replacement + 28 * HOUR, C)
+        for state in (draining, retired):
+            self.assertEqual(state, PollingState(C, "never-reported", None, False, True, None, frozenset()))
 
     def test_freshness_is_scoped_to_one_installation(self) -> None:
         self.activate(A)
@@ -911,8 +951,10 @@ class R10ClockConditions(Case):
             (enrolled - TOLERANCE, frozenset()),
             (enrolled - TOLERANCE - MS, frozenset({"sender-clock-behind"})),
             (enrolled - 365 * DAY, frozenset({"sender-clock-behind"})),
+            ("0000-02-29T00:00:30.000Z", frozenset({"sender-clock-behind"})),
         ):
-            item = ArchivedCheckpoint(1, at(130), record_of(checkpoint(1, ended=ended)))
+            started = ("0000-02-29T00:00:00.000Z" if isinstance(ended, str) else None)
+            item = ArchivedCheckpoint(1, at(130), record_of(checkpoint(1, started=started, ended=ended)))
             self.assertEqual(clock_conditions(item, enrolled), expected, ended)
             self.assertEqual(clock_conditions(item, enrolled.astimezone(EAST)), expected, ended)
         # Through acceptance, enrollment rather than activation is the bound, and the end time is what counts.
@@ -924,6 +966,8 @@ class R10ClockConditions(Case):
         self.assertEqual(self.poll(at(131)).conditions, frozenset())
         self.accept(checkpoint(3, ended=enrolled - TOLERANCE - MS), at(132))
         self.assertEqual(self.poll(at(132)).conditions, frozenset({"sender-clock-behind"}))
+        self.accept(checkpoint(4, started="0000-02-29T00:00:00.000Z", ended="0000-02-29T00:00:30.000Z"), at(133))
+        self.assertEqual(self.poll(at(133)).conditions, frozenset({"sender-clock-behind"}))
 
     def test_inconsistent_run_times(self) -> None:
         start, inconsistent = at(30), frozenset({"sender-times-inconsistent"})
@@ -941,6 +985,18 @@ class R10ClockConditions(Case):
         ):
             item = ArchivedCheckpoint(1, at(300), record_of(checkpoint(1, started=start, ended=ended, elapsed=elapsed)))
             self.assertEqual(clock_conditions(item, at(0)), expected, (ended, elapsed))
+        # Year 0000 is a leap year, and runs may cross into year 0001; every such run is also behind enrollment.
+        behind = frozenset({"sender-clock-behind"})
+        for started, ended, elapsed, expected in (
+            ("0000-02-28T12:00:00.000Z", "0000-03-01T12:00:00.000Z", 2 * DAY // MS, behind),
+            ("0000-02-28T12:00:00.000Z", "0000-03-01T12:00:00.000Z", DAY // MS, behind | inconsistent),
+            ("0000-12-31T23:59:00.000Z", "0001-01-01T00:01:00.000Z", 120_000, behind),
+            ("0000-12-31T23:59:00.000Z", "0001-01-01T00:01:00.000Z", None, behind),
+            ("0001-01-01T00:01:00.000Z", "0000-12-31T23:59:00.000Z", None, behind),
+            ("0001-01-01T00:06:00.001Z", "0000-12-31T23:59:00.000Z", None, behind | inconsistent),
+        ):
+            item = ArchivedCheckpoint(1, at(300), record_of(checkpoint(1, started=started, ended=ended, elapsed=elapsed)))
+            self.assertEqual(clock_conditions(item, at(0)), expected, (started, ended, elapsed))
         self.activate()
         self.accept(checkpoint(1, started=at(1), ended=at(1) + 30_000 * MS, elapsed=330_001), at(2))
         self.assertEqual(self.poll(at(2)).conditions, inconsistent)
@@ -979,6 +1035,10 @@ class R10ClockConditions(Case):
         self.assertEqual(state.latest_checkpoint, expected)
         self.assertEqual(self.latest(), expected)
         self.assertEqual(state.conditions, frozenset({"background-scheduling-restricted"}))
+        # Portal time steps back: the higher sequence is still the latest.
+        later = checkpoint(5, run=3)
+        self.accept(later, minute=2)
+        self.assertEqual(self.poll(at(6)).latest_checkpoint, ArchivedCheckpoint(5, at(2), record_of(later)))
 
 
 # R11 — Reading polling state
@@ -1111,7 +1171,7 @@ class R13Conformance(Case):
             *(f"trigger-{trigger}" for trigger in ("background", "foreground", "manual")),
             *(f"scheduling-{status}" for status in SCHEDULING_CONDITIONS),
             *(f"outcome-{outcome}" for outcome in OUTCOMES),
-            "no-elapsed", "sender-clock-ahead", "sender-clock-behind", "sender-times-inconsistent",
+            "no-elapsed", "year-zero", "sender-clock-ahead", "sender-clock-behind", "sender-times-inconsistent",
             *(f"freshness-{freshness}" for freshness in ("never-reported", "current", "delayed", "stale")),
             "first-poll-in-progress", "first-checkpoint-overdue",
         )
@@ -1136,19 +1196,24 @@ class R13Conformance(Case):
         elapsed: int | None = None if rng.random() < 0.3 else duration + rng.randint(-60_000, 60_000)
         if elapsed is not None:
             elapsed = max(elapsed, 0)
+        text: tuple[str, str] | None = None
         if implausible:
-            kind = rng.choice(["ahead", "behind", "elapsed", "reversed"])
+            kind = rng.choice(["ahead", "behind", "elapsed", "reversed", "year-zero"])
             if kind == "ahead":
                 ended = now + TOLERANCE + rng.randint(1, 10**8) * MS
             elif kind == "behind":
                 ended = T0 - TOLERANCE - rng.randint(1, 10**10) * MS
             elif kind == "elapsed":
                 elapsed = duration + 300_001 + rng.randint(0, 10**7)
-            else:
+            elif kind == "reversed":
                 elapsed, duration = None, -300_001 - rng.randint(0, 10**7)
+            else:
+                text = (f"0000-{rng.choice(['01-01', '02-29', '12-31'])}T{rng.randint(0, 23):02d}:00:00.000Z",
+                        rng.choice(["0000-12-31T23:59:59.999Z", "0001-01-01T00:00:00.000Z", stamp(ended)]))
+        started_at, ended_at = text if text is not None else (ended - duration * MS, ended)
         return checkpoint(
             sequence, generation=generation, run=rng.randint(1, 10**6), trigger=rng.choice(["background", "foreground", "manual"]),
-            started=ended - duration * MS, ended=ended, elapsed=elapsed, scheduling=rng.choice(sorted(SCHEDULING_CONDITIONS)),
+            started=started_at, ended=ended_at, elapsed=elapsed, scheduling=rng.choice(sorted(SCHEDULING_CONDITIONS)),
             types=types, outbox=(rng.randint(0, 50), rng.randint(0, 10**7)),
         )
 
@@ -1273,6 +1338,8 @@ class R13Conformance(Case):
                             self.events[f"outcome-{status['outcome']}"] += 1
                         if "elapsed_ms" not in message:
                             self.events["no-elapsed"] += 1
+                        if message["started_at"].startswith("0000"):
+                            self.events["year-zero"] += 1
                         for condition in expected_clock_conditions(item, T0):
                             self.events[condition] += 1
                 sent.append(data)

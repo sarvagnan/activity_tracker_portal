@@ -107,7 +107,7 @@ Tests: `test_accepted_checkpoint_is_archived_exactly`, `test_implausible_sender_
 
 ### R8 — Polling Freshness
 
-Polling Freshness belongs to one installation and is measured at the read time from the Portal receipt time of its latest accepted checkpoint (Decision 7):
+Polling Freshness belongs to one installation and is measured at the read time from the Portal receipt time of its latest accepted checkpoint (Decision 7). The latest checkpoint is the one with the highest sequence, whose receipt the store keeps as the latest checkpoint receipt. Portal time can step backwards, so it need not be the checkpoint received last by the clock.
 - **never-reported** before its first accepted checkpoint, whatever else it has delivered;
 - **current** while the age is at most six hours, including when the read time is earlier than the receipt;
 - **delayed** while it is more than six hours and at most 24;
@@ -115,7 +115,7 @@ Polling Freshness belongs to one installation and is measured at the read time f
 
 While never-reported:
 - `first_poll_in_progress` is set once the installation has any accepted Outbox Message (a Last Delivery);
-- `first_checkpoint_overdue` is set once the read time is more than 24 hours after its activation. A pending installation is never overdue, and enrollment time never stands in for a checkpoint.
+- `first_checkpoint_overdue` is set once the read time is more than 24 hours after its activation. That stays true after the installation drains or retires without reporting. A pending or withdrawn installation was never activated, so it is never overdue, and enrollment time never stands in for a checkpoint.
 
 Both are unset once a checkpoint exists. A replacement installation starts never-reported, and a retired installation keeps its own state. An identical retry does not refresh freshness.
 
@@ -137,7 +137,7 @@ Tests:
 
 ### R10 — Clock conditions
 
-The polling state's conditions include the latest checkpoint's clock conditions. `clock_conditions` derives them for any archived checkpoint, with a tolerance of five minutes (Decision 6):
+The polling state's conditions include the latest checkpoint's clock conditions. `clock_conditions` derives them for any archived checkpoint, with a tolerance of five minutes (Decision 6). Sender times are compared as UTC instants over the protocol's whole range, years 0000 to 9999 of the proleptic Gregorian calendar, in which 0000 is a leap year. Python's `datetime` cannot hold year 0000, so no valid archived checkpoint may make `clock_conditions` or `polling_state` raise.
 - `sender-clock-ahead`: the run's end time is more than five minutes after the checkpoint's Portal receipt time;
 - `sender-clock-behind`: the run's end time is more than five minutes before the installation's enrollment;
 - `sender-times-inconsistent`: the run's end-minus-start time differs from its elapsed duration by more than five minutes, or, without an elapsed duration, the end is more than five minutes before the start.
@@ -176,7 +176,7 @@ For an active installation with storage available, every answer equals `ingest-p
 
 Each block and each identical retry is checked against the whole database: a block changes only its own record, and a retry changes nothing. After each newly accepted checkpoint, the polling state reports it as the latest checkpoint. After every step, the polling state at the step's time and at a later time equals the R8–R10 derivation from the latest accepted checkpoint.
 
-Seeded synthetic histories interleave checkpoints with Ingest Batches, accepted through `accept-ingest-batch@1`, while Portal time advances by minutes to days. They include every trigger, scheduling status, and lifecycle outcome, implausible Sender times, retries, conflicts, older unseen sequences, gaps, and unknown generations. The test requires each block failure, a gap, a retry, and a repeated block to occur, and also each clock condition, each freshness, a first poll in progress, and an overdue first checkpoint.
+Seeded synthetic histories interleave checkpoints with Ingest Batches, accepted through `accept-ingest-batch@1`, while Portal time advances by minutes to days. They include every trigger, scheduling status, and lifecycle outcome, implausible Sender times including year 0000, retries, conflicts, older unseen sequences, gaps, and unknown generations. The test requires each block failure, a gap, a retry, and a repeated block to occur, and also each clock condition, each freshness, a first poll in progress, and an overdue first checkpoint.
 
 Tests: `test_answers_match_the_protocol_evaluation`.
 
