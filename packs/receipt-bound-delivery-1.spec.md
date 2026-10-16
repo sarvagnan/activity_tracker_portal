@@ -30,9 +30,9 @@ The proof needs one piece nobody has built: the Sender HTTP transport behind the
 
 ## Requirements
 
-The TypeScript `node:test` suite `receipt-bound-delivery-1.test.ts` checks the transport against real loopback HTTP servers made with `node:http` and `node:net`.
+The nine TypeScript `node:test` tests in `receipt-bound-delivery-1.test.ts` check the transport against real loopback HTTP servers made with `node:http` and `node:net`, and against fake fetches for exchanges no server produces.
 
-The Python suite `tests/acceptance/test_receipt_bound_delivery_1.py` checks the end-to-end evidence. It drives the Sender through a Node driver, `sender/app/test/support/receipt-bound-sender.ts`, one fresh process per step, so every step is also a Sender restart. The driver uses:
+The Python suite `tests/acceptance/test_receipt_bound_delivery_1.py`, with 11 tests, checks the contract and the end-to-end evidence. It drives the Sender through a Node driver, `sender/app/test/support/receipt-bound-sender.ts`, one fresh process per step, so every step is also a Sender restart. The driver uses:
 - the real stage units, `manage-sender-enrollment@1`, and `send-outbox-message@1`;
 - this unit's transport;
 - the 3ug `node:sqlite` substitute on a file;
@@ -75,19 +75,19 @@ Each `send` calls `fetch` exactly once, with:
 - its body bytes unchanged, or no body for `GET`;
 - `redirect: "error"` and `credentials: "omit"`.
 
-The server receives those exact bytes, with no added content encoding. The transport never retries. Mutating the request's body after `send` returns changes nothing that was sent.
+The server receives those exact bytes, with no added content encoding. The transport never retries. Mutating the request's body or headers after `send` returns changes nothing that was sent, even for a `fetch` that reads its arguments only after a tick, so the transport copies both before calling `fetch`.
 
 Tests: `the_request_is_sent_exactly_once`, `no_retry_and_no_encoding_is_added`.
 
 ### R4 — Redirects are never followed
 
-A 3xx answer, a `fetch` that rejects because of the redirect, or a response marked `redirected` is `failed` (`redirect-refused`). The redirect target receives no request. This keeps health data on the configured Portal (Decision 4).
+A 3xx answer, a `fetch` that rejects because of the redirect, a `fetch` that returns any 3xx status itself, or a response marked `redirected` is `failed` (`redirect-refused`). The redirect target receives no request. This keeps health data on the configured Portal (Decision 4).
 
 Tests: `redirects_are_refused_and_never_followed`.
 
 ### R5 — One timeout over the whole exchange
 
-The transport aborts the exchange `timeoutMs` after `send` begins, whether headers or body bytes are outstanding, and returns `failed` (`request-timed-out`). It never waits longer than the deadline plus a small scheduling margin. A response completed before the deadline is unaffected.
+The transport aborts the exchange `timeoutMs` after `send` begins, whether headers or body bytes are outstanding, and returns `failed` (`request-timed-out`). It never waits longer than the deadline plus a 700 ms scheduling margin, and never fails earlier than 50 ms before it. A response completed before the deadline is unaffected.
 
 Tests: `a_stalled_exchange_times_out`.
 
@@ -96,7 +96,7 @@ Tests: `a_stalled_exchange_times_out`.
 The body is read as a stream. At most `maxResponseBytes + 1` bytes are kept, after which the read is cancelled. `send-outbox-message@1` and `manage-sender-enrollment@1` treat such a body as oversized. Any other outcome is `failed` (`network-failed` or `response-incomplete`):
 - a reset or truncated body;
 - a declared length that is not met;
-- a body stream that errors;
+- a body stream that errors, or yields anything but bytes;
 - a `fetch` that rejects or throws.
 
 A body that ends normally is returned whatever the HTTP status, including an empty body, as the units decide on bytes alone.
@@ -221,4 +221,13 @@ After Gate A, the executable pack adds:
 - the runner;
 - the Interface stub `http-transport.ts`, whose `send` throws and whose types are declared.
 
-Against the stub, every transport and end-to-end test fails, and the two contract tests pass. The Portal's Outbox Message route (Beads `2rv.4`) must be merged first. It is an enabling task already under way. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A.
+Against the stub, all nine transport tests and all nine end-to-end tests fail, and the two contract tests pass. A throwaway reference transport passes every test in about 40 seconds. The transport suite kills all 28 of its non-equivalent mutants, and the end-to-end suite is run for any mutant the transport suite misses. The runner gives each half an external deadline, because the end-to-end suite starts Node processes. The Portal's Outbox Message route (Beads `2rv.4`) is merged (PR #38), and this branch includes it. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A.
+
+The binding is:
+- spec files: the contract and this pack;
+- test files:
+  - `receipt-bound-delivery-1.test.ts`;
+  - `test_receipt_bound_delivery_1.py`;
+  - the Sender driver `sender/app/test/support/receipt-bound-sender.ts`;
+  - the 3ug substitutes it uses, `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`;
+  - the runner.
