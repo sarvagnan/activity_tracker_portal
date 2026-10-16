@@ -22,6 +22,7 @@ export default {
       }],
       "./plugins/with-pinned-android.cjs",
       "./plugins/with-background-scheduling.cjs",
+      "./plugins/with-health-connect.cjs",
     ],
   },
 };

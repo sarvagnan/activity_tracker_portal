@@ -3,13 +3,7 @@ import { AppState, Button, StyleSheet, Text, View } from "react-native";
 import { expoSender } from "./src/shell/expo-sender.ts";
 import { startForegroundLifecycle } from "./src/shell/foreground-lifecycle.ts";
 import { requestSenderNotificationPermission } from "./src/background/react-native-notification-permission.ts";
-import type { ShellRunResult } from "./src/shell/compose-sender.ts";
-
-function resultMessage(result: ShellRunResult): string {
-  return result.outcome === "checkpointed" ? "Sync finished."
-    : result.outcome === "skipped" ? "Sync waits for a confirmed enrollment."
-    : "Sync could not finish.";
-}
+import { resultMessage } from "./src/shell/result-message.ts";
 
 export default function App() {
   const [message, setMessage] = useState("Sender ready.");
