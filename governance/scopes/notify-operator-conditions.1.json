@@ -1,0 +1,55 @@
+{
+  "contract_schema": 1,
+  "scope": "notify-operator-conditions",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Keep the Sender's persistent Operator-action-required synchronization and lifecycle conditions that no other unit notifies (ADR 0013): missing Health Connect permission, a removed secure screen lock, storage pressure, an oversized record, a Projection Refusal, an unusable installation key, a refused enrollment, and a completed drain awaiting retirement. Each observation updates them, and the unit raises one health-data-free local notification at each condition's onset, retried until its success is recorded, and clears the condition once observations no longer show it.",
+  "inputs": [
+    { "name": "run_summary", "mode": "volatile", "description": "The latest Polling Run's per-record-type outcomes and reasons, as coordinate-sender-sync@1 checkpoints them, when the observation follows a run." },
+    { "name": "enrollment_status", "mode": "volatile", "description": "manage-sender-enrollment@1's status: no enrollment, or its phase and final sequence." },
+    { "name": "key_status", "mode": "volatile", "description": "The installation cipher's status for the enrollment's key alias: present, missing, unusable, or unavailable." },
+    { "name": "local_notifier", "mode": "effectful", "description": "A seam that raises one health-data-free local notification naming a condition." },
+    { "name": "sender_storage", "mode": "effectful", "description": "The Sender's SQLite database: this unit's own condition state, behind the 3ug seam and storage lane." },
+    { "name": "clock", "mode": "volatile", "description": "The Sender wall clock for each condition's first and last seen times." }
+  ],
+  "outputs": [
+    { "name": "operator_conditions", "description": "The set of active Operator-action-required conditions, each with its first and last seen times and whether its onset notification succeeded, surviving restarts." },
+    { "name": "onset_notification", "description": "One local notification naming the condition alone at each onset, raised at least once and at most once per onset, never for a condition other units already notify." }
+  ],
+  "named_failures": [
+    { "name": "storage-failed", "outcome": "storage-failure" }
+  ],
+  "observable_effects": [
+    { "name": "local-notification", "description": "Raises one health-data-free local notification at the onset of each condition." },
+    { "name": "sender-storage-write", "description": "Applies this unit's Sender schema migration and writes only its own condition state." }
+  ],
+  "authority": {
+    "owns": [
+      "the list of Operator-action-required conditions this unit keeps and how each is derived from an observation",
+      "each condition's onset, persistence, clearing, and the one-notification-per-onset rule",
+      "this unit's Sender schema migration"
+    ],
+    "does_not_own": [
+      "Polling Runs, per-type outcomes, and type blocks, which belong to coordinate-sender-sync",
+      "the Sync Checkpoint and its outcome vocabulary, which belong to stage-sync-checkpoint and ingest-protocol",
+      "enrollment phases and the final sequence, which belong to manage-sender-enrollment",
+      "Delivery Block notifications, which belong to send-outbox-message",
+      "restricted and unregistered scheduling notifications, which belong to schedule-background-polling",
+      "the notification adapter, its channel, Sender screens, and when observations are made, which the Sender shell enabling task provides"
+    ]
+  },
+  "dependencies": [
+    { "scope": "coordinate-sender-sync", "version": "1" },
+    { "scope": "stage-sync-checkpoint", "version": "1" },
+    { "scope": "manage-sender-enrollment", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/notify-operator-conditions-1.spec.md",
+    "executable_tests": {
+      "typescript": "sender/app/test/notify-operator-conditions-1.test.ts",
+      "python": "tests/acceptance/test_notify_operator_conditions_1.py"
+    },
+    "runner": "tests/acceptance/run_notify_operator_conditions_1.sh",
+    "languages": ["python", "typescript"]
+  }
+}
