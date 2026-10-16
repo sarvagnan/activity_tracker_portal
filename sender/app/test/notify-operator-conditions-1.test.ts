@@ -318,6 +318,16 @@ test("transient_and_elsewhere_notified_reasons_make_no_condition", async (t) => 
   await f.conditions.observe(observation({ summary: ALL_RUN }));
   assert.deepEqual(await f.conditions.observe(observation({ summary: quiet })), { outcome: "observed", conditions: [] });
   assert.deepEqual(await contents(f.database), before);
+  // Unknown outcomes and reasons are not caller errors and make no condition; a run of them still clears.
+  const unknown = { ...summary(), recordTypes: [
+    { recordType: "steps", outcome: "mystery", sourceDataStaged: false },
+    { recordType: "weight", outcome: "blocked", reason: "mystery-reason", sourceDataStaged: false },
+  ] } as unknown as RunSummary;
+  assert.deepEqual(await f.conditions.observe(observation({ summary: unknown })), { outcome: "observed", conditions: [] });
+  assert.deepEqual(await contents(f.database), before);
+  await f.conditions.observe(observation({ summary: ALL_RUN }));
+  assert.deepEqual(await f.conditions.observe(observation({ summary: unknown })), { outcome: "observed", conditions: [] });
+  assert.deepEqual(await contents(f.database), before);
 });
 
 // R4 — Conditions from enrollment and the key
@@ -513,6 +523,32 @@ test("storage_failures_change_nothing", async (t) => {
   assert.deepEqual(await contents(f.database), before);
   assert.deepEqual(await f.conditions.observe(changed), { outcome: "observed", conditions: ["storage-pressure"] });
   assert.deepEqual(f.notifier.names(), ["permission-missing", "storage-pressure"]);
+  // One observation clears two conditions and records two onsets. Each write failing in turn either changes
+  // nothing and notifies nothing, or, once every condition change has committed, fails only a success record.
+  const swap = observation({ summary: summary(["blocked", "record-too-large"], ["blocked", "projection-refusal"]) });
+  let observationWrites = 0;
+  let completed = false;
+  for (let mutation = 1; mutation <= 64 && !completed; mutation++) {
+    const g = await fixture(t);
+    await g.conditions.observe(observation({ summary: summary(["blocked", "permission-missing"], ["deferred", "storage-pressure"]) }));
+    const start = await contents(g.database);
+    const calls = g.notifier.calls.length;
+    const result = await g.make({ database: failingWrites(g.database, { mutation }) }).observe(swap);
+    const after = await contents(g.database);
+    const conditions = (await rows(g.database)).map((entry) => entry.condition);
+    if (g.notifier.calls.length === calls) {
+      assert.deepEqual(result, { outcome: "storage-failed" }, String(mutation));
+      assert.deepEqual(after, start, String(mutation));
+      observationWrites = mutation;
+    } else {
+      assert.deepEqual(conditions, ["projection-refused", "record-too-large"], String(mutation));
+      completed = result.outcome === "observed";
+      if (!completed) assert.deepEqual(result, { outcome: "storage-failed" }, String(mutation));
+    }
+  }
+  assert.ok(completed);
+  // The two clearings and two onsets are at least four writes, all inside the observation's transaction.
+  assert.ok(observationWrites >= 4, String(observationWrites));
 });
 
 test("an_unrecorded_success_notifies_again", async (t) => {
@@ -520,11 +556,19 @@ test("an_unrecorded_success_notifies_again", async (t) => {
   const { database, failing } = await f.writeFailing();
   failing(false);
   const instance = f.make({ database });
-  // The onset is recorded, then writes fail once the notifier has been called.
-  f.notifier.onNotify = () => { failing(true); };
-  assert.deepEqual(await instance.observe(observation({ summary: summary(["blocked", "record-too-large"]) })), { outcome: "storage-failed" });
+  // The onset commits while the notifier is held; then writes fail, so its success cannot be recorded.
+  let open!: () => void;
+  f.notifier.gate = new Promise<void>((resolve) => { open = resolve; });
+  const entered = f.notifier.arrival();
+  const observing = instance.observe(observation({ summary: summary(["blocked", "record-too-large"]) }));
+  await entered;
+  const committed = await contents(f.database);
+  failing(true);
+  open();
+  assert.deepEqual(await observing, { outcome: "storage-failed" });
+  assert.deepEqual(await contents(f.database), committed);
   assert.deepEqual(await f.conditions.conditions(), [record("record-too-large", NOW, NOW, false)]);
-  f.notifier.onNotify = null;
+  f.notifier.gate = null;
   failing(false);
   assert.deepEqual(await instance.observe(observation()), { outcome: "observed", conditions: ["record-too-large"] });
   assert.deepEqual(f.notifier.names(), ["record-too-large", "record-too-large"]);

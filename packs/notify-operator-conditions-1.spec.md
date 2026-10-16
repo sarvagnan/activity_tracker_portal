@@ -191,7 +191,7 @@ Its non-blocking findings are added too:
 - a test holds the lane while a notification's success is being recorded;
 - `conditions()` is checked to issue no write.
 
-Against the stub, all 16 TypeScript tests fail and the two contract tests pass. A throwaway reference passes every test, and the suite kills all 55 of its non-equivalent mutants. Two more were dropped as equivalent: removing the observation's object check or the summary's shape check still throws `TypeError` from destructuring or iteration. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `operatorConditionsMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did.
+Against the stub, all 16 TypeScript tests fail and the two contract tests pass. A throwaway reference passes every test, and the suite kills all 56 of its non-equivalent mutants. Two more were dropped as equivalent: removing the observation's object check or the summary's shape check still throws `TypeError` from destructuring or iteration. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `operatorConditionsMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did.
 
 The binding is:
 - spec files: the contract and this pack;
