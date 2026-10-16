@@ -139,19 +139,25 @@ class FakeNotifier implements DeliveryNotifier {
   readonly delivered: string[] = [];
   failures = 0;
   synchronously = false;
+  gate: Promise<void> | null = null;
   onNotify: (() => void) | null = null;
+  private arrivals: (() => void)[] = [];
+
+  arrival(): Promise<void> {
+    return new Promise<void>((resolve) => { this.arrivals.push(resolve); });
+  }
 
   notify(...args: [string]): Promise<void> {
     this.calls.push(args);
     this.onNotify?.();
+    for (const arrive of this.arrivals.splice(0)) arrive();
     if (this.failures > 0) {
       this.failures--;
       const error = new Error(`${SENTINEL} synthetic notification failure`);
       if (this.synchronously) throw error;
       return Promise.reject(error);
     }
-    this.delivered.push(args[0]);
-    return Promise.resolve();
+    return (this.gate ?? Promise.resolve()).then(() => { this.delivered.push(args[0]); });
   }
 }
 
@@ -285,6 +291,29 @@ async function blockRows(database: SenderDatabase): Promise<DatabaseRow[]> {
 function brokenDatabase(error: unknown): SenderDatabase {
   const fail = () => Promise.reject(error);
   return { execute: fail, query: fail, transaction: fail, close: fail };
+}
+
+const MUTATION = /^\s*(?:WITH\b[\s\S]*?\b)?(INSERT|UPDATE|DELETE|REPLACE)\b/i;
+
+/** The real database, except that its `mutation`th write, or every commit, fails. */
+function failingWrites(database: SenderDatabase, rule: { mutation?: number; commit?: boolean }): SenderDatabase {
+  let mutations = 0;
+  const guard = (sql: string) => {
+    if (MUTATION.test(sql) && ++mutations === rule.mutation) throw new Error(`${SENTINEL} synthetic write failure`);
+  };
+  const wrap = (inner: SenderDatabase): SenderDatabase => ({
+    async execute(sql, parameters) { guard(sql); return inner.execute(sql, parameters); },
+    async query(sql, parameters) { guard(sql); return inner.query(sql, parameters); },
+    transaction<T>(fn: (transaction: SenderDatabase) => T | Promise<T>): Promise<T> {
+      return inner.transaction(async (transaction) => {
+        const result = await fn(wrap(transaction));
+        if (rule.commit) throw new Error(`${SENTINEL} synthetic commit failure`);
+        return result;
+      });
+    },
+    close: () => inner.close(),
+  });
+  return wrap(database);
 }
 
 /** Logs each top-level operation. */
@@ -425,7 +454,16 @@ test("a_matching_receipt_removes_exactly_the_head", async (t) => {
   await append(f, ["ingest-batch"], OTHER_INSTALLATION);
   await append(f, ["ingest-batch", "change-completion", "sync-checkpoint"]);
   const before = await contents(f.database);
-  assert.deepEqual(await f.sender.sendNext(), { outcome: "delivered", sequence: 1, kind: "ingest-batch" });
+  let open!: () => void;
+  f.transport.gate = new Promise<void>((resolve) => { open = resolve; });
+  const entered = f.transport.arrival();
+  const attempt = f.sender.sendNext();
+  try {
+    await entered;
+    // Nothing is removed, or even touched, while the Portal has not answered.
+    assert.deepEqual(await storageLane(f.database)(() => contents(f.database)), before);
+  } finally { open(); }
+  assert.deepEqual(await attempt, { outcome: "delivered", sequence: 1, kind: "ingest-batch" });
   const rows = (before.tables.outbox_messages as DatabaseRow[]).filter((row) => !(row.installation_id === INSTALLATION && row.sequence === 1));
   assert.deepEqual(await contents(f.database), withTables(before, { outbox_messages: rows }));
 });
@@ -614,6 +652,11 @@ test("a_blocked_head_is_retried_and_never_skipped", async (t) => {
 
 test("a_receipt_clears_the_head_block", async (t) => {
   const f = await fixture(t);
+  // Another installation's head block at the same sequence is never cleared by this one's receipt.
+  const [foreign] = await append(f, ["ingest-batch"], OTHER_INSTALLATION);
+  const other = f.make({ context: { installationId: OTHER_INSTALLATION, keyAlias: KEY_ALIAS, portalUrl: PORTAL_URL } });
+  f.transport.respond = respondWith(deliveryBlock(foreign, "unsupported-source-projection-schema"));
+  assert.equal((await other.sendNext()).outcome, "blocked");
   const [first, second] = await append(f, ["ingest-batch", "change-completion"]);
   const before = await contents(f.database);
   f.transport.respond = respondWith(deliveryBlock(first, "unsupported-source-projection-schema"));
@@ -622,10 +665,31 @@ test("a_receipt_clears_the_head_block", async (t) => {
   f.transport.respond = (request) => ({ outcome: "response", body: receipt(request.body) });
   assert.deepEqual(await f.sender.sendNext(), { outcome: "delivered", sequence: 1, kind: "ingest-batch" });
   assert.equal(await f.sender.headBlock(), null);
-  const rows = (before.tables.outbox_messages as DatabaseRow[]).filter((row) => row.sequence !== 1);
+  const rows = (before.tables.outbox_messages as DatabaseRow[]).filter((row) => !(row.installation_id === INSTALLATION && row.sequence === 1));
   assert.deepEqual(await contents(f.database), withTables(before, { outbox_messages: rows }));
   assert.deepEqual(await f.sender.sendNext(), { outcome: "delivered", sequence: 2, kind: "change-completion" });
-  assert.deepEqual(f.transport.bodies(), [first, first, second]);
+  assert.deepEqual(f.transport.bodies(), [foreign, first, first, second]);
+  assert.deepEqual(await other.headBlock(), block(1, "unsupported-source-projection-schema", NOW, NOW, 1, messageSha256(foreign)));
+});
+
+test("a_repeated_block_takes_the_latest_answer", async (t) => {
+  const f = await fixture(t);
+  const [first] = await append(f, ["ingest-batch", "sync-checkpoint"]);
+  f.notifier.failures = 1;
+  f.transport.respond = respondWith(deliveryBlock(first, "unsupported-wire-protocol"));
+  assert.deepEqual(await f.sender.sendNext(), { outcome: "blocked", sequence: 1, failure: "unsupported-wire-protocol" });
+  assert.deepEqual(await f.sender.headBlock(), block(1, "unsupported-wire-protocol", NOW, NOW, 1, messageSha256(first)));
+  // The same head then cannot be opened: the block takes the latest origin, failure, and digest.
+  const [row] = await outboxMessages(f.database);
+  const sealed = new Uint8Array(row.sealed);
+  sealed[20] ^= 0xff;
+  await f.database.execute("UPDATE outbox_messages SET sealed = ? WHERE installation_id = ? AND sequence = 1", [sealed, INSTALLATION]);
+  f.wall = NOW + 1_000;
+  assert.deepEqual(await f.sender.sendNext(), { outcome: "blocked", sequence: 1, failure: "head-unreadable" });
+  assert.deepEqual(await f.sender.headBlock(), block(1, "head-unreadable", NOW, NOW + 1_000, 2, null, "sender"));
+  // The onset's retried notification names the block's latest failure.
+  assert.deepEqual(f.notifier.calls, [["unsupported-wire-protocol"], ["head-unreadable"]]);
+  assert.deepEqual(f.notifier.delivered, ["head-unreadable"]);
 });
 
 // R7 — Local head checks
@@ -735,20 +799,26 @@ test("a_failed_notification_is_retried", async (t) => {
   for (const synchronously of [false, true]) {
     const f = await fixture(t);
     const [first] = await append(f, ["ingest-batch", "sync-checkpoint"]);
-    f.notifier.failures = 2;
+    f.notifier.failures = 5;
     f.notifier.synchronously = synchronously;
     f.transport.respond = respondWith(deliveryBlock(first, "record-count-limit-exceeded"));
     assert.deepEqual(await f.sender.sendNext(), { outcome: "blocked", sequence: 1, failure: "record-count-limit-exceeded" });
     assert.deepEqual((await blockRows(f.database))[0].notified, 0);
-    // The next attempt retries it whatever the answer, until it succeeds.
+    // Every later attempt for the head retries it, whatever its answer, until it succeeds.
+    f.base.setUnavailable(true);
+    assert.equal((await f.sender.sendNext()).outcome, "retryable");
+    f.base.setUnavailable(false);
+    assert.equal((await f.make({ cipher: new NodeInstallationCipher() }).sendNext()).outcome, "cipher-failed");
     f.transport.respond = respondWith(retryable("temporarily-unavailable"));
     assert.equal((await f.sender.sendNext()).outcome, "retryable");
     f.transport.respond = () => ({ outcome: "failed" });
     assert.equal((await f.sender.sendNext()).outcome, "retryable");
+    assert.deepEqual((await blockRows(f.database))[0].notified, 0);
+    f.base.invalidate(KEY_ALIAS);
+    assert.equal((await f.sender.sendNext()).outcome, "cipher-failed");
     assert.deepEqual((await blockRows(f.database))[0].notified, 1);
-    f.transport.respond = respondWith(deliveryBlock(first, "record-count-limit-exceeded"));
-    await f.sender.sendNext();
-    assert.deepEqual(f.notifier.calls, Array(3).fill(["record-count-limit-exceeded"]));
+    assert.equal((await f.sender.sendNext()).outcome, "cipher-failed");
+    assert.deepEqual(f.notifier.calls, Array(6).fill(["record-count-limit-exceeded"]));
     assert.deepEqual(f.notifier.delivered, ["record-count-limit-exceeded"]);
   }
 });
@@ -825,13 +895,17 @@ test("storage_failures_change_nothing", async (t) => {
     assert.deepEqual(await f.make({ database: brokenDatabase(failure) }).sendNext(), { outcome: "storage-failed" });
   }
   assert.deepEqual(f.transport.requests, []);
+  // Writes start failing only once the Portal has answered, so reads before the request always succeed.
   const { database, failing } = await f.writeFailing();
+  failing(false);
   const writes = f.make({ database });
   // A receipt whose removal fails keeps the row; the identical retry gets the identical receipt.
+  f.transport.respond = (request) => { failing(true); return { outcome: "response", body: receipt(request.body) }; };
   assert.deepEqual(await writes.sendNext(), { outcome: "storage-failed" });
   assert.deepEqual(await contents(f.database), before);
   // A Delivery Block or a local block that cannot be recorded is not notified.
-  f.transport.respond = respondWith(deliveryBlock(first, "sequence-content-mismatch"));
+  failing(false);
+  f.transport.respond = () => { failing(true); return { outcome: "response", body: deliveryBlock(first, "sequence-content-mismatch") }; };
   assert.deepEqual(await writes.sendNext(), { outcome: "storage-failed" });
   const wrongKey = f.make({ database, cipher: { ...f.base, open: async () => ({ status: "error", reason: "authentication-failed" }) } as unknown as InstallationCipher });
   assert.deepEqual(await wrongKey.sendNext(), { outcome: "storage-failed" });
@@ -841,6 +915,29 @@ test("storage_failures_change_nothing", async (t) => {
   f.transport.respond = (request) => ({ outcome: "response", body: receipt(request.body) });
   assert.deepEqual(await writes.sendNext(), { outcome: "delivered", sequence: 1, kind: "ingest-batch" });
   assert.deepEqual(f.transport.bodies(), [first, first, first]);
+});
+
+test("removal_and_block_clearing_are_atomic", async (t) => {
+  const f = await fixture(t);
+  const [first] = await append(f, ["ingest-batch", "sync-checkpoint"]);
+  f.transport.respond = respondWith(deliveryBlock(first, "sequence-content-mismatch"));
+  assert.equal((await f.sender.sendNext()).outcome, "blocked");
+  const before = await contents(f.database);
+  f.transport.respond = (request) => ({ outcome: "response", body: receipt(request.body) });
+  // A failed commit, and then each write of the removal failing in turn, keep the row and its block together.
+  assert.deepEqual(await f.make({ database: failingWrites(f.database, { commit: true }) }).sendNext(), { outcome: "storage-failed" });
+  assert.deepEqual(await contents(f.database), before);
+  let writes = 0;
+  for (let mutation = 1; mutation <= 10; mutation++) {
+    const result = await f.make({ database: failingWrites(f.database, { mutation }) }).sendNext();
+    if (result.outcome === "delivered") { writes = mutation - 1; break; }
+    assert.deepEqual(result, { outcome: "storage-failed" }, String(mutation));
+    assert.deepEqual(await contents(f.database), before, String(mutation));
+  }
+  // Removing the row and clearing its block takes at least two writes, and then both are gone.
+  assert.ok(writes >= 2, String(writes));
+  assert.equal(await f.sender.headBlock(), null);
+  assert.deepEqual(await outboxSequences(f.database), [2]);
 });
 
 test("the_network_call_does_not_hold_the_storage_lane", async (t) => {
@@ -882,6 +979,18 @@ test("the_network_call_does_not_hold_the_storage_lane", async (t) => {
   } finally { open(); }
   assert.deepEqual(await pending, { outcome: "delivered", sequence: 2, kind: "sync-checkpoint" });
   assert.deepEqual(await outboxSequences(f.database), [3]);
+  // A pending notification never holds the lane either.
+  f.transport.gate = null;
+  f.transport.respond = (request) => ({ outcome: "response", body: deliveryBlock(request.body, "sequence-content-mismatch") });
+  let release2!: () => void;
+  f.notifier.gate = new Promise<void>((resolve) => { release2 = resolve; });
+  const notifying = f.notifier.arrival();
+  const blocked = sender.sendNext();
+  try {
+    await notifying;
+    assert.equal(await Promise.race([lane(async () => "free"), settle(1_000).then(() => "held")]), "free");
+  } finally { release2(); }
+  assert.deepEqual(await blocked, { outcome: "blocked", sequence: 3, failure: "sequence-content-mismatch" });
 });
 
 test("attempts_run_one_at_a_time", async (t) => {
@@ -1145,7 +1254,7 @@ function parse(file: string): Code {
 test("the_module_stays_inside_its_boundary", async (t) => {
   // The network is reached only through the transport seam, and storage touches only the Outbox and this unit's table.
   const NETWORK = new Set(["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "navigator", "process", "Buffer", "require", "global", "globalThis"]);
-  const files = readdirSync(MODULE_DIRECTORY).filter((name) => name.endsWith(".ts")).map((name) => join(MODULE_DIRECTORY, name));
+  const files = (readdirSync(MODULE_DIRECTORY, { recursive: true }) as string[]).filter((name) => name.endsWith(".ts")).map((name) => join(MODULE_DIRECTORY, name));
   assert.ok(files.includes(MODULE));
   for (const file of files) {
     const code = parse(file);
@@ -1154,8 +1263,10 @@ test("the_module_stays_inside_its_boundary", async (t) => {
     }
     for (const { specifier, values, dynamic } of code.dependencies) {
       assert.equal(dynamic, false, `${file}: ${specifier}`);
+      // Local helpers stay inside the directory, where this test inspects them too.
+      if (specifier.startsWith("./")) { assert.doesNotMatch(specifier, /\.\./, `${file}: ${specifier}`); continue; }
       if (values.length === 0) continue;
-      if (/^\.\/|^\.\.\/storage\//.test(specifier)) continue;
+      if (/^\.\.\/storage\//.test(specifier)) continue;
       if (specifier === "@activity-tracker-portal/ingest-protocol") {
         for (const value of values) assert.ok(["decodeMessage", "interpretResponse", "messageSha256"].includes(value), `${file}: ${value}`);
         continue;

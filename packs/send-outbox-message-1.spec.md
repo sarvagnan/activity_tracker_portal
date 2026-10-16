@@ -51,7 +51,7 @@ TypeScript `node:test` suites in `send-outbox-message-1.test.ts` use:
 - synthetic transport, Portal, and notifier fakes;
 - the published `stage-outbox-batch@1`, `stage-sync-completion@1`, and `stage-sync-checkpoint@1`, which stage the messages delivered.
 
-Tests migrate an explicit list to version 7. Assertions that something wrote nothing compare the whole database. `tests/acceptance/test_send_outbox_message_1.py` checks the contract. The runner verifies a fresh JUnit report and sets a per-test timeout. Fixtures are synthetic.
+Tests migrate an explicit list to version 7. Assertions that something wrote nothing compare the whole database. `tests/acceptance/test_send_outbox_message_1.py` checks the contract. The runner verifies a fresh JUnit report, sets a per-test timeout, and ends the Node process after an external deadline, so a hang is a failure. Fixtures are synthetic.
 
 ### R1 — Governed Scope contract
 
@@ -97,7 +97,7 @@ Tests:
 
 ### R4 — Receipt-bound removal
 
-When `interpretResponse` accepts the answer, the unit deletes exactly the head's row and returns `delivered` with its sequence and kind. A receipt accepted there echoes the head's installation, sequence, and SHA-256. A head block for that sequence is cleared in the same transaction. Nothing else changes: the high-water mark, every other row, and every other table stay the same. The next attempt sends the next sequence.
+Nothing is removed, or otherwise written, while the Portal has not answered. When `interpretResponse` accepts the answer, the unit deletes exactly the head's row and returns `delivered` with its sequence and kind. A receipt accepted there echoes the head's installation, sequence, and SHA-256. A head block for that sequence is cleared in the same transaction. Nothing else changes: the high-water mark, every other row, and every other table stay the same. The next attempt sends the next sequence.
 
 Every kind is delivered the same way:
 - an Ingest Batch, Snapshot Completion, and Change Completion, staged through `stage-outbox-batch@1` and `stage-sync-completion@1`;
@@ -111,7 +111,7 @@ Tests:
 
 ### R5 — Everything else retains identical bytes
 
-Each of these answers keeps the head and writes nothing, and the next attempt resends identical bytes:
+Each of these answers keeps the head and writes nothing, apart from recording a pending notification's success (R8), and the next attempt resends identical bytes:
 - **No response.** The transport reports `failed`, rejects, throws, or returns anything but a response with a byte body. The outcome is retryable `transport-failed`.
 - **Oversized body.** The body is longer than 4096 bytes. It is not decoded, and the outcome is retryable `receipt-mismatch`.
 - **Undecodable or mismatched answer.** This covers a body that does not decode, a receipt for another installation, sequence, or digest, a Delivery Block for another message, and any other message kind. These are retryable `receipt-mismatch`, as `interpretResponse` decides.
@@ -131,18 +131,21 @@ When `interpretResponse` reports a block, the unit:
 - records the head block: the sequence, origin `portal`, the Portal's failure, the message SHA-256, first and last seen times of `now()`, and a count of 1;
 - returns `blocked` with the sequence and failure.
 
-A further block for the same head sets its last seen time, raises its count by one, and takes the latest failure. Every later attempt sends the blocked head again, never a later sequence. When the Portal later accepts that head, its receipt removes the row and clears the block.
+A further block for the same head, from the Portal or the Sender, sets its last seen time, raises its count by one, and takes the latest origin, failure, and digest. Every later attempt sends the blocked head again, never a later sequence. When the Portal later accepts that head, its receipt removes the row and clears the block.
+
+A receipt clears only its own installation's block.
 
 Tests:
 - `a_delivery_block_keeps_the_head_and_records_it`
 - `a_blocked_head_is_retried_and_never_skipped`
 - `a_receipt_clears_the_head_block`
+- `a_repeated_block_takes_the_latest_answer`
 
 ### R7 — Local head checks
 
 The opened head must be the row's own message: canonical bytes that decode as an Outbox Message whose kind, `sender_installation`, and `sequence` equal the row's, and whose length equals the row's message bytes. Nothing is sent unless it is. The cipher results map as follows:
-- **`keystore-unavailable`:** retryable `keystore-unavailable`, and nothing is written. A cipher call that throws, or returns a malformed result, reads the same way.
-- **`missing-key` or `unusable-key`:** `cipher-failed`, and nothing is written. This fails the whole installation, not the head (Decision 5).
+- **`keystore-unavailable`:** retryable `keystore-unavailable`, and nothing is written apart from a pending notification's success (R8). A cipher call that throws, or returns a malformed result, reads the same way.
+- **`missing-key` or `unusable-key`:** `cipher-failed`, and nothing is written apart from a pending notification's success (R8). This fails the whole installation, not the head (Decision 5).
 - **`authentication-failed` or `unsupported-format`:** a head block with origin `sender`, failure `head-unreadable`, and a `null` digest.
 - **A head that is not the row's own message:** a head block with origin `sender`, failure `head-invalid`, and the plaintext's digest.
 
@@ -156,11 +159,11 @@ Tests:
 
 ### R8 — One notification at each onset
 
-The notifier is called with the failure alone after a head block is first recorded, and its success is then recorded. That happens at most once per head block, at least once:
+The notifier is called with the failure alone after a head block is first recorded, and its success is then recorded. Within one instance that happens once per head block, and at least once:
 - a notifier that throws, synchronously or not, is retried at the next attempt for the same head, whatever that attempt's answer, until it succeeds or a receipt clears the block;
 - if its success cannot be recorded, `sendNext()` reports `storage-failed`, and the next attempt notifies again.
 
-A repeated block, including one with a new failure, does not notify again. A new head block after a receipt cleared the last one is a new onset. `sendNext()` resolves only after any notification attempt, and the attempt to record its success, have settled.
+A retried notification names the block's latest failure. A repeated block, including one with a new failure, does not notify again. A new head block after a receipt cleared the last one is a new onset. Overlapping instances that record the same onset may each notify it. `sendNext()` resolves only after any notification attempt, and the attempt to record its success, have settled.
 
 Tests:
 - `a_head_block_notifies_once`
@@ -175,12 +178,13 @@ Tests: `the_head_block_is_read_exactly`, `the_head_block_survives_a_restart`.
 
 ### R10 — Storage and concurrency
 
-A storage failure in any read or write returns `storage-failed` and leaves the database as it was before that write. This includes a failed removal after a receipt: the row stays, and the next attempt receives the Portal's identical receipt. A failed block recording does not call the notifier. A storage error of any type, including `TypeError`, is a storage failure, not a caller error.
+A storage failure in any read or write returns `storage-failed` and leaves the database as it was before that write. This includes a failed removal after a receipt: the row and its head block stay together, whichever write or the commit fails, and the next attempt receives the Portal's identical receipt. A failed block recording does not call the notifier. A storage error of any type, including `TypeError`, is a storage failure, not a caller error.
 
-Every storage operation waits its turn in the shared storage lane. The transport call and the notifier never hold it, so staging proceeds while an attempt waits for the Portal. Attempts of one instance run one at a time. Attempts of separate instances may overlap: they send identical bytes, and the head is removed once.
+Every storage operation waits its turn in the shared storage lane. The transport call and the notifier never hold it, so staging proceeds while an attempt waits for the Portal or a notification. Attempts of one instance run one at a time. Attempts of separate instances may overlap: they send identical bytes, and the head is removed once.
 
 Tests:
 - `storage_failures_change_nothing`
+- `removal_and_block_clearing_are_atomic`
 - `the_network_call_does_not_hold_the_storage_lane`
 - `attempts_run_one_at_a_time`
 - `overlapping_instances_remove_the_head_once`
@@ -230,9 +234,10 @@ Tests: `delivery_survives_faults_in_sequence`.
 The module reaches the network only through the transport seam: it names no `fetch`, `XMLHttpRequest`, `WebSocket`, or Node global. Its imports are:
 - the protocol library's `decodeMessage`, `interpretResponse`, and `messageSha256`;
 - `stage-outbox-batch@1`'s `outboxAad`;
-- the storage seam and lane.
+- the storage seam and lane;
+- its own helpers in its directory, which follow the same rules.
 
-Its SQL names only the Outbox's rows and its own table. At run time it calls only the cipher's `open`.
+Type-only imports are not limited. Its SQL names only the Outbox's rows and its own table. At run time it calls only the cipher's `open`.
 
 Tests: `the_module_stays_inside_its_boundary`.
 
