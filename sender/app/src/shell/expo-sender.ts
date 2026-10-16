@@ -1,10 +1,11 @@
 // Thin production boundary. Importing this file does not open storage or load a native module.
+import { fetch } from "expo/fetch";
 import { uuid } from "expo-modules-core";
 import { createSenderEnrollment } from "../enrollment/manage-sender-enrollment.ts";
 import { openSenderDatabase } from "../storage/expo-sqlite.ts";
 import { nativeInstallationCipher } from "../native-installation-cipher.ts";
 import { nativeSyncSources } from "../native-sync-sources.ts";
-import { expoSchedulingNotifier, expoSchedulingPlatform } from "../background/expo-adapters.ts";
+import { expoDeliveryNotifier, expoSchedulingNotifier, expoSchedulingPlatform } from "../background/expo-adapters.ts";
 import { composeSender, PROJECTION_IMPLEMENTATION_VERSION } from "./compose-sender.ts";
 import type { SenderShell } from "./compose-sender.ts";
 import { nativeAvailableStorageBytes, nativeProjectionSchemaVersions } from "./native-observations.ts";
@@ -17,14 +18,10 @@ export function expoSender(): Promise<SenderShell> {
     const cipher = nativeInstallationCipher();
     return composeSender({
       openDatabase: () => openSenderDatabase("sender.db"),
-      enrollment: (database) => {
-        const observer = createSenderEnrollment({
-          database, cipher, now: Date.now, randomUUID: () => uuid.v4(),
-          // This boundary exposes status only; enrollment transport/screens belong to 2rv.8.
-          transport: { async send() { throw new Error("Read-only enrollment observer"); } },
-        });
-        return { status: () => observer.status() };
-      },
+      enrollment: (database, transport) => createSenderEnrollment({
+        database, cipher, transport, now: Date.now, randomUUID: () => uuid.v4(),
+      }),
+      fetch, deliveryNotifier: expoDeliveryNotifier(),
       cipher, sources: nativeSyncSources(PROJECTION_IMPLEMENTATION_VERSION),
       projectionSchemaVersions: nativeProjectionSchemaVersions,
       availableStorageBytes: nativeAvailableStorageBytes,
