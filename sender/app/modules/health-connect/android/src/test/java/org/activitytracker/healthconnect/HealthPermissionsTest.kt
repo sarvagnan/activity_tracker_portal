@@ -8,6 +8,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.activitytracker.healthconnect.projection.PROJECTION_SCHEMA_VERSIONS
 import org.activitytracker.healthconnect.snapshot.SnapshotRecordTypes
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HealthPermissionsTest {
@@ -25,6 +26,11 @@ class HealthPermissionsTest {
             HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY,
             HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND,
         )
-        assertEquals(expected, declared.toSet())
+        val missing = expected - declared.toSet()
+        val extra = declared.toSet() - expected
+        assertTrue(
+            "Permission inventory mismatch: missing=$missing, extra=$extra",
+            missing.isEmpty() && extra.isEmpty(),
+        )
     }
 }

@@ -33,6 +33,7 @@ test("registered Health Connect plugin emits exactly the checked-in permission i
   assert.deepEqual(manifest["uses-permission"]!.map((entry) => entry.$["android:name"]).sort(), [...permissions].sort());
   assert.equal(new Set(permissions).size, permissions.length);
   assert.ok(permissions.every((permission) => permission.startsWith("android.permission.health.READ_")));
+  assert.ok(permissions.includes("android.permission.health.READ_MINDFULNESS"));
   assert.ok(permissions.includes("android.permission.health.READ_HEALTH_DATA_HISTORY"));
   assert.ok(permissions.includes("android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND"));
 });

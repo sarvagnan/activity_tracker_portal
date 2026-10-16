@@ -252,12 +252,13 @@ for (const [name, status] of [
   ["unconfirmed", enrolled({ confirmed: false })],
   ["draining", enrolled({ phase: "draining" })],
 ] as const) {
-  test(`${name}: foreground/manual skip and the background provider succeeds without a run`, async (t) => {
+  test(`${name}: foreground/manual skip and the background provider fails without a checkpoint`, async (t) => {
     const f = await fixture(t, status);
     const shell = await composeSender(f.options);
     assert.deepEqual(await shell.foreground(), { outcome: "skipped" });
     assert.deepEqual(await shell.manualSync(), { outcome: "skipped" });
-    assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 1);
+    assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "failed");
+    assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2);
     assert.deepEqual(await runs(f.database()), []);
     assert.deepEqual(await outboxMessages(f.database()), []);
     assert.deepEqual(f.sources.calls, []);
@@ -414,7 +415,7 @@ test("published enrollment confirmation gates collection until its acknowledgeme
   } });
   assert.equal((await enrollment.enroll({ kind: "typed", portalUrl: "https://portal.synthetic.invalid", enrollmentCode: "SYNTHETICCODE234" })).outcome, "enrolled");
   assert.deepEqual(await shell.foreground(), { outcome: "skipped" });
-  assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 1);
+  assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2);
   const status = await enrollment.status();
   assert.ok(status && !("outcome" in status));
   const delivery = createOutboxSender({ database: f.database(), cipher: f.cipher, context: status.deliveryContext, now: f.clock.now,
@@ -433,7 +434,7 @@ test("published enrollment confirmation gates collection until its acknowledgeme
   assert.equal((await enrollment.beginDrain()).outcome, "draining");
   assert.deepEqual(await shell.foreground(), { outcome: "skipped" });
   assert.deepEqual(await shell.manualSync(), { outcome: "skipped" });
-  assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 1);
+  assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2);
   assert.deepEqual(await runs(f.database()), beforeDrain);
   assert.deepEqual(await outboxMessages(f.database()), beforeMessages);
 });

@@ -188,7 +188,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   }
 
   // The provider is safe for headless execution and for a retained registration
-  // after draining or unlinking. A skipped task must never stage a checkpoint.
+  // after draining or unlinking. A skipped task has no checkpoint and reports failure.
   const backgroundPollingProvider: BackgroundPollingProvider = async () => ({
     ensureRegistered: () => currentPolling().ensureRegistered(),
     observe: () => currentPolling().observe(),
@@ -196,7 +196,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     async runTask() {
       try {
         const ready = await prepareAndStart("background", () => currentPolling().runTask());
-        return "pending" in ready ? await ready.pending : ready.outcome === "skipped" ? "success" : "failed";
+        return "pending" in ready ? await ready.pending : "failed";
       } catch { return "failed"; }
     },
   });
