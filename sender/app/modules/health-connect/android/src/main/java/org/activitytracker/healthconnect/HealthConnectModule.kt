@@ -14,6 +14,8 @@ class HealthConnectModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("ActivityTrackerHealthConnect")
 
+        AsyncFunction("projectionSchemaVersions") { projectionSchemaVersions() }
+
         AsyncFunction("readSnapshotPage") Coroutine {
                 recordType: String, snapshotId: String, position: ByteArray?, implementationVersion: String ->
             bridge().readSnapshotPage(recordType, snapshotId, position, implementationVersion)
