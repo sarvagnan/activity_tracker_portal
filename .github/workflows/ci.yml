@@ -86,6 +86,8 @@ jobs:
         run: tests/acceptance/run_coordinate_sender_sync_1.sh
       - name: Run schedule-background-polling@1 acceptance
         run: tests/acceptance/run_schedule_background_polling_1.sh
+      - name: Run send-outbox-message@1 acceptance
+        run: tests/acceptance/run_send_outbox_message_1.sh
 
   vouch:
     needs: [test, sender]
