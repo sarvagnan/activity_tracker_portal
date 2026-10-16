@@ -107,7 +107,7 @@ Then it creates:
 - the fingerprint, with `installationFingerprint`;
 - a key under the alias `activity-tracker-portal.installation.<identity>`.
 
-A key that cannot be created is `cipher-failed` with the cipher's reason, and nothing is written. A malformed result reads as `keystore-unavailable`. The unit then records the `confirming` phase with the exact canonical enrollment-confirmation bytes, and makes the first confirmation attempt (R4), whose outcome it returns. If recording fails, it deletes the key it created and returns `storage-failed`. No refusal writes anything or creates a key.
+A key that cannot be created is `cipher-failed` with the cipher's reason, and nothing is written. A malformed result reads as `keystore-unavailable`. The unit then records the `confirming` phase with the exact canonical enrollment-confirmation bytes, and makes the first confirmation attempt (R4), whose outcome it returns. If recording fails, it deletes the key it created and returns `storage-failed`. If that deletion also fails or throws, the result is still `storage-failed`. The key is then left unused: no row names it, nothing was sealed with it, and a later enrollment creates a new identity and key. No refusal writes anything or creates a key.
 
 Tests:
 - `a_scanned_or_typed_offer_enrolls`
@@ -136,9 +136,9 @@ Tests:
 
 ### R5 — Adopting a capability generation
 
-Adopting an advertisement records its exact bytes and generation. In the same transaction, it appends one capability acknowledgement at the installation's next Outbox sequence, through `appendOutboxMessages`, sealed with the installation key under `outboxAad`. The acknowledgement is the canonical `capability-acknowledgement` for that installation, sequence, and generation.
+Adopting an advertisement, whether from a confirmation or a refresh, records its exact bytes and generation. In the same transaction, it appends one capability acknowledgement at the installation's next Outbox sequence, through `appendOutboxMessages`, sealed with the installation key under `outboxAad`. The acknowledgement is the canonical `capability-acknowledgement` for that installation, sequence, and generation.
 
-The acknowledgement made at enrollment is the installation's first Outbox Message, and its sequence is recorded. Later adoptions keep that recorded sequence.
+The next sequence always comes from the installation's high-water mark. A new identity has no Outbox rows, so the acknowledgement made at enrollment is sequence 1, the installation's first Outbox Message. The test also checks an identity that already has rows, which no Sender unit creates before adoption, and requires the next sequence. The enrollment acknowledgement's sequence is recorded, and later adoptions keep it.
 
 The unit reads the next sequence and seals before the transaction that appends, which rereads the high-water mark. A sealing failure is `cipher-failed` with the cipher's reason, and nothing is written. A result that is not a nonempty byte string reads as `keystore-unavailable`. If the high-water mark moved under the append, nothing is written and the result is `storage-failed`, so a later attempt adopts again.
 
@@ -207,7 +207,7 @@ Tests:
 
 Destruction proceeds in this order:
 1. It deletes the installation key. `keystore-unavailable` is `cipher-failed`, and nothing is destroyed. Any other result that is not success, including a throwing call, reads the same way. A missing or unusable key counts as deleted.
-2. In one transaction, it deletes every row of every Sender table, as listed in `sqlite_master`, keeping the schema and its version. Foreign keys are checked at commit.
+2. In one transaction, it deletes every row of every Sender table, as listed in `sqlite_master`, keeping the schema and its version. Foreign keys stay enforced and are checked at commit: destruction never turns them off.
 
 A storage failure after the key is gone returns `storage-failed`. Repeating the request completes the destruction. The test adds two pairs of tables with foreign keys, standing in for a later unit's tables. One pair's parent sorts and is created before its child, and the other's after, so no fixed deletion order passes without checking foreign keys at commit.
 
@@ -302,7 +302,16 @@ After Gate A, the executable pack adds:
 
 It also adds the approved resolution of Decision 1. GPT 6 Astra approved rebinding `manage-sender-installation@1`, whose suite now requires `ingest-protocol` among this row's dependencies. A fresh GREEN was recorded against its unchanged implementation, and the row then gained `stage-outbox-batch`.
 
-Against the stub, all 38 TypeScript tests fail and the two contract tests pass. A throwaway reference passes every test, and the suite kills all 110 of its mutants. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `enrollmentMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did. It also adds this unit's runner to the CI `sender` job.
+**Implementability review.** GPT 6.1 Sol's read-only review found two blocking gaps, both now resolved:
+- R5 promised that the enrollment acknowledgement is the first message, while a test requires the next sequence for an identity that already has rows. R5 now says the sequence always comes from the high-water mark, and is 1 for a new identity.
+- R3 did not say what happens when deleting the key after a failed recording also fails. R3 now keeps `storage-failed` and leaves the unused key, a test covers both failures together, and the contract's key-lifecycle effect names this deletion.
+
+Its non-blocking findings are added too:
+- the adoption failure cases repeat through `refreshCapabilities()`, keeping the adopted generation and the recorded sequence;
+- the write-failure loops allow up to 63 writes, rather than nine;
+- destruction is checked never to turn foreign keys off, and they hold afterwards.
+
+Against the stub, all 38 TypeScript tests fail and the two contract tests pass. A throwaway reference passes every test, and the suite kills all 113 of its mutants. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `enrollmentMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did. It also adds this unit's runner to the CI `sender` job.
 
 The binding is:
 - spec files: the contract and this pack;

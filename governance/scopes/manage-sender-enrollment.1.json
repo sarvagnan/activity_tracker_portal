@@ -38,7 +38,7 @@
     { "name": "storage-failed", "outcome": "storage-failure" }
   ],
   "observable_effects": [
-    { "name": "installation-key-lifecycle", "description": "Creates the installation key when enrolling, seals capability acknowledgements with it, and deletes it only on unlink or destructive reset." },
+    { "name": "installation-key-lifecycle", "description": "Creates the installation key when enrolling, seals capability acknowledgements with it, and deletes it only on unlink or destructive reset, or when enrolling cannot record the identity the key was created for." },
     { "name": "portal-enrollment-request", "description": "Sends at most one HTTP request per confirmation or capability-refresh attempt." },
     { "name": "sender-storage-write", "description": "Applies this unit's Sender schema migration, writes its own enrollment state, appends capability acknowledgements through stage-outbox-batch@1, and on destruction deletes every row of every Sender table." }
   ],

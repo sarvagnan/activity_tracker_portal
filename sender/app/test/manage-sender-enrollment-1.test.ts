@@ -685,6 +685,19 @@ test("the_identity_fingerprint_and_key_are_recorded", async (t) => {
   assert.equal(await h.base.keyStatus(ALIAS), "missing");
   assert.deepEqual(h.transport.requests, []);
   assert.deepEqual(await contents(h.database), before);
+  // If deleting that key fails too, the result is still storage-failed. The unused key is left, since no row names it
+  // and nothing was sealed with it, and a later enrollment creates a new identity and key.
+  for (const entry of [{ returns: { status: "error", reason: "keystore-unavailable" } }, { throws: new Error(`${SENTINEL} synthetic keystore failure`) }]) {
+    const k = await fixture(t);
+    const failing = await k.writeFailing();
+    k.cipher.script.set("delete", [entry]);
+    assert.deepEqual(await k.make({ database: failing.database }).enroll(scanned()), { outcome: "storage-failed" }, JSON.stringify(entry));
+    assert.equal(await k.base.keyStatus(ALIAS), "present");
+    assert.deepEqual(k.transport.requests, []);
+    assert.deepEqual(await contents(k.database), before);
+    assert.deepEqual(await k.sender.enroll(scanned()), { outcome: "enrolled", generation: 1 });
+    assert.equal((await currentStatus(k)).installationId, SECOND_IDENTITY);
+  }
 });
 
 // R4 — Confirmation attempts
@@ -904,7 +917,7 @@ test("adoption_failures_write_nothing", async (t) => {
   assert.deepEqual(await f.make({ database: failingWrites(f.database, { commit: true }) }).confirm(), { outcome: "storage-failed" });
   assert.deepEqual(await contents(f.database), moved);
   let writes = 0;
-  for (let mutation = 1; mutation <= 10; mutation++) {
+  for (let mutation = 1; mutation <= 64; mutation++) {
     const result = await f.make({ database: failingWrites(f.database, { mutation }) }).confirm();
     if (result.outcome === "enrolled") { writes = mutation - 1; break; }
     assert.deepEqual(result, { outcome: "storage-failed" }, String(mutation));
@@ -915,6 +928,39 @@ test("adoption_failures_write_nothing", async (t) => {
   assert.deepEqual(await outboxSequences(f.database), [1, 2]);
   assert.equal((await enrollmentRows(f.database))[0].acknowledgement_sequence, 2);
   assert.ok(f.transport.requests.every((request) => request.body instanceof Uint8Array && text(request.body) === text(CONFIRMATION)));
+  // The same failures while adopting a later generation keep the adopted one and its acknowledgement's sequence.
+  const g = await fixture(t);
+  await toPhase(g, "confirmed");
+  g.transport.respond = respondWith(advertisement(2));
+  const adopted = await contents(g.database);
+  g.cipher.script.set("seal", [{ returns: { status: "error", reason: "unusable-key" } }]);
+  assert.deepEqual(await g.sender.refreshCapabilities(), { outcome: "cipher-failed", failure: "unusable-key" });
+  g.cipher.script.set("seal", [{ throws: new Error(`${SENTINEL} synthetic seal failure`) }]);
+  assert.deepEqual(await g.sender.refreshCapabilities(), { outcome: "cipher-failed", failure: "keystore-unavailable" });
+  assert.deepEqual(await contents(g.database), adopted);
+  const { database: rival } = await g.second();
+  g.cipher.script.set("seal", [{ before: () => appendCheckpoint(g, IDENTITY, rival) }]);
+  assert.deepEqual(await g.sender.refreshCapabilities(), { outcome: "storage-failed" });
+  const raced = await contents(g.database);
+  assert.deepEqual(raced, withTables(adopted, {
+    outbox_messages: (raced.tables.outbox_messages as DatabaseRow[]).filter((entry) => entry.installation_id === IDENTITY && entry.sequence === 2),
+    outbox_high_water: [{ installation_id: IDENTITY, last_sequence: 2 }],
+  }));
+  assert.equal((raced.tables.outbox_messages as unknown[]).length, 1);
+  assert.deepEqual(await g.make({ database: failingWrites(g.database, { commit: true }) }).refreshCapabilities(), { outcome: "storage-failed" });
+  assert.deepEqual(await contents(g.database), raced);
+  let refreshWrites = 0;
+  for (let mutation = 1; mutation <= 64; mutation++) {
+    const result = await g.make({ database: failingWrites(g.database, { mutation }) }).refreshCapabilities();
+    if (result.outcome === "adopted") { refreshWrites = mutation - 1; break; }
+    assert.deepEqual(result, { outcome: "storage-failed" }, String(mutation));
+    assert.deepEqual(await contents(g.database), raced, String(mutation));
+  }
+  assert.ok(refreshWrites >= 3, String(refreshWrites));
+  assert.deepEqual(await outboxSequences(g.database), [2, 3]);
+  assert.deepEqual(await enrollmentRows(g.database), [row({
+    phase: "enrolled", advertisement: advertisement(2), generation: 2, acknowledgement_sequence: 1, adopted_at_ms: NOW,
+  })]);
 });
 
 // R6 — Later generations
@@ -1295,6 +1341,11 @@ test("destruction_deletes_the_key_then_every_row", async (t) => {
   assert.ok(writes.every(([, index]) => index > deletion), f.events.join("\n"));
   assert.equal(await f.base.keyStatus(ALIAS), "missing");
   assert.equal(await f.base.keyStatus(OTHER_KEY_ALIAS), "present");
+  assert.deepEqual(await contents(f.database), emptied(before));
+  // Foreign keys stay enforced: destruction never turns them off, and they hold afterwards.
+  assert.deepEqual(operations.filter((sql) => /\bforeign_keys\b/i.test(sql) && !/^\s*PRAGMA\s+foreign_keys\s*$/i.test(sql)), []);
+  assert.deepEqual(await f.database.query("PRAGMA foreign_keys"), [{ foreign_keys: 1 }]);
+  await assert.rejects(f.database.execute("INSERT INTO z_child (id, parent) VALUES (1, 1)"));
   assert.deepEqual(await contents(f.database), emptied(before));
 });
 
