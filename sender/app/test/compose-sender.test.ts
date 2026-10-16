@@ -688,6 +688,91 @@ function advertisement(generation: number, recordType = "steps"): Uint8Array {
   });
 }
 
+for (const phase of ["confirming", "enrolled"] as const) {
+  for (const foreground of ["start", "return"] as const) {
+    test(`foreground ${foreground} registers before the ${phase} Portal request, even while unreachable`, { timeout: 5_000 }, async (t) => {
+      const f = await fixture(t, null);
+      let enrollment!: SenderEnrollment;
+      let testing = false;
+      let arrive!: () => void;
+      let release!: () => void;
+      const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      let registrationAtRequest = 0;
+      let observationAtRequest: unknown;
+      const shell = await composeSender({ ...f.options,
+        enrollment(database, transport) {
+          enrollment = createSenderEnrollment({ database, transport, cipher: f.cipher,
+            now: f.clock.now, randomUUID: () => INSTALLATION });
+          return enrollment;
+        },
+        async fetch(url, init) {
+          if (url.endsWith("/v1/outbox-messages")) return response(receipt(init.body!));
+          if (testing) {
+            registrationAtRequest = f.state.registerCalls;
+            observationAtRequest = (await f.database().query("SELECT observed_status FROM scheduling_state"))[0]?.observed_status;
+            arrive();
+            await released;
+            throw new Error("Synthetic unreachable Portal");
+          }
+          if (phase === "confirming") throw new Error("Synthetic lost confirmation");
+          return response(advertisement(1));
+        },
+      });
+      assert.equal((await enrollment.enroll({ kind: "typed", portalUrl: "https://portal.synthetic.invalid",
+        enrollmentCode: "SYNTHETICCODE234",
+      })).outcome, phase === "confirming" ? "retryable" : "enrolled");
+      if (foreground === "return") await shell.foreground();
+      const previousRegistrations = f.state.registerCalls;
+      f.state.registered = false;
+      // A fresh observation must finish on this trigger, even if a prior one exists.
+      await f.database().execute("DELETE FROM scheduling_state");
+      testing = true;
+      const pending = shell.foreground();
+      try {
+        await arrived;
+        assert.equal(registrationAtRequest, previousRegistrations + 1, "registration precedes the Portal request");
+        assert.equal(observationAtRequest, "available", "registration observation completes before the Portal request");
+        assert.equal(f.state.registered, true, "registration does not wait for the unreachable Portal");
+      } finally {
+        release();
+        await pending;
+      }
+    });
+  }
+
+  test(`foreground registers ${phase} enrollment even when the status read after the Portal request fails`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t, null);
+    let enrollment!: SenderEnrollment;
+    let testing = false;
+    let portalFailed = false;
+    let failedStatusReads = 0;
+    const shell = await composeSender({ ...f.options,
+      enrollment(database, transport) {
+        enrollment = createSenderEnrollment({ database, transport, cipher: f.cipher,
+          now: f.clock.now, randomUUID: () => INSTALLATION });
+        return { ...enrollment, async status() {
+          if (portalFailed) { failedStatusReads++; throw new Error("Synthetic enrollment read failure"); }
+          return enrollment.status();
+        } };
+      },
+      async fetch() {
+        if (testing) { portalFailed = true; throw new Error("Synthetic unreachable Portal"); }
+        if (phase === "confirming") throw new Error("Synthetic lost confirmation");
+        return response(advertisement(1));
+      },
+    });
+    assert.equal((await enrollment.enroll({ kind: "typed", portalUrl: "https://portal.synthetic.invalid",
+      enrollmentCode: "SYNTHETICCODE234",
+    })).outcome, phase === "confirming" ? "retryable" : "enrolled");
+    testing = true;
+    assert.deepEqual(await shell.foreground(), { outcome: "failed", failure: "storage-failed" });
+    assert.ok(failedStatusReads > 0, "the post-request status read failed");
+    assert.equal(f.state.registerCalls, 1, "registration uses the initial active-enrollment observation");
+    assert.equal(f.state.registered, true);
+  });
+}
+
 test("the shared HTTP transport retries confirmation on every trigger and refreshes at start and return", async (t) => {
   const f = await fixture(t, null);
   f.state.versions = { steps: 1, weight: 1 };

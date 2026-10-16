@@ -197,6 +197,10 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     const ready = preparation.then(async () => {
       let current = await status();
       const refreshAfter = kind === "foreground" && inFlight.size > 0;
+      // Register from the initial installation observation before contacting the Portal.
+      if (isStatus(current) && kind === "foreground") {
+        await currentPolling().ensureRegistered();
+      }
       if (isStatus(current) && (current.phase === "confirming" ||
           kind === "foreground" && !refreshAfter && current.phase === "enrolled")) {
         // Enrollment pack R4 and Decision 6: retry confirmation; refresh on start/return.
@@ -212,9 +216,6 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
           }
         } catch { /* An unavailable Portal does not disable the adopted generation. */ }
         current = await status();
-      }
-      if (isStatus(current) && kind === "foreground") {
-        await currentPolling().ensureRegistered();
       }
       if (isStatus(current) && collectionEnabled(current) &&
           identity(current) !== coordinatorIdentity && inFlight.size > 0) {
