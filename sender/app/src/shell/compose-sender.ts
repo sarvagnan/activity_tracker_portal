@@ -5,7 +5,7 @@ import type { EnrollmentStatus, SenderEnrollment } from "../enrollment/manage-se
 import type { SenderDatabase } from "../storage/database.ts";
 import { migrate, senderMigrations } from "../storage/migrations.ts";
 import { createSenderSync } from "../sync/coordinate-sender-sync.ts";
-import type { RunResult, SenderSync, SyncConditions, SyncSources } from "../sync/coordinate-sender-sync.ts";
+import type { RunResult, SenderSync, SyncConditions, SyncSources, TriggerRequest } from "../sync/coordinate-sender-sync.ts";
 import { createBackgroundPolling } from "../scheduling/schedule-background-polling.ts";
 import type { BackgroundPolling, SchedulingNotifier, SchedulingPlatform } from "../scheduling/schedule-background-polling.ts";
 import type { BackgroundPollingProvider } from "../background/background-task-body.ts";
@@ -88,11 +88,46 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
 
   let coordinator: SenderSync | null = null;
   let coordinatorIdentity: string | null = null;
-  let actions: Promise<unknown> = Promise.resolve();
-  function serialize<T>(action: () => Promise<T>): Promise<T> {
-    const result = actions.then(action);
-    actions = result.catch(() => undefined);
+  let preparation: Promise<unknown> = Promise.resolve();
+  const inFlight = new Set<Promise<RunResult>>();
+  function startRun(request: TriggerRequest): Promise<RunResult> {
+    if (!coordinator) throw new Error("Sender coordinator is unavailable");
+    const result = coordinator.trigger(request);
+    inFlight.add(result);
+    void result.then(() => inFlight.delete(result), () => inFlight.delete(result));
     return result;
+  }
+  function identity(current: EnrollmentStatus): string {
+    const context = current.stagingContext;
+    if (!context) throw new Error("Sender staging context is unavailable");
+    return JSON.stringify([context.installationId, context.keyAlias, context.generation]);
+  }
+
+  // Return the pending run in an envelope: preparation must never await it.
+  function prepareAndStart<T>(kind: TriggerRequest["kind"], start: () => Promise<T>): Promise<
+    { readonly pending: Promise<T> } | { readonly outcome: "skipped" } |
+    { readonly outcome: "failed"; readonly failure: "storage-failed" }
+  > {
+    const ready = preparation.then(async () => {
+      let current = await status();
+      if (isStatus(current) && kind === "foreground") {
+        await currentPolling().ensureRegistered();
+        current = await status();
+      }
+      if (isStatus(current) && collectionEnabled(current) &&
+          identity(current) !== coordinatorIdentity && inFlight.size > 0) {
+        // Holding preparation bars every new trigger from the old instance.
+        // Include merged callers: the active result may settle before its follow-up.
+        await Promise.allSettled(inFlight);
+        current = await status();
+      }
+      if (current && "outcome" in current) return { outcome: "failed", failure: "storage-failed" } as const;
+      if (!collectionEnabled(current) || !isStatus(current)) return { outcome: "skipped" } as const;
+      await prepare(current);
+      return { pending: start() };
+    });
+    preparation = ready.catch(() => undefined);
+    return ready;
   }
 
   // Construct lazily: registration is expected only with an active installation.
@@ -100,10 +135,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   function currentPolling(): BackgroundPolling {
     polling ??= createBackgroundPolling({
       database, platform: options.platform, notifier: options.notifier, now: options.now,
-      sync: { trigger: (request) => {
-        if (!coordinator) throw new Error("Sender coordinator is unavailable");
-        return coordinator.trigger(request);
-      } },
+      sync: { trigger: startRun },
     });
     return polling;
   }
@@ -151,15 +183,8 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   }
 
   async function trigger(kind: "foreground" | "manual"): Promise<ShellRunResult> {
-    let current = await status();
-    if (isStatus(current) && kind === "foreground") {
-      await currentPolling().ensureRegistered();
-      current = await status();
-    }
-    if (current && "outcome" in current) return { outcome: "failed", failure: "storage-failed" };
-    if (!collectionEnabled(current) || !isStatus(current)) return { outcome: "skipped" };
-    await prepare(current);
-    return coordinator!.trigger({ kind });
+    const ready = await prepareAndStart(kind, () => startRun({ kind }));
+    return "pending" in ready ? ready.pending : ready;
   }
 
   // The provider is safe for headless execution and for a retained registration
@@ -168,20 +193,17 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     ensureRegistered: () => currentPolling().ensureRegistered(),
     observe: () => currentPolling().observe(),
     condition: () => currentPolling().condition(),
-    runTask: () => serialize(async () => {
+    async runTask() {
       try {
-        const current = await status();
-        if (current && "outcome" in current) return "failed";
-        if (!collectionEnabled(current) || !isStatus(current)) return "success";
-        await prepare(current);
-        return currentPolling().runTask();
+        const ready = await prepareAndStart("background", () => currentPolling().runTask());
+        return "pending" in ready ? await ready.pending : ready.outcome === "skipped" ? "success" : "failed";
       } catch { return "failed"; }
-    }),
+    },
   });
 
   return {
-    foreground: () => serialize(() => trigger("foreground")),
-    manualSync: () => serialize(() => trigger("manual")),
+    foreground: () => trigger("foreground"),
+    manualSync: () => trigger("manual"),
     backgroundPollingProvider,
   };
 }

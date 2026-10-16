@@ -115,6 +115,136 @@ test("managed types intersect exact native schema versions and sort; a new gener
   assert.equal(f.state.versionReads, 2);
 });
 
+// The coordinator reads now() synchronously when accepting a trigger. While
+// a source read is held, the active run makes no other clock reads.
+function submissionClock(now: () => number) {
+  let remaining = 0;
+  let accepted: (() => void) | undefined;
+  return {
+    now() {
+      if (remaining > 0 && --remaining === 0) accepted?.();
+      return now();
+    },
+    async submit<T>(action: () => Promise<T>, clockReads = 1): Promise<{ result: Promise<T> }> {
+      const arrived = new Promise<void>((resolve) => { accepted = resolve; remaining = clockReads; });
+      const result = action();
+      await arrived;
+      return { result };
+    },
+  };
+}
+
+test("overlapping foreground, manual and background triggers share one strongest follow-up", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const submissions = submissionClock(f.clock.now);
+  const shell = await composeSender({ ...f.options, now: submissions.now });
+  const activeRead = f.sources.hold("snapshot", "steps");
+  const followUpRead = f.sources.hold("snapshot", "steps");
+  f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "synthetic-permission-gap" });
+  try {
+    const active = shell.manualSync();
+    await activeRead.arrived;
+    // Registration reads now() once before foreground's trigger is submitted.
+    const foreground = await submissions.submit(() => shell.foreground(), 2);
+    const manual = await submissions.submit(() => shell.manualSync());
+    const background = await submissions.submit(() => backgroundTaskBody(shell.backgroundPollingProvider)());
+    const settled: string[] = [];
+    void foreground.result.then(() => settled.push("foreground"));
+    void manual.result.then(() => settled.push("manual"));
+    void background.result.then(() => settled.push("background"));
+    assert.equal((await runs(f.database())).length, 1);
+    activeRead.release();
+    assert.equal(checkpoint(await active).runSequence, 1);
+    await followUpRead.arrived;
+    assert.deepEqual(settled, []); // Background also awaits the follow-up, not the active result.
+    // Unbudgeted foreground/manual terms must remove the background budget.
+    f.sources.callCostMs = 480_000;
+    followUpRead.release();
+    const [foregroundResult, manualResult, backgroundResult] = await Promise.all([
+      foreground.result, manual.result, background.result,
+    ]);
+    const second = checkpoint(foregroundResult);
+    assert.strictEqual(manualResult, foregroundResult);
+    assert.equal(second.runSequence, 2);
+    assert.equal(second.summary.trigger, "manual");
+    assert.ok(second.summary.recordTypes.every((type) => type.reason !== "time-budget-reached"));
+    assert.equal(backgroundResult, 1);
+    assert.deepEqual((await runs(f.database())).map((row) => row.run_sequence), [1, 2]);
+    const checkpoints = await f.database().query("SELECT run_sequence FROM run_checkpoints ORDER BY run_sequence");
+    assert.deepEqual(checkpoints.map((row) => row.run_sequence), [1, 2]);
+    const staged = [];
+    for (const message of await outboxMessages(f.database())) {
+      const opened = await f.cipher.open(KEY, message.sealed, outboxAad(INSTALLATION, message.sequence));
+      assert.equal(opened.status, "ok");
+      if (opened.status === "ok") staged.push(decodeMessage(opened.value));
+    }
+    assert.equal(staged.filter((message) => message.kind === "sync-checkpoint").length, 2);
+    assert.equal(f.state.versionReads, 1);
+    assert.equal(f.sources.maxInFlight, 1);
+  } finally {
+    activeRead.release(); followUpRead.release();
+  }
+});
+
+test("generation replacement waits for the old run and routes waiting triggers to the new coordinator", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  f.state.versions = { steps: 1, weight: 1 };
+  let oldSettled = false;
+  let replacementPrepared!: () => void;
+  const replacement = new Promise<void>((resolve) => { replacementPrepared = resolve; });
+  let generationRead!: () => void;
+  const observed = new Promise<void>((resolve) => { generationRead = resolve; });
+  const shell = await composeSender({ ...f.options,
+    enrollment() { return { async status() {
+      const current = f.state.status;
+      if (current && !("outcome" in current) && current.stagingContext?.generation.generation === 2) generationRead();
+      return current;
+    } }; },
+    async projectionSchemaVersions() {
+      if (++f.state.versionReads === 2) {
+        assert.equal(oldSettled, true, "replacement must be constructed after the old trigger settles");
+        assert.equal(f.sources.inFlight, 0);
+        const previous = await runs(f.database());
+        assert.equal(previous.length, 1);
+        assert.equal((await f.database().query("SELECT * FROM run_checkpoints WHERE run_sequence = 1")).length, 1);
+        replacementPrepared();
+      }
+      return f.state.versions;
+    },
+  });
+  const oldRead = f.sources.hold("snapshot", "steps");
+  const newRead = f.sources.hold("snapshot", "weight");
+  try {
+    const old = shell.manualSync().then((result) => { oldSettled = true; return result; });
+    await oldRead.arrived;
+    f.state.status = enrolled({ stagingContext: { ...enrolled().stagingContext!, generation: {
+      generation: 2, maxRecordCount: 100, maxMessageBytes: 65_536, projectionSchemas: { weight: [1] },
+    } } });
+    const next = shell.manualSync();
+    await observed;
+    const background = backgroundTaskBody(shell.backgroundPollingProvider)();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(f.state.versionReads, 1);
+    assert.equal(oldSettled, false);
+    assert.equal((await runs(f.database())).length, 1);
+    oldRead.release();
+    assert.deepEqual(checkpoint(await old).summary.recordTypes.map((type) => type.recordType), ["steps"]);
+    await replacement;
+    await newRead.arrived;
+    newRead.release();
+    const result = checkpoint(await next);
+    assert.equal(result.runSequence, 2);
+    assert.deepEqual(result.summary.recordTypes.map((type) => type.recordType), ["weight"]);
+    assert.equal(await background, 1);
+    assert.equal(f.state.versionReads, 2);
+    assert.equal(f.sources.maxInFlight, 1);
+    assert.equal((await f.database().query(`SELECT * FROM sync_runs AS r WHERE NOT EXISTS
+      (SELECT 1 FROM run_checkpoints AS c WHERE c.installation_id = r.installation_id AND c.run_sequence = r.run_sequence)`)).length, 0);
+  } finally {
+    oldRead.release(); newRead.release();
+  }
+});
+
 for (const [name, status] of [
   ["no enrollment", null],
   ["confirming", enrolled({ phase: "confirming", confirmed: false, stagingContext: null })],
