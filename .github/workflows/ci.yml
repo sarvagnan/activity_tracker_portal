@@ -38,6 +38,8 @@ jobs:
         run: tests/acceptance/run_accept_capability_acknowledgement_1.sh
       - name: Run accept-sync-completion@1 acceptance
         run: tests/acceptance/run_accept_sync_completion_1.sh
+      - name: Run accept-sync-checkpoint@1 acceptance
+        run: tests/acceptance/run_accept_sync_checkpoint_1.sh
 
   sender:
     runs-on: ubuntu-latest
