@@ -46,12 +46,17 @@ The declarations are:
   - `reset({ acknowledgePossibleLoss: true })`;
   - `status()`, which returns the `EnrollmentStatus`, `null` without an enrollment, or `{ outcome: "storage-failed" }`.
 
-  Each action returns `{ outcome, ... }` with the outcomes the requirements name. A refusal is `{ outcome: "refused", failure }`, naming one of `offer-invalid`, `already-enrolled`, `screen-lock-required`, `not-confirming`, `not-enrolled`, `not-confirmed`, or `not-drained`. A cipher failure is `{ outcome: "cipher-failed", failure }`, naming the cipher's failure.
+  Each action returns `{ outcome, ... }` with the outcomes the requirements name:
+  - a confirmation attempt, from `enroll` or `confirm`, returns `{ outcome: "enrolled", generation }`, `{ outcome: "portal-refused", failure }` naming the Portal refusal, or `{ outcome: "retryable", failure }`;
+  - `refreshCapabilities` returns `{ outcome: "adopted", generation }`, or the outcome `current`, `incompatible`, `unavailable`, or `draining`;
+  - `beginDrain` returns the outcome `draining`, and `unlink` and `reset` return the outcome `destroyed`.
+
+  A refusal is `{ outcome: "refused", failure }`, naming one of `offer-invalid`, `already-enrolled`, `screen-lock-required`, `not-confirming`, `not-enrolled`, `not-confirmed`, or `not-drained`. A cipher failure is `{ outcome: "cipher-failed", failure }`, naming the cipher's failure. A storage failure is `{ outcome: "storage-failed" }`.
 - `enrollmentMigration`: Sender schema version 8.
 
 ## Requirements
 
-TypeScript `node:test` suites in `manage-sender-enrollment-1.test.ts` use:
+The 38 TypeScript `node:test` tests in `manage-sender-enrollment-1.test.ts` use:
 - the 3ug `node:sqlite` and `NodeInstallationCipher` substitutes;
 - synthetic transport and Portal fakes, whose answers are built with the protocol library;
 - the published `stage-outbox-batch@1` primitives;
@@ -84,23 +89,25 @@ These throw `TypeError` before any transport, cipher, or storage call:
 - a clock reading that is not a safe integer;
 - a `randomUUID` result that is not a lowercase UUID the protocol accepts.
 
-An offer of the right shape whose content is invalid is a refusal, not a caller error (R3).
+An offer of the right shape whose content is invalid is a refusal, not a caller error (R3). A scanned offer's shape is a `Uint8Array` of bytes, and a typed offer's is a string Portal URL and a string enrollment code.
+
+`enroll`, `confirm`, and `refreshCapabilities` each read the clock once, before any transport, cipher, or storage call. `enroll` reads `randomUUID()` once there too. The other actions and `status()` never read the clock. A malformed offer or reset argument reads neither.
 
 Tests: `malformed_options_are_caller_errors`, `invalid_seam_results_are_caller_errors`.
 
 ### R3 — Enrolling from an offer
 
 `enroll(offer)` checks, in order:
-1. **The offer.** A scanned offer must decode as a canonical `enrollment-offer`. A typed offer needs a Portal URL and a 16-character enrollment code that the protocol accepts. Otherwise the result is refused, `offer-invalid`. The offer's expiry is not checked: the Portal's clock decides (Decision 10).
+1. **The offer.** A scanned offer must decode as a canonical `enrollment-offer`. A typed offer needs a Portal URL and a 16-character enrollment code that meet the protocol's `enrollment-offer` rules exactly, with no trimming or case folding. Otherwise the result is refused, `offer-invalid`. The offer's expiry is not checked: the Portal's clock decides (Decision 10).
 2. **No existing enrollment.** Otherwise the result is refused, `already-enrolled`.
-3. **A secure screen lock**, read with the cipher's `isDeviceSecure()`. Otherwise the result is refused, `screen-lock-required`.
+3. **A secure screen lock**, read with the cipher's `isDeviceSecure()`. Only `true` is a secure lock. Otherwise the result is refused, `screen-lock-required`.
 
 Then it creates:
 - the identity from `randomUUID()`;
 - the fingerprint, with `installationFingerprint`;
 - a key under the alias `activity-tracker-portal.installation.<identity>`.
 
-A key that cannot be created is `cipher-failed`, and nothing is written. The unit then records the `confirming` phase with the exact canonical enrollment-confirmation bytes, and makes the first confirmation attempt (R4), whose outcome it returns. If recording fails, it deletes the key it created and returns `storage-failed`. No refusal writes anything or creates a key.
+A key that cannot be created is `cipher-failed` with the cipher's reason, and nothing is written. A malformed result reads as `keystore-unavailable`. The unit then records the `confirming` phase with the exact canonical enrollment-confirmation bytes, and makes the first confirmation attempt (R4), whose outcome it returns. If recording fails, it deletes the key it created and returns `storage-failed`. No refusal writes anything or creates a key.
 
 Tests:
 - `a_scanned_or_typed_offer_enrolls`
@@ -114,10 +121,10 @@ Tests:
 Each attempt POSTs the stored confirmation bytes to `portalUrl + "/v1/enrollment-confirmation"` with `content-type: application/json`, a 30-second timeout, and at most 65,536 answer bytes. The bytes are identical on every attempt. `manage-sender-installation@1` R5 makes a retried confirmation idempotent. The answer decides (Decision 3):
 - **A capability advertisement that lists Wire Protocol Version 1:** adoption (R5), and the result `enrolled` with the generation.
 - **An advertisement without Version 1:** the phase becomes `refused` with `capabilities-unsupported`.
-- **A retryable failure, or no response:** retryable `temporarily-unavailable` or `transport-failed`, with nothing written.
-- **Anything else,** including an empty body, another message kind, an undecodable body, or more than 65,536 bytes: the phase becomes `refused` with `enrollment-refused`.
+- **A retryable failure, or no response:** retryable `temporarily-unavailable` or `transport-failed`, with nothing written. A retryable failure of either reason is `temporarily-unavailable`. No response includes a transport that rejects or throws, or that returns anything but a response with a byte body.
+- **Anything else,** including an empty body, another message kind, an undecodable body, or more than 65,536 bytes: the phase becomes `refused` with `enrollment-refused`. An answer of exactly 65,536 bytes is read.
 
-`confirm()` repeats an attempt while the phase is `confirming`, and is refused as `not-confirming` otherwise.
+`confirm()` repeats an attempt while the phase is `confirming`, and is refused as `not-confirming` otherwise, including without an enrollment.
 
 Tests:
 - `the_confirmation_is_sent_exactly_and_identically`
@@ -131,7 +138,9 @@ Tests:
 
 Adopting an advertisement records its exact bytes and generation. In the same transaction, it appends one capability acknowledgement at the installation's next Outbox sequence, through `appendOutboxMessages`, sealed with the installation key under `outboxAad`. The acknowledgement is the canonical `capability-acknowledgement` for that installation, sequence, and generation.
 
-The acknowledgement made at enrollment is the installation's first Outbox Message, and its sequence is recorded. A sealing failure is `cipher-failed`, and nothing is written. If the high-water mark moved under the append, nothing is written and the result is `storage-failed`, so a later attempt adopts again.
+The acknowledgement made at enrollment is the installation's first Outbox Message, and its sequence is recorded. Later adoptions keep that recorded sequence.
+
+The unit reads the next sequence and seals before the transaction that appends, which rereads the high-water mark. A sealing failure is `cipher-failed` with the cipher's reason, and nothing is written. A result that is not a nonempty byte string reads as `keystore-unavailable`. If the high-water mark moved under the append, nothing is written and the result is `storage-failed`, so a later attempt adopts again.
 
 Tests:
 - `adoption_appends_one_sealed_acknowledgement`
@@ -146,9 +155,9 @@ Tests:
 - **A newer generation without Version 1:** `incompatible`. Nothing changes, and the Sender keeps staging under its adopted generation.
 - **Any other answer, or no response:** `unavailable`.
 - **No adopted generation yet:** refused, `not-enrolled`.
-- **While draining:** `draining`. Nothing is adopted, so the final sequence stays fixed (Decision 6).
+- **While draining:** `draining`. No request is sent and nothing is adopted, so the final sequence stays fixed (Decision 6).
 
-Only adoption writes.
+The generation is compared before the Wire Protocol versions, and an answer of exactly 65,536 bytes is read. An installation whose confirmation is not yet learned may adopt. Only adoption writes.
 
 Tests:
 - `a_newer_generation_is_adopted_and_acknowledged`
@@ -185,9 +194,9 @@ Tests:
 
 ### R9 — Unlinking and destructive reset
 
-`unlink()` destroys the installation (R10) only while draining with a known final sequence, and is refused as `not-drained` otherwise. The Operator confirms on the Sender that the Portal retired the installation (Decision 8).
+`unlink()` destroys the installation (R10) only while draining with a known final sequence, and is refused as `not-drained` otherwise, including without an enrollment. The Operator confirms on the Sender that the Portal retired the installation (Decision 8).
 
-`reset({ acknowledgePossibleLoss: true })` destroys whatever the phase, including with queued messages. Afterwards `status()` is `null`, and `enroll` may start a new installation.
+`reset({ acknowledgePossibleLoss: true })` destroys whatever the phase, including with queued messages. Without an enrollment, it deletes every row and no key. Afterwards `status()` is `null`, and `enroll` may start a new installation.
 
 Tests:
 - `unlink_needs_a_complete_drain`
@@ -197,10 +206,10 @@ Tests:
 ### R10 — Destruction
 
 Destruction proceeds in this order:
-1. It deletes the installation key. `keystore-unavailable` is `cipher-failed`, and nothing is destroyed. A missing or unusable key counts as deleted.
+1. It deletes the installation key. `keystore-unavailable` is `cipher-failed`, and nothing is destroyed. Any other result that is not success, including a throwing call, reads the same way. A missing or unusable key counts as deleted.
 2. In one transaction, it deletes every row of every Sender table, as listed in `sqlite_master`, keeping the schema and its version. Foreign keys are checked at commit.
 
-A storage failure after the key is gone returns `storage-failed`. Repeating the request completes the destruction.
+A storage failure after the key is gone returns `storage-failed`. Repeating the request completes the destruction. The test adds two pairs of tables with foreign keys, standing in for a later unit's tables. One pair's parent sorts and is created before its child, and the other's after, so no fixed deletion order passes without checking foreign keys at commit.
 
 Tests:
 - `destruction_deletes_the_key_then_every_row`
@@ -215,7 +224,7 @@ Tests: `storage_failures_change_nothing`, `throwing_cipher_calls_read_as_unavail
 
 ### R12 — Concurrency
 
-Every storage operation waits its turn in the shared storage lane. The transport, the cipher's `isDeviceSecure` and key creation and deletion, and the clock never hold it. The actions of one instance run one at a time, so two concurrent `enroll` calls create one installation.
+Every storage operation waits its turn in the shared storage lane. The transport, the cipher's `isDeviceSecure` and key creation and deletion, and the clock never hold it. The actions of one instance run one at a time, so two concurrent `enroll` calls create one installation, and a refresh, a drain, or a reset waits behind an unanswered request.
 
 Tests: `actions_run_one_at_a_time`, `the_network_call_does_not_hold_the_storage_lane`.
 
@@ -291,4 +300,14 @@ After Gate A, the executable pack adds:
 - the runner;
 - the Interface stub `manage-sender-enrollment.ts`, whose functions throw, and whose types and constants are declared.
 
-It also adds the approved resolution of Decision 1 and the row's new dependency. Against the stub, every behaviour test fails and the two contract tests pass. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `enrollmentMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did.
+It also adds the approved resolution of Decision 1. GPT 6 Astra approved rebinding `manage-sender-installation@1`, whose suite now requires `ingest-protocol` among this row's dependencies. A fresh GREEN was recorded against its unchanged implementation, and the row then gained `stage-outbox-batch`.
+
+Against the stub, all 38 TypeScript tests fail and the two contract tests pass. A throwaway reference passes every test, and the suite kills all 110 of its mutants. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `enrollmentMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did. It also adds this unit's runner to the CI `sender` job.
+
+The binding is:
+- spec files: the contract and this pack;
+- test files:
+  - `manage-sender-enrollment-1.test.ts`;
+  - its 3ug substitutes, `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`;
+  - `test_manage_sender_enrollment_1.py`;
+  - the runner.
