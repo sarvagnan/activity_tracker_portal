@@ -17,6 +17,9 @@ import expo.modules.kotlin.modules.ModuleDefinition
 class BackgroundSchedulingModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("ActivityTrackerBackgroundScheduling")
+        AsyncFunction("availableStorageBytes") {
+            availableStorageBytes(checkNotNull(appContext.reactContext).filesDir)
+        }
         AsyncFunction("isBackgroundRestricted") {
             val context = checkNotNull(appContext.reactContext)
             backgroundRestricted(
