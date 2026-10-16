@@ -160,7 +160,7 @@ Tests:
 ### R8 — One notification at each onset
 
 The notifier is called with the failure alone after a head block is first recorded, and its success is then recorded. Within one instance that happens once per head block, and at least once:
-- a notifier that throws, synchronously or not, is retried at the next attempt for the same head, whatever that attempt's answer, until it succeeds or a receipt clears the block;
+- a notifier that throws, synchronously or not, is retried at the next attempt for the same head, whatever that attempt's answer, until it succeeds or a receipt clears the block. A failed retry writes nothing, and a successful one writes only its acknowledgement;
 - if its success cannot be recorded, `sendNext()` reports `storage-failed`, and the next attempt notifies again.
 
 A retried notification names the block's latest failure. A repeated block, including one with a new failure, does not notify again. A new head block after a receipt cleared the last one is a new onset. Overlapping instances that record the same onset may each notify it. `sendNext()` resolves only after any notification attempt, and the attempt to record its success, have settled.
@@ -180,7 +180,7 @@ Tests: `the_head_block_is_read_exactly`, `the_head_block_survives_a_restart`.
 
 A storage failure in any read or write returns `storage-failed` and leaves the database as it was before that write. This includes a failed removal after a receipt: the row and its head block stay together, whichever write or the commit fails, and the next attempt receives the Portal's identical receipt. A failed block recording does not call the notifier. A storage error of any type, including `TypeError`, is a storage failure, not a caller error.
 
-Every storage operation waits its turn in the shared storage lane. The transport call and the notifier never hold it, so staging proceeds while an attempt waits for the Portal or a notification. Attempts of one instance run one at a time. Attempts of separate instances may overlap: they send identical bytes, and the head is removed once.
+Every storage operation, including `headBlock()`'s read, waits its turn in the shared storage lane. The transport call and the notifier never hold it, so staging proceeds while an attempt waits for the Portal or a notification. Attempts of one instance run one at a time. Attempts of separate instances may overlap: they send identical bytes, and the head is removed once. An answer that arrives after another instance removed the head changes nothing: a late block still returns `blocked`, but it records no head block and notifies nothing.
 
 Tests:
 - `storage_failures_change_nothing`
@@ -188,6 +188,7 @@ Tests:
 - `the_network_call_does_not_hold_the_storage_lane`
 - `attempts_run_one_at_a_time`
 - `overlapping_instances_remove_the_head_once`
+- `a_late_answer_for_a_removed_head_changes_nothing`
 
 ### R11 — The Sender schema migration
 
@@ -237,7 +238,7 @@ The module reaches the network only through the transport seam: it names no `fet
 - the storage seam and lane;
 - its own helpers in its directory, which follow the same rules.
 
-Type-only imports are not limited. Its SQL names only the Outbox's rows and its own table. At run time it calls only the cipher's `open`.
+Relative imports resolve from the importing file, so a helper in a subdirectory may import another. Type-only imports are not limited. Its SQL names only the Outbox's rows and its own table. At run time it calls only the cipher's `open`.
 
 Tests: `the_module_stays_inside_its_boundary`.
 

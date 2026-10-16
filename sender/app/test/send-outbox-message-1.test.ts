@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
@@ -39,6 +39,8 @@ import { NodeInstallationCipher } from "./support/node-installation-cipher.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MODULE = join(HERE, "../src/delivery/send-outbox-message.ts");
 const MODULE_DIRECTORY = dirname(MODULE);
+const SOURCE_STORAGE = join(HERE, "../src/storage");
+const STAGE_OUTBOX_BATCH = join(HERE, "../src/outbox/stage-outbox-batch.ts");
 const INSTALLATION = "00000000-0000-4000-8000-000000000001";
 const OTHER_INSTALLATION = "00000000-0000-4000-8000-000000000002";
 const KEY_ALIAS = "synthetic-installation-key";
@@ -804,20 +806,29 @@ test("a_failed_notification_is_retried", async (t) => {
     f.transport.respond = respondWith(deliveryBlock(first, "record-count-limit-exceeded"));
     assert.deepEqual(await f.sender.sendNext(), { outcome: "blocked", sequence: 1, failure: "record-count-limit-exceeded" });
     assert.deepEqual((await blockRows(f.database))[0].notified, 0);
-    // Every later attempt for the head retries it, whatever its answer, until it succeeds.
+    const pending = await contents(f.database);
+    const [row] = await blockRows(f.database);
+    const acknowledged = withTables(pending, { outbox_head_block: [{ ...row, notified: 1 }] });
+    // Every later attempt for the head retries it, whatever its answer, until it succeeds. A failed retry
+    // writes nothing, and a successful one writes only its acknowledgement.
+    f.wall += 1_000;
     f.base.setUnavailable(true);
     assert.equal((await f.sender.sendNext()).outcome, "retryable");
+    assert.deepEqual(await contents(f.database), pending);
     f.base.setUnavailable(false);
     assert.equal((await f.make({ cipher: new NodeInstallationCipher() }).sendNext()).outcome, "cipher-failed");
+    assert.deepEqual(await contents(f.database), pending);
     f.transport.respond = respondWith(retryable("temporarily-unavailable"));
     assert.equal((await f.sender.sendNext()).outcome, "retryable");
+    assert.deepEqual(await contents(f.database), pending);
     f.transport.respond = () => ({ outcome: "failed" });
     assert.equal((await f.sender.sendNext()).outcome, "retryable");
-    assert.deepEqual((await blockRows(f.database))[0].notified, 0);
+    assert.deepEqual(await contents(f.database), pending);
     f.base.invalidate(KEY_ALIAS);
     assert.equal((await f.sender.sendNext()).outcome, "cipher-failed");
-    assert.deepEqual((await blockRows(f.database))[0].notified, 1);
+    assert.deepEqual(await contents(f.database), acknowledged);
     assert.equal((await f.sender.sendNext()).outcome, "cipher-failed");
+    assert.deepEqual(await contents(f.database), acknowledged);
     assert.deepEqual(f.notifier.calls, Array(6).fill(["record-count-limit-exceeded"]));
     assert.deepEqual(f.notifier.delivered, ["record-count-limit-exceeded"]);
   }
@@ -954,13 +965,18 @@ test("the_network_call_does_not_hold_the_storage_lane", async (t) => {
   const held = lane(() => new Promise<void>((resolve) => { release = resolve; acquired(); }));
   await holding;
   const attempt = sender.sendNext();
+  let read: unknown = "unsettled";
+  const reading = sender.headBlock().then((value) => { read = value; });
   try {
     await settle();
     assert.deepEqual(operations, []);
     assert.deepEqual(f.transport.requests, []);
+    assert.equal(read, "unsettled");
   } finally { release(); }
   await held;
   assert.equal((await attempt).outcome, "delivered");
+  await reading;
+  assert.equal(read, null);
   // While the Portal has not answered, staging proceeds through the lane.
   await append(f, ["sync-checkpoint"]);
   let open!: () => void;
@@ -1031,6 +1047,37 @@ test("overlapping_instances_remove_the_head_once", async (t) => {
   f.transport.gate = null;
   assert.deepEqual(await other.sendNext(), { outcome: "delivered", sequence: 2, kind: "change-completion" });
   assert.deepEqual(f.transport.bodies(), [first, first, second]);
+});
+
+test("a_late_answer_for_a_removed_head_changes_nothing", async (t) => {
+  const f = await fixture(t);
+  const [first] = await append(f, ["ingest-batch", "change-completion"]);
+  const other = f.make();
+  // Each request waits for its own release: the first is answered with a receipt, the second with a block.
+  const releases: (() => void)[] = [];
+  const answers = [receipt(first), deliveryBlock(first, "sequence-content-mismatch")];
+  f.transport.respond = () => {
+    const index = releases.length;
+    return new Promise<void>((resolve) => { releases.push(resolve); })
+      .then(() => ({ outcome: "response", body: answers[index] }));
+  };
+  const attempts = [f.sender.sendNext(), other.sendNext()];
+  for (let waits = 0; releases.length < 2; waits++) {
+    assert.ok(waits < 200, "both instances send the head");
+    await settle(5);
+  }
+  releases[0]();
+  const removed = await Promise.race(attempts);
+  assert.deepEqual(removed, { outcome: "delivered", sequence: 1, kind: "ingest-batch" });
+  const before = await storageLane(f.database)(() => contents(f.database));
+  releases[1]();
+  const results = await Promise.all(attempts);
+  assert.deepEqual(results.filter((result) => result.outcome === "blocked"), [{ outcome: "blocked", sequence: 1, failure: "sequence-content-mismatch" }]);
+  // The head is gone, so no block is recorded and nothing is notified.
+  assert.deepEqual(await contents(f.database), before);
+  assert.equal(await f.sender.headBlock(), null);
+  assert.deepEqual(f.notifier.calls, []);
+  assert.deepEqual(await outboxSequences(f.database), [2]);
 });
 
 // R11 — The Sender schema migration
@@ -1263,15 +1310,18 @@ test("the_module_stays_inside_its_boundary", async (t) => {
     }
     for (const { specifier, values, dynamic } of code.dependencies) {
       assert.equal(dynamic, false, `${file}: ${specifier}`);
-      // Local helpers stay inside the directory, where this test inspects them too.
-      if (specifier.startsWith("./")) { assert.doesNotMatch(specifier, /\.\./, `${file}: ${specifier}`); continue; }
-      if (values.length === 0) continue;
-      if (/^\.\.\/storage\//.test(specifier)) continue;
       if (specifier === "@activity-tracker-portal/ingest-protocol") {
         for (const value of values) assert.ok(["decodeMessage", "interpretResponse", "messageSha256"].includes(value), `${file}: ${value}`);
         continue;
       }
-      assert.equal(specifier, "../outbox/stage-outbox-batch.ts", `${file}: ${specifier}`);
+      // Type-only imports bring in no values. Relative imports resolve from the importing file, and local
+      // helpers stay inside the module's directory, where this test inspects them too.
+      if (values.length === 0) continue;
+      assert.match(specifier, /^\.{1,2}\//, `${file}: ${specifier}`);
+      const target = resolve(dirname(file), specifier);
+      if (!relative(MODULE_DIRECTORY, target).startsWith("..")) continue;
+      if (!relative(SOURCE_STORAGE, target).startsWith("..")) continue;
+      assert.equal(target, STAGE_OUTBOX_BATCH, `${file}: ${specifier}`);
       assert.deepEqual(values, ["outboxAad"], file);
     }
     assert.deepEqual(code.references.filter((name) => NETWORK.has(name)), [], file);
