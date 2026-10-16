@@ -216,7 +216,9 @@ test("a_stalled_exchange_times_out", async (t) => {
   const flush = async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); };
   t.mock.timers.enable({ apis: ["setTimeout"] });
   try {
-    for (const stage of ["headers", "body"] as const) {
+    // Headers that never arrive, headers at once and a body that stalls, and headers that arrive 4,000 ms into
+    // the exchange and then a body that stalls: the deadline is 5,000 ms from the call in every case.
+    for (const stage of ["headers", "body", "late-headers"] as const) {
       let signal: AbortSignal | undefined;
       const stalled: HttpFetch = async (_url, init) => {
         signal = init.signal;
@@ -224,6 +226,7 @@ test("a_stalled_exchange_times_out", async (t) => {
           init.signal.addEventListener("abort", () => { reject(new Error("synthetic abort")); });
         });
         if (stage === "headers") return aborted;
+        if (stage === "late-headers") await new Promise<void>((resolve) => { setTimeout(resolve, 4_000); });
         return {
           status: 200, redirected: false,
           body: new ReadableStream<Uint8Array>({ pull: (controller) => aborted.catch((error) => { controller.error(error); }) }),
@@ -232,7 +235,13 @@ test("a_stalled_exchange_times_out", async (t) => {
       let settled: HttpResult | "pending" = "pending";
       const sending = transport(stalled).send(post("http://127.0.0.1:9/", { timeoutMs: 5_000 })).then((result) => { settled = result; });
       await flush();
-      t.mock.timers.tick(4_999);
+      if (stage === "late-headers") {
+        t.mock.timers.tick(4_000);
+        await flush();
+        t.mock.timers.tick(999);
+      } else {
+        t.mock.timers.tick(4_999);
+      }
       await flush();
       assert.equal(signal?.aborted, false, stage);
       assert.equal(settled, "pending", stage);
