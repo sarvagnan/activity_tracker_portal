@@ -217,7 +217,7 @@ test("generation replacement waits for the old run and routes waiting triggers t
     } }; },
     async projectionSchemaVersions() {
       if (++f.state.versionReads === 2) {
-        assert.equal(oldSettled, true, "replacement must be constructed after the old trigger settles");
+        // Adoption waits for the raw Polling Run/checkpoint, independently of delivery.
         assert.equal(f.sources.inFlight, 0);
         const previous = await runs(f.database());
         assert.equal(previous.length, 1);
@@ -807,7 +807,7 @@ for (const remaining of [DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS - 1,
   });
 }
 
-test("a context change during an unanswered request cannot start a second delivery loop", async (t) => {
+test("a reset during an unanswered request cannot start a second delivery loop", async (t) => {
   const f = await fixture(t, enrolled({ phase: "draining" }));
   const p = portal(f);
   let arrive!: () => void;
@@ -826,6 +826,8 @@ test("a context change during an unanswered request cannot start a second delive
   try {
     const first = shell.manualSync();
     await arrived;
+    // Reset/unlink deletes the old installation's Outbox before replacement.
+    await f.database().execute("DELETE FROM outbox_messages WHERE installation_id = ?", [INSTALLATION]);
     await acknowledgements(f, 2, installation, key);
     f.state.status = enrolled({ phase: "draining", deliveryContext: {
       installationId: installation, keyAlias: key, portalUrl: "https://replacement.synthetic.invalid",
@@ -839,7 +841,7 @@ test("a context change during an unanswered request cannot start a second delive
     assert.equal(p.requests.length, 3);
     assert.equal(p.state.maxInFlight, 1);
     assert.ok(p.requests.slice(1).every((request) => request.url === "https://replacement.synthetic.invalid/v1/outbox-messages"));
-    assert.deepEqual((await outboxMessages(f.database())).map((message) => message.installationId), [INSTALLATION]);
+    assert.deepEqual(await outboxMessages(f.database()), []);
     f.state.status = enrolled({ phase: "draining" });
     await shell.manualSync();
     assert.deepEqual(await outboxMessages(f.database()), []);
@@ -1097,4 +1099,136 @@ test("round 2: overlapping background callbacks share one follow-up", { timeout:
     assert.deepEqual(await Promise.all(backgrounds), ["success", "success", "success"]);
     assert.deepEqual((await runs(f.database())).map((row) => row.trigger), ["manual", "background"]);
   } finally { held.release(); }
+});
+
+for (const count of [1, 32]) {
+  test(`delivery status reads stay constant for ${count} queued messages`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t, enrolled({ phase: "draining" }));
+    const p = portal(f);
+    let reads = 0;
+    const shell = await composeSender({ ...p.options, enrollment(database, transport) {
+      return { ...f.options.enrollment(database, transport), async status() { reads++; return f.state.status; } };
+    } });
+    await acknowledgements(f, count);
+    await shell.manualSync();
+    assert.equal(p.requests.length, count);
+    assert.equal(reads, 2, "one preparation read and one delivery-pass read, independent of queue length");
+  });
+}
+
+for (const trigger of ["foreground", "manual", "background"] as const) {
+  test(`${trigger} delivers queued messages when synchronization preparation rejects`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    const p = portal(f);
+    const failure = new Error("Synthetic native projection setup failure");
+    const began = f.clock.mono;
+    p.state.answer = async (_url, init) => {
+      assert.ok(f.clock.mono + DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS <= began + BACKGROUND_BUDGET_MS);
+      f.clock.advance(DELIVERY_TIMEOUT_MS);
+      return receipt(init.body!);
+    };
+    const shell = await composeSender({ ...p.options, async projectionSchemaVersions() { throw failure; } });
+    await acknowledgements(f, 12);
+    if (trigger === "background") {
+      assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "failed");
+      assert.equal(p.requests.length, 7, "failed setup retains only the shared task window for delivery");
+    } else {
+      // Foreground/manual remain rejected with the original preparation error.
+      p.state.answer = async (_url, init) => receipt(init.body!);
+      await assert.rejects(trigger === "foreground" ? shell.foreground() : shell.manualSync(), (error) => error === failure);
+      assert.equal(p.requests.length, 12);
+    }
+    assert.deepEqual(await runs(f.database()), []);
+  });
+}
+
+for (const terminal of ["retryable", "blocked"] as const) {
+  for (const refresh of ["current", "adopted"] as const) {
+    test(`foreground return during an active run attempts its ${terminal} head only once after ${refresh} refresh`, { timeout: 5_000 }, async (t) => {
+      const f = await fixture(t);
+      const p = portal(f);
+      const submissions = submissionClock(f.clock.now);
+      p.state.answer = async (_url, init) => terminal === "retryable"
+        ? encodeMessage({ wire_version: 1, kind: "retryable-failure", reason: "temporarily-unavailable" })
+        : encodeMessage({ wire_version: 1, kind: "delivery-block", failure: "sequence-out-of-order",
+          message_sha256: messageSha256(init.body!), sender_installation: INSTALLATION,
+          sequence: decodeMessage(init.body!).sequence });
+      const shell = await composeSender({ ...p.options, now: submissions.now, enrollment(database, transport) {
+        return { ...f.options.enrollment(database, transport), async refreshCapabilities() {
+          if (refresh === "current") return { outcome: "current" };
+          f.state.status = enrolled({ stagingContext: { ...enrolled().stagingContext!, generation: {
+            ...enrolled().stagingContext!.generation, generation: 2,
+          } } });
+          await acknowledgements(f, 1);
+          return { outcome: "adopted", generation: 2 };
+        } };
+      } });
+      await acknowledgements(f, 1);
+      const activeRead = f.sources.hold("snapshot", "steps");
+      f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "synthetic-permission-gap" });
+      try {
+        const active = shell.manualSync();
+        await activeRead.arrived;
+        const returning = await submissions.submit(() => shell.foreground(), 2);
+        activeRead.release();
+        checkpoint(await active);
+        checkpoint(await returning.result);
+        assert.equal(p.requests.length, 2, "the foreground trigger adds one attempt, with no post-refresh retry");
+        assert.deepEqual(p.requests[0].body, p.requests[1].body);
+      } finally { activeRead.release(); }
+    });
+  }
+}
+
+test("foreground return during a slow drain refreshes capabilities before opening its Polling Run", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  f.state.versions = { steps: 1, weight: 1 };
+  const p = portal(f);
+  let arrive!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let refreshes = 0;
+  const submissions = submissionClock(f.clock.now);
+  p.state.answer = async (_url, init) => {
+    if (p.requests.length === 1) { arrive(); await released; }
+    return receipt(init.body!);
+  };
+  const shell = await composeSender({ ...p.options, now: submissions.now, enrollment(database, transport) {
+    return { ...f.options.enrollment(database, transport), async refreshCapabilities() {
+      assert.equal((await runs(f.database())).length, 1, "refresh must precede the second run");
+      refreshes++;
+      f.state.status = enrolled({ stagingContext: { ...enrolled().stagingContext!, generation: {
+        generation: 2, maxRecordCount: 100, maxMessageBytes: 65_536, projectionSchemas: { weight: [1] },
+      } } });
+      return { outcome: "adopted", generation: 2 };
+    } };
+  } });
+  try {
+    const first = shell.manualSync();
+    await arrived;
+    assert.equal((await f.database().query("SELECT * FROM run_checkpoints")).length, 1);
+    const returning = await submissions.submit(() => shell.foreground(), 2);
+    assert.equal(refreshes, 1, "delivery must not count as an in-flight Polling Run");
+    release();
+    checkpoint(await first);
+    assert.deepEqual(checkpoint(await returning.result).summary.recordTypes.map((type) => type.recordType), ["weight"]);
+  } finally { release(); }
+});
+
+
+test("source condition checks share one enrollment observation per step", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  let reads = 0;
+  const checks: number[] = [];
+  const shell = await composeSender({ ...f.options, enrollment(database, transport) {
+    return { ...f.options.enrollment(database, transport), async status() { reads++; return f.state.status; } };
+  }, async availableStorageBytes() {
+    checks.push(reads);
+    reads = 0;
+    return f.state.bytes;
+  } });
+  checkpoint(await shell.manualSync());
+  assert.ok(checks.length > 1, "exercise repeated condition checks within a run");
+  assert.ok(checks.slice(1).every((count) => count === 1), "collection and headBlock share each step's status read");
 });

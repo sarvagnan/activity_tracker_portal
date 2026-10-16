@@ -19,6 +19,7 @@ export const PROJECTION_IMPLEMENTATION_VERSION = "activity-tracker-sender/0.1.0"
 export const STORAGE_PRESSURE_FREE_BYTES = 536_870_912;
 
 type Status = Awaited<ReturnType<SenderEnrollment["status"]>>;
+type DeliveryPass = "drained" | "stopped" | "terminal";
 type ShellEnrollment = Pick<SenderEnrollment, "status" | "confirm" | "refreshCapabilities">;
 
 export const MAX_DELIVERY_ATTEMPTS = 64;
@@ -61,16 +62,17 @@ function collectionEnabled(status: Status): boolean {
 export async function readSyncConditions(options: {
   readonly status: () => Promise<Status>;
   readonly cipher: Pick<InstallationCipher, "isDeviceSecure">;
-  readonly headBlock: () => ReturnType<OutboxSender["headBlock"]>;
+  readonly headBlock: (current: Status) => ReturnType<OutboxSender["headBlock"]>;
   readonly availableStorageBytes: () => Promise<number>;
 }): Promise<SyncConditions> {
+  let current: Status = null;
   let enabled = false;
   let secureLock = false;
   let deliveryBlocked = true;
   let storagePressure = true;
-  try { enabled = collectionEnabled(await options.status()); } catch { /* Unreadable enrollment disables collection. */ }
+  try { current = await options.status(); enabled = collectionEnabled(current); } catch { /* Unreadable enrollment disables collection. */ }
   try { secureLock = await options.cipher.isDeviceSecure() === true; } catch { /* No secure-lock proof. */ }
-  try { deliveryBlocked = await options.headBlock() !== null; } catch { /* No readable delivery state. */ }
+  try { deliveryBlocked = await options.headBlock(current) !== null; } catch { /* No readable delivery state. */ }
   try {
     const bytes = await options.availableStorageBytes();
     storagePressure = !Number.isSafeInteger(bytes) || bytes < STORAGE_PRESSURE_FREE_BYTES;
@@ -111,38 +113,46 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     return sender;
   }
 
-  let delivery: Promise<void> | null = null;
+  let delivery: Promise<DeliveryPass> | null = null;
   let deliveryDeadline = Infinity;
-  let pendingDelivery: { deadline: number; promise: Promise<void>; resolve: () => void } | null = null;
+  let pendingDelivery: { deadline: number; promise: Promise<DeliveryPass>; resolve: (result: DeliveryPass) => void } | null = null;
   function hasTime(deadline: number, timeout: number): boolean {
     return options.monotonicNow() + timeout + DELIVERY_FINISH_RESERVE_MS <= deadline;
   }
-  function deliver(deadline = Infinity): Promise<void> {
+  function deliver(deadline = Infinity): Promise<DeliveryPass> {
     // Joining callers retain one subsequent pass, including after empty,
     // retryable and blocked observations or a delivery-context replacement.
     if (delivery) {
       deliveryDeadline = Math.min(deliveryDeadline, deadline);
       if (!pendingDelivery) {
-        let resolve!: () => void;
-        const promise = new Promise<void>((done) => { resolve = done; });
+        let resolve!: (result: DeliveryPass) => void;
+        const promise = new Promise<DeliveryPass>((done) => { resolve = done; });
         pendingDelivery = { deadline, promise, resolve };
       } else pendingDelivery.deadline = Math.min(pendingDelivery.deadline, deadline);
       return pendingDelivery.promise;
     }
     deliveryDeadline = deadline;
-    delivery = Promise.resolve().then(async () => {
+    delivery = Promise.resolve().then(async (): Promise<DeliveryPass> => {
+      if (!hasTime(deliveryDeadline, DELIVERY_TIMEOUT_MS)) return "stopped";
+      const current = await status();
+      // Enrollment pack R7–R8 / Decisions 4–7: pending acknowledgements and
+      // draining messages remain deliverable without opening a Polling Run.
+      if (!isStatus(current) || !["enrolled", "draining"].includes(current.phase)) return "stopped";
+      const outbox = currentSender(current);
+      // Read enrollment once per pass: status() materializes the whole Outbox.
+      // Delivery pack R3 scopes every head read to this installation; reset or
+      // unlink removes its rows, so sendNext then returns empty without sending.
+      // The next pass observes enrollment again, including a replacement context.
       for (let attempt = 0; attempt < MAX_DELIVERY_ATTEMPTS; attempt++) {
-        if (!hasTime(deliveryDeadline, DELIVERY_TIMEOUT_MS)) return;
-        const current = await status();
-        // Enrollment pack R7–R8 / Decisions 4–7: deliver the pending acknowledgement
-        // and drain queued messages even when collection cannot open a Polling Run.
-        if (!isStatus(current) || !["enrolled", "draining"].includes(current.phase)) return;
-        if (!hasTime(deliveryDeadline, DELIVERY_TIMEOUT_MS)) return;
-        // Delivery pack Decision 4: retry a blocked head on the next trigger.
-        // Decision 3: continue only after a receipt; never skip a blocked head.
-        if ((await currentSender(current).sendNext()).outcome !== "delivered") return;
+        if (!hasTime(deliveryDeadline, DELIVERY_TIMEOUT_MS)) return "stopped";
+        const result = await outbox.sendNext();
+        if (result.outcome === "empty") return "drained";
+        // Delivery pack Decisions 3–4: only receipts advance the head. A
+        // retryable or blocked head waits for another trigger, never a spin.
+        if (result.outcome !== "delivered") return "terminal";
       }
-    }).catch(() => { /* Delivery cannot erase a Polling Run's checkpoint result. */ }).finally(() => {
+      return "stopped";
+    }).catch((): DeliveryPass => "terminal").finally(() => {
       delivery = null;
       const next = pendingDelivery;
       pendingDelivery = null;
@@ -157,16 +167,21 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   let coordinatorIdentity: string | null = null;
   let preparation: Promise<unknown> = Promise.resolve();
   const inFlight = new Set<Promise<RunResult>>();
-  function startRun(request: TriggerRequest): Promise<RunResult> {
+  function startRun(request: TriggerRequest, onDelivery?: (pass: DeliveryPass) => void): Promise<RunResult> {
     if (!coordinator) throw new Error("Sender coordinator is unavailable");
-    const result = coordinator.trigger(request).then(async (result) => {
+    const run = coordinator.trigger(request);
+    // Adoption and refresh wait only for Polling Runs, including coalesced
+    // follow-ups. A slow network drain must not extend the active-run set.
+    inFlight.add(run);
+    void run.then(() => inFlight.delete(run), () => inFlight.delete(run));
+    return run.then(async (result) => {
       // Background delivery belongs to the callback's task-start window.
-      if (request.kind !== "background") await deliver();
+      if (request.kind !== "background") {
+        const pass = await deliver();
+        onDelivery?.(pass);
+      }
       return result;
     });
-    inFlight.add(result);
-    void result.then(() => inFlight.delete(result), () => inFlight.delete(result));
-    return result;
   }
   function identity(current: EnrollmentStatus): string {
     const context = current.stagingContext;
@@ -186,8 +201,10 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
           kind === "foreground" && !refreshAfter && current.phase === "enrolled")) {
         // Enrollment pack R4 and Decision 6: retry confirmation; refresh on start/return.
         // Adoption must wait for all old-generation runs before preparation can resume.
-        await Promise.allSettled(inFlight);
-        current = await status();
+        if (inFlight.size > 0) {
+          await Promise.allSettled(inFlight);
+          current = await status();
+        }
         try {
           if (isStatus(current) && hasTime(deadline, ENROLLMENT_TIMEOUT_MS)) {
             if (current.phase === "confirming") await enrollment.confirm();
@@ -198,7 +215,6 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       }
       if (isStatus(current) && kind === "foreground") {
         await currentPolling().ensureRegistered();
-        current = await status();
       }
       if (isStatus(current) && collectionEnabled(current) &&
           identity(current) !== coordinatorIdentity && inFlight.size > 0) {
@@ -251,8 +267,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       },
       conditions: () => readSyncConditions({
         status, cipher: options.cipher, availableStorageBytes: options.availableStorageBytes,
-        async headBlock() {
-          const latest = await status();
+        async headBlock(latest) {
           if (!isStatus(latest)) return { outcome: "storage-failed" };
           return currentSender(latest).headBlock();
         },
@@ -264,27 +279,39 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   }
 
   async function trigger(kind: "foreground" | "manual"): Promise<ShellRunResult> {
-    const ready = await prepareAndStart(kind, () => startRun({ kind }));
-    if ("pending" in ready) {
-      const result = await ready.pending;
-      if (ready.refreshAfter) {
-        // Preserve coordinator coalescing when foreground arrives during a run.
-        // Hold preparation after it settles, so adoption cannot race any run opening.
-        const refreshed = preparation.then(async () => {
-          await Promise.allSettled(inFlight);
-          const current = await status();
-          if (isStatus(current) && current.phase === "enrolled") {
-            try { await enrollment.refreshCapabilities(); } catch { /* Keep the adopted generation. */ }
-          }
-          await deliver();
-        });
-        preparation = refreshed.catch(() => undefined);
-        await refreshed;
+    try {
+      let pass: DeliveryPass = "stopped";
+      const ready = await prepareAndStart(kind, () => startRun({ kind }, (result) => { pass = result; }));
+      if ("pending" in ready) {
+        const result = await ready.pending;
+        if (ready.refreshAfter) {
+          // Preserve coordinator coalescing when foreground arrives during a run.
+          // Hold preparation after it settles, so adoption cannot race any run opening.
+          const refreshed = preparation.then(async () => {
+            await Promise.allSettled(inFlight);
+            const current = await status();
+            let adopted = false;
+            if (isStatus(current) && current.phase === "enrolled") {
+              try { adopted = (await enrollment.refreshCapabilities()).outcome === "adopted"; }
+              catch { /* Keep the adopted generation. */ }
+            }
+            // A drained pass may pick up a new acknowledgement. Adoption can
+            // also resume a capped pass, but never retries its terminal head.
+            if (pass === "drained" || adopted && pass !== "terminal") await deliver();
+          });
+          preparation = refreshed.catch(() => undefined);
+          await refreshed;
+        }
+        return result;
       }
-      return result;
+      await deliver();
+      return ready;
+    } catch (error) {
+      // Health Connect/coordinator setup cannot strand an already staged queue.
+      // Preserve the caller's original rejection after this failure-safe pass.
+      await deliver();
+      throw error;
     }
-    await deliver();
-    return ready;
   }
 
   // The provider is safe for headless execution and for a retained registration
@@ -294,15 +321,15 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     observe: () => currentPolling().observe(),
     condition: () => currentPolling().condition(),
     async runTask() {
+      const deadline = options.monotonicNow() + BACKGROUND_BUDGET_MS;
       try {
         // Polling Runs follow coordinate-sender-sync@1's relative budget and R8
         // merging; absolute deadlines belong to activity_tracker_portal-pv2.8.
-        const deadline = options.monotonicNow() + BACKGROUND_BUDGET_MS;
         const ready = await prepareAndStart("background", () => currentPolling().runTask(), deadline);
         const result = "pending" in ready ? await ready.pending : "failed";
-        await deliver(deadline);
         return result;
       } catch { return "failed"; }
+      finally { await deliver(deadline); }
     },
   });
 
