@@ -21,7 +21,6 @@ import { beginInitialSnapshot, snapshotAttemptsMigration } from "../../src/snaps
 import { migrate } from "../../src/storage/migrations.ts";
 import { syncMigration } from "../../src/sync/coordinate-sender-sync.ts";
 import { createHttpTransport } from "../../src/transport/http-transport.ts";
-import type { HttpFetch } from "../../src/transport/http-transport.ts";
 import { openNodeDatabase } from "./node-database.ts";
 import { NodeInstallationCipher } from "./node-installation-cipher.ts";
 
@@ -41,7 +40,7 @@ const database = await openNodeDatabase(join(stateDirectory, "sender.sqlite"));
 const migration = await migrate(database, MIGRATIONS);
 if (migration.status !== "ready") throw new Error(`migration ${migration.status}`);
 const cipher = new NodeInstallationCipher({ keyBytes: () => new Uint8Array(KEY), deviceSecure: true });
-const transport = createHttpTransport({ fetch: fetch as unknown as HttpFetch });
+const transport = createHttpTransport({ fetch });
 const enrollment = createSenderEnrollment({ database, cipher, transport, now, randomUUID });
 
 async function currentStatus(): Promise<EnrollmentStatus | null> {

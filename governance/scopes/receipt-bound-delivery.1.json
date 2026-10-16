@@ -14,7 +14,7 @@
     { "name": "portal_clock", "mode": "volatile", "description": "The Portal's receipt time." }
   ],
   "outputs": [
-    { "name": "http_transport", "description": "A Sender HTTP transport serving send-outbox-message@1's and manage-sender-enrollment@1's transport seams: one fetch per request with the exact method, URL, headers, and body bytes, no redirect followed, one timeout over the whole exchange, at most maxResponseBytes + 1 body bytes read, the body returned whatever the HTTP status, and every rejection, timeout, redirect, or incomplete body reported as no response." },
+    { "name": "http_transport", "description": "A Sender HTTP transport serving send-outbox-message@1's and manage-sender-enrollment@1's transport seams: one fetch per request with the exact method, URL, headers, and body bytes, no redirect followed, one timeout over the whole exchange, at most maxResponseBytes + 1 body bytes kept with the read cancelled once it has them, the body returned for every status but a refused 3xx, and every rejection, timeout, redirect, or incomplete body reported as no response." },
     { "name": "durability_evidence", "description": "Executable evidence that every staged message is either still in the Sender Outbox or archived byte for byte by the Portal, that every request for a sequence carries identical bytes and every receipt for it is identical, that the Sender removes a message only after the Portal committed it, and that Last Delivery equals the Portal receipt time of the latest newly accepted message." }
   ],
   "named_failures": [

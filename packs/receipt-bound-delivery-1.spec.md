@@ -23,7 +23,7 @@ The proof needs one piece nobody has built: the Sender HTTP transport behind the
 **TypeScript**, module `sender/app/src/transport/http-transport.ts`, in its own directory. It reaches the network only through an injected `fetch`.
 - `HttpRequest`: `{ method: "POST" | "GET", url, headers, body: Uint8Array | null, timeoutMs, maxResponseBytes }`. This is the shape of both `OutboxRequest` and `EnrollmentRequest`.
 - `HttpResult`: `{ outcome: "response", body: Uint8Array } | { outcome: "failed" }`.
-- `HttpFetch`: the WinterCG `fetch` signature. The shell passes `expo/fetch`, which streams response bodies; the tests pass Node's global `fetch`.
+- `HttpFetch`: the WinterCG `fetch` signature. The shell passes `expo/fetch`, which streams response bodies; the tests pass Node's global `fetch`. Both satisfy `HttpFetch` without a cast, because the outgoing body is a fresh `Uint8Array<ArrayBuffer>` copy, and the typecheck checks it.
 - `createHttpTransport({ fetch })` returns `{ send(request): Promise<HttpResult> }`. The same object serves as `OutboxTransport` and `EnrollmentTransport`.
 
 **Python**, test support only: an in-process Portal driven by the oracle. It runs the ingress app from `create_app` under uvicorn on a loopback port, with a controlled clock, the real Operational Store file, and a fault proxy in front.
@@ -81,25 +81,25 @@ Tests: `the_request_is_sent_exactly_once`, `no_retry_and_no_encoding_is_added`.
 
 ### R4 — Redirects are never followed
 
-A 3xx answer, a `fetch` that rejects because of the redirect, a `fetch` that returns any 3xx status itself, or a response marked `redirected` is `failed` (`redirect-refused`). The redirect target receives no request. This keeps health data on the configured Portal (Decision 4).
+A 3xx answer, a `fetch` that rejects because of the redirect, a `fetch` that returns any 3xx status itself, or a response marked `redirected` is `failed` (`redirect-refused`). The redirect target receives no request. This keeps health data on the configured Portal (Decision 4). Refusing a 3xx is the only use of the status: Decision 7's "the status code is not read" covers every other status.
 
 Tests: `redirects_are_refused_and_never_followed`.
 
 ### R5 — One timeout over the whole exchange
 
-The transport aborts the exchange `timeoutMs` after `send` begins, whether headers or body bytes are outstanding, and returns `failed` (`request-timed-out`). It never waits longer than the deadline plus a 700 ms scheduling margin, and never fails earlier than 50 ms before it. A response completed before the deadline is unaffected.
+The transport aborts the exchange `timeoutMs` after `send` begins, whether headers or body bytes are outstanding, and returns `failed` (`request-timed-out`). A response completed before the deadline is unaffected. Under mocked timers, the abort comes exactly at the deadline and not one millisecond before, whether headers or body bytes are outstanding. Over real sockets, a stalled exchange ends no earlier than 50 ms before its deadline and within a generous margin after it, on a monotonic clock.
 
 Tests: `a_stalled_exchange_times_out`.
 
 ### R6 — A bounded, complete body read
 
-The body is read as a stream. At most `maxResponseBytes + 1` bytes are kept, after which the read is cancelled. `send-outbox-message@1` and `manage-sender-enrollment@1` treat such a body as oversized. Any other outcome is `failed` (`network-failed` or `response-incomplete`):
+The body is read as a stream. At most `maxResponseBytes + 1` bytes are kept. A chunk may carry more than that, so the read is cancelled as soon as the kept prefix is complete, without waiting for the cancellation to settle. `send-outbox-message@1` and `manage-sender-enrollment@1` treat such a body as oversized. Any other outcome is `failed` (`network-failed` or `response-incomplete`):
 - a reset or truncated body;
 - a declared length that is not met;
 - a body stream that errors, or yields anything but bytes;
 - a `fetch` that rejects or throws.
 
-A body that ends normally is returned whatever the HTTP status, including an empty body, as the units decide on bytes alone.
+A body that ends normally is returned for every status but a refused 3xx, including an empty body, as the units decide on bytes alone. A response with no body stream, such as a 204, fails closed (Decision 6). Every Portal answer has a body.
 
 Tests: `the_body_read_is_bounded`, `incomplete_or_failed_exchanges_are_failed`, `every_status_returns_its_body`.
 
@@ -124,19 +124,19 @@ Each of these leaves the message in the Sender's Outbox, and the next attempt re
 - a reset connection;
 - a Portal whose store refuses to admit (its storage reserve is exhausted).
 
-The message is removed only on its own receipt.
+The message is removed only on its own receipt: every message the Sender no longer holds had its receipt reach the Sender in full.
 
 Tests: `pending_deliveries_stay_queued`, `lost_requests_and_responses_keep_the_message`, `a_refusing_store_keeps_the_message`.
 
 ### R9 — Identical retries, identical receipts
 
-Every request for a sequence carries identical bytes, across Sender restarts. A retry after a lost or truncated response gets a receipt byte-identical to the one the Portal first produced, including after the Portal restarts on the same store. The Portal archives the message once.
+Every request for a sequence carries identical bytes, across Sender restarts. A retry after a lost or truncated response gets a receipt byte-identical to the one the Portal first produced, including after the Portal restarts on the same store. Every receipt the Portal produces for a sequence, in every test, is byte-identical. The Portal archives the message once.
 
 Tests: `retries_get_the_identical_receipt`, `a_portal_restart_keeps_the_receipt`.
 
 ### R10 — No receipt before commit
 
-After every step, every message the Sender has removed is archived in the Portal's store with identical bytes. A message the Portal has not committed is still in the Sender's Outbox. The Portal's store is read through a separate read-only connection.
+After every step, every message the Sender has removed is archived in the Portal's store with identical bytes. A message the Portal has not committed is still in the Sender's Outbox. The proxy also checks, at the moment each receipt leaves the Portal and before any of it reaches the Sender, that the store already holds the exact message the receipt names. The Portal's store is read through a separate read-only connection. Each staging step's outcome is checked, and its new sequences are reconciled against the Sender's high-water mark and the kinds that step stages.
 
 Tests: covered by every R7–R12 test, and by `faulted_histories_keep_one_durability_meaning`.
 
@@ -163,7 +163,7 @@ Seeded synthetic histories interleave:
 - Portal restarts;
 - Sender restarts.
 
-After every step, R8–R11's invariants hold. Each seed must exercise every fault, every kind, a Portal restart, and a retried lost response.
+After every step, R8–R11's invariants hold. Each seed, on its own, must exercise every fault, every kind, a Portal restart, and a retried lost response. A scripted prefix guarantees that for every seed, the random steps follow, and the deliveries that drain the Outbox count too.
 
 Tests: `faulted_histories_keep_one_durability_meaning`.
 
@@ -220,6 +220,20 @@ After Gate A, the executable pack adds:
 - the Node Sender driver;
 - the runner;
 - the Interface stub `http-transport.ts`, whose `send` throws and whose types are declared.
+
+**Implementability review.** GPT 6.1 Sol's read-only review found three blocking gaps, all now resolved:
+- R4 reads the status only to refuse 3xx, consistently with Decision 7;
+- the contract and R6 bound the bytes kept, not the bytes a stream chunk carries, and cancel at once;
+- the outgoing body type is `Uint8Array<ArrayBuffer>`, so both fetches satisfy `HttpFetch` without a cast.
+
+Its non-blocking findings are added too:
+- the proxy checks the commit at the moment a receipt leaves the Portal;
+- every removal must match a fully forwarded receipt, and receipts are compared throughout;
+- each seed's coverage is asserted on its own;
+- staging outcomes and new sequences are reconciled;
+- the abort signal and the read cancellation, including one that never settles, are observed;
+- the deadline is checked exactly under mocked timers, with generous monotonic bounds on real sockets;
+- the device smoke run (Beads `kv7`) must exercise `expo/fetch` on Android for a truncation before the reader is obtained, a stalled body's abort, and an oversized body's cancellation.
 
 Against the stub, all nine transport tests and all nine end-to-end tests fail, and the two contract tests pass. A throwaway reference transport passes every test in about 40 seconds. The transport suite kills all 28 of its non-equivalent mutants, and the end-to-end suite is run for any mutant the transport suite misses. The runner gives each half an external deadline, because the end-to-end suite starts Node processes. The Portal's Outbox Message route (Beads `2rv.4`) is merged (PR #38), and this branch includes it. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A.
 

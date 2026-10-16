@@ -18,7 +18,8 @@ export type HttpResult =
 export interface HttpFetchInit {
   readonly method: "POST" | "GET";
   readonly headers: Record<string, string>;
-  readonly body?: Uint8Array;
+  /** A fresh copy of the request bytes, so a fetch that reads late still sends them unchanged. */
+  readonly body?: Uint8Array<ArrayBuffer>;
   readonly redirect: "error";
   readonly credentials: "omit";
   readonly signal: AbortSignal;

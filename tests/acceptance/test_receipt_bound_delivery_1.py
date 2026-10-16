@@ -92,6 +92,8 @@ class Proxy:
         self.upstream_port = 0
         self.faults: deque[str] = deque()
         self.exchanges: list[dict[str, Any]] = []
+        # Called with each upstream answer before the client sees any of it.
+        self.on_response: Callable[[bytes], None] | None = None
         self._listener = socket.create_server(("127.0.0.1", 0))
         self.port = self._listener.getsockname()[1]
         self._closed = False
@@ -123,6 +125,8 @@ class Proxy:
                 upstream.sendall(request)
                 response = read_http(upstream)
             exchange["response"] = http_body(response)
+            if self.on_response is not None:
+                self.on_response(exchange["response"])
             if fault == "pass":
                 client.sendall(response)
             elif fault == "truncate-response":
@@ -200,6 +204,9 @@ class Case(unittest.TestCase):
         self.kinds: dict[int, str] = {}
         self.accepted_at: dict[int, datetime] = {}
         self.run_sequence = 0
+        self.high_water = 0
+        self.violations: list[str] = []
+        self.proxy.on_response = self.receipt_crossed
 
     def _stop(self) -> None:
         try:
@@ -209,6 +216,28 @@ class Case(unittest.TestCase):
 
     # The Sender
 
+    def expected_kinds(self, command: str, arguments: dict[str, Any]) -> list[str] | None:
+        if command == "enroll":
+            return ["capability-acknowledgement"]
+        if command == "stage-initial":
+            completion = [] if arguments.get("complete") is False else ["snapshot-completion"]
+            return ["ingest-batch"] * len(arguments["pages"]) + completion
+        if command == "stage-change":
+            return ["ingest-batch", "change-completion"]
+        if command == "stage-checkpoint":
+            return ["sync-checkpoint"]
+        return None
+
+    def check_staged(self, command: str, output: dict[str, Any]) -> None:
+        result = output["result"]
+        if command == "stage-initial":
+            self.assertTrue(result["staged"] and all(outcome == "staged" for outcome in result["staged"]), result)
+            self.assertIn(result.get("completion", "staged"), ("staged",), result)
+        elif command == "stage-change":
+            self.assertEqual((result["batch"], result["completion"]), ("staged", "staged"), result)
+        elif command == "stage-checkpoint":
+            self.assertEqual(result, "staged")
+
     def sender(self, command: str, **arguments: Any) -> dict[str, Any]:
         process = subprocess.run(
             ["node", str(DRIVER), str(self.directory / "sender"), command, json.dumps(arguments)],
@@ -217,6 +246,16 @@ class Case(unittest.TestCase):
         if process.returncode != 0:
             raise AssertionError(f"Sender {command} failed: {process.stderr[-2000:]}")
         output = json.loads(process.stdout.strip().splitlines()[-1])
+        self.check_staged(command, output)
+        # Every newly allocated sequence is still held, with the kinds the command stages, before any delivery.
+        expected = self.expected_kinds(command, arguments)
+        if expected is not None:
+            listed = {row["sequence"]: row["kind"] for row in output["outbox"]}
+            self.assertEqual(output["highWater"] - self.high_water, len(expected), command)
+            self.assertEqual([listed.get(sequence) for sequence in range(self.high_water + 1, output["highWater"] + 1)], expected, command)
+        else:
+            self.assertEqual(output["highWater"], self.high_water, command)
+        self.high_water = output["highWater"]
         for row in output["outbox"]:
             # A row first seen is newly staged; its bytes must never change afterwards.
             self.staged.setdefault(row["sequence"], row["sha256"])
@@ -288,18 +327,61 @@ class Case(unittest.TestCase):
 
     # The invariants (R8–R11)
 
+    def receipt_crossed(self, response: bytes) -> None:
+        """At the moment a receipt leaves the Portal, the store must already hold the exact message it names."""
+        try:
+            answer = json.loads(response)
+        except ValueError:
+            return
+        if not isinstance(answer, dict) or answer.get("kind") != "delivery-receipt":
+            return
+        try:
+            with self.portal.read() as view:
+                envelopes = dict(view.accepted_envelopes(answer["sender_installation"]))
+        except Exception as error:  # noqa: BLE001 - any failure to prove commit is a violation
+            self.violations.append(f"receipt {answer.get('sequence')} could not be checked: {type(error).__name__}")
+            return
+        envelope = envelopes.get(answer["sequence"])
+        if envelope is None or sha256(envelope) != answer["message_sha256"]:
+            self.violations.append(f"receipt {answer['sequence']} preceded the Portal's commit")
+
+    def receipts(self) -> tuple[dict[int, bytes], dict[int, list[bytes]]]:
+        """Fully forwarded receipts by sequence, and every receipt the Portal produced, by sequence."""
+        forwarded: dict[int, bytes] = {}
+        produced: dict[int, list[bytes]] = {}
+        for exchange in self.proxy.exchanges:
+            if exchange["response"] is None:
+                continue
+            try:
+                answer = json.loads(exchange["response"])
+            except ValueError:
+                continue
+            if not isinstance(answer, dict) or answer.get("kind") != "delivery-receipt" or answer.get("sender_installation") != self.installation:
+                continue
+            produced.setdefault(answer["sequence"], []).append(exchange["response"])
+            if exchange["fault"] == "pass":
+                forwarded[answer["sequence"]] = exchange["response"]
+        return forwarded, produced
+
     def check(self, output: dict[str, Any]) -> None:
+        self.assertEqual(self.violations, [])
         held = {row["sequence"]: row["sha256"] for row in output["outbox"]}
         archived = self.archived()
+        forwarded, produced = self.receipts()
+        # Every receipt for a sequence is byte-identical, however many attempts produced it.
+        for sequence, answers in produced.items():
+            self.assertEqual(len(set(answers)), 1, f"sequence {sequence} got different receipts")
         for sequence, digest in self.staged.items():
             # Kept bytes never change, and archived bytes are the staged bytes.
             if sequence in held:
                 self.assertEqual(held[sequence], digest, f"sequence {sequence} changed in the Outbox")
             if sequence in archived:
                 self.assertEqual(archived[sequence], digest, f"sequence {sequence} archived different bytes")
-            # Nothing is lost before its receipt, and nothing is removed before the Portal committed it.
+            # Nothing is lost before its receipt, and nothing is removed before the Portal committed it,
+            # or before its own receipt reached the Sender in full.
             if sequence not in held:
                 self.assertIn(sequence, archived, f"sequence {sequence} left the Sender without being archived")
+                self.assertIn(sequence, forwarded, f"sequence {sequence} left the Sender without its receipt")
         for sequence in archived:
             self.assertIn(sequence, self.staged, f"the Portal archived unknown sequence {sequence}")
         # Every request for a sequence carried identical bytes.
@@ -525,15 +607,15 @@ class R12BlockedHead(Case):
 
 class R13FaultedHistories(Case):
     def test_faulted_histories_keep_one_durability_meaning(self) -> None:
-        seen: set[str] = set()
+        required = (*FAULTS, "restart", "retried-lost-response", "capability-acknowledgement", "ingest-batch",
+                    "snapshot-completion", "change-completion", "sync-checkpoint")
         for seed in (1, 2, 3):
             if seed > 1:
                 self.tearDownCase()
                 self.setUp()
-            seen |= self.history(seed)
-        for event in (*FAULTS, "restart", "retried-lost-response", "capability-acknowledgement", "ingest-batch",
-                      "snapshot-completion", "change-completion", "sync-checkpoint"):
-            self.assertIn(event, seen, event)
+            seen = self.history(seed)
+            for event in required:
+                self.assertIn(event, seen, f"seed {seed}: {event}")
 
     def tearDownCase(self) -> None:
         self.doCleanups()
@@ -541,10 +623,31 @@ class R13FaultedHistories(Case):
     def history(self, seed: int) -> set[str]:
         rng = random.Random(seed)
         events: set[str] = set()
+        lost: set[int] = set()
+
+        def attempt(fault: str) -> None:
+            output = self.send(fault)
+            outcome = output["result"]["attempt"]
+            events.add(fault)
+            if outcome["outcome"] == "delivered":
+                events.add(outcome["kind"])
+                if outcome["sequence"] in lost:
+                    events.add("retried-lost-response")
+            elif fault == "drop-response" and outcome["outcome"] == "retryable":
+                lost.add(outcome["sequence"])
+
         self.enroll()
         self.sender("stage-initial", recordType="steps", pages=[['{"synthetic":1}']])
-        lost: set[int] = set()
-        for _ in range(36):
+        # A scripted prefix gives every seed each fault, a restart, and a retried lost response.
+        for fault in ("pass", "drop-request", "reset", "truncate-response", "drop-response"):
+            self.tick()
+            attempt(fault)
+        self.portal.restart()
+        events.add("restart")
+        attempt("pass")
+        self.sender("stage-change", recordType="steps", items=[["retraction", f"synthetic-source-{seed}"]])
+        self.checkpoint()
+        for _ in range(30):
             self.tick(rng.randint(1, 600))
             action = rng.random()
             if action < 0.25:
@@ -556,18 +659,13 @@ class R13FaultedHistories(Case):
                 self.portal.restart()
                 events.add("restart")
             else:
-                fault = rng.choice(FAULTS + ("pass", "pass"))
-                output = self.send(fault)
-                attempt = output["result"]["attempt"]
-                events.add(fault)
-                if attempt["outcome"] == "delivered":
-                    events.add(attempt["kind"])
-                    if attempt["sequence"] in lost:
-                        events.add("retried-lost-response")
-                elif fault == "drop-response" and attempt["outcome"] == "retryable":
-                    lost.add(attempt["sequence"])
-        # Drain what is left, and the evidence still holds.
-        self.deliver_all(60)
+                attempt(rng.choice(FAULTS + ("pass", "pass")))
+        # Drain what is left; its deliveries count, and the evidence still holds.
+        for _ in range(60):
+            if not self.sender("outbox")["outbox"]:
+                break
+            attempt("pass")
+        self.assertEqual(self.sender("outbox")["outbox"], [])
         self.assertEqual(self.archived(), self.staged)
         return events
 

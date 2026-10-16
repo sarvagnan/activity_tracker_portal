@@ -85,8 +85,8 @@ const get = (url: string, overrides: Partial<HttpRequest> = {}): HttpRequest => 
   method: "GET", url, headers: {}, body: null, timeoutMs: 5_000, maxResponseBytes: 4096, ...overrides,
 });
 
-/** Node's fetch, recording every call's URL and init. */
-function spyFetch(inner: HttpFetch = fetch as unknown as HttpFetch) {
+/** Node's fetch, recording every call's URL and init. Node's fetch and expo/fetch both satisfy HttpFetch. */
+function spyFetch(inner: HttpFetch = fetch) {
   const calls: { url: string; init: HttpFetchInit }[] = [];
   const spy: HttpFetch = (url, init) => {
     calls.push({ url, init: { ...init, headers: { ...init.headers }, ...(init.body ? { body: new Uint8Array(init.body) } : {}) } });
@@ -95,9 +95,12 @@ function spyFetch(inner: HttpFetch = fetch as unknown as HttpFetch) {
   return { spy, calls };
 }
 
-function transport(fetcher: HttpFetch = fetch as unknown as HttpFetch): HttpTransport {
+function transport(fetcher: HttpFetch = fetch): HttpTransport {
   return createHttpTransport({ fetch: fetcher });
 }
+
+/** Elapsed monotonic milliseconds since `start`. */
+const since = (start: number) => performance.now() - start;
 
 const response = (body: Uint8Array): HttpResult => ({ outcome: "response", body });
 const FAILED: HttpResult = { outcome: "failed" };
@@ -158,7 +161,7 @@ test("the_request_is_sent_exactly_once", async (t) => {
   assert.deepEqual(seen[2].body, BYTES);
   assert.equal(seen[2].headers["content-type"], "application/json");
   // The same holds for a fetch that reads its arguments only after a tick.
-  const lazy = transport(async (url, init) => { await settle(10); return (fetch as unknown as HttpFetch)(url, init); });
+  const lazy = transport(async (url, init) => { await settle(10); return fetch(url, init); });
   const lateBody = new Uint8Array(BYTES);
   const lateHeaders: Record<string, string> = { "content-type": "application/json" };
   const late = lazy.send(post(`${origin}/v1/enrollment-confirmation`, { body: lateBody, headers: lateHeaders }));
@@ -209,21 +212,52 @@ test("redirects_are_refused_and_never_followed", async (t) => {
 // R5 — One timeout over the whole exchange
 
 test("a_stalled_exchange_times_out", async (t) => {
+  // The deadline, exactly: a fetch that settles only when aborted, under mocked timers.
+  const flush = async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    for (const stage of ["headers", "body"] as const) {
+      let signal: AbortSignal | undefined;
+      const stalled: HttpFetch = async (_url, init) => {
+        signal = init.signal;
+        const aborted = new Promise<never>((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => { reject(new Error("synthetic abort")); });
+        });
+        if (stage === "headers") return aborted;
+        return {
+          status: 200, redirected: false,
+          body: new ReadableStream<Uint8Array>({ pull: (controller) => aborted.catch((error) => { controller.error(error); }) }),
+        };
+      };
+      let settled: HttpResult | "pending" = "pending";
+      const sending = transport(stalled).send(post("http://127.0.0.1:9/", { timeoutMs: 5_000 })).then((result) => { settled = result; });
+      await flush();
+      t.mock.timers.tick(4_999);
+      await flush();
+      assert.equal(signal?.aborted, false, stage);
+      assert.equal(settled, "pending", stage);
+      t.mock.timers.tick(1);
+      await flush();
+      await sending;
+      assert.equal(signal?.aborted, true, stage);
+      assert.deepEqual(settled, FAILED, stage);
+    }
+  } finally { t.mock.timers.reset(); }
+  // Over real sockets, a stalled exchange ends near its deadline: no earlier, and within a generous margin.
+  const within = (elapsed: number, timeoutMs: number) => elapsed >= timeoutMs - 50 && elapsed < timeoutMs + 2_000;
   // Headers never arrive.
   const silent = await rawServer(t, () => { /* never answers */ });
-  // The deadline is the request's: no earlier, and no more than a scheduling margin later.
-  const within = (elapsed: number, timeoutMs: number) => elapsed >= timeoutMs - 50 && elapsed < timeoutMs + 700;
-  let started = Date.now();
+  let started = performance.now();
   assert.deepEqual(await transport().send(post(silent.origin, { timeoutMs: 300 })), FAILED);
-  let elapsed = Date.now() - started;
+  let elapsed = since(started);
   assert.ok(within(elapsed, 300), String(elapsed));
   // Headers arrive, and then the body stalls.
   const stalling = await rawServer(t, (socket) => {
     socket.write("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{\"partial\":");
   });
-  started = Date.now();
+  started = performance.now();
   assert.deepEqual(await transport().send(post(stalling.origin, { timeoutMs: 300 })), FAILED);
-  elapsed = Date.now() - started;
+  elapsed = since(started);
   assert.ok(within(elapsed, 300), String(elapsed));
   // A body that trickles in, never finishing before the deadline, also fails at the deadline.
   const trickling = await rawServer(t, (socket) => {
@@ -231,9 +265,9 @@ test("a_stalled_exchange_times_out", async (t) => {
     const timer = setInterval(() => { if (!socket.destroyed) socket.write("1\r\nx\r\n"); }, 50);
     socket.on("close", () => { clearInterval(timer); });
   });
-  started = Date.now();
+  started = performance.now();
   assert.deepEqual(await transport().send(post(trickling.origin, { timeoutMs: 400, maxResponseBytes: 1_000_000 })), FAILED);
-  elapsed = Date.now() - started;
+  elapsed = since(started);
   assert.ok(within(elapsed, 400), String(elapsed));
   // A response completed before the deadline is unaffected.
   const prompt = await httpServer(t, (_request, res) => { setTimeout(() => { res.end(utf8("on time")); }, 50); });
@@ -261,6 +295,25 @@ test("the_body_read_is_bounded", async (t) => {
   assert.ok(Date.now() - started < 5_000);
   assert.equal(result.outcome, "response");
   assert.deepEqual((result as { body: Uint8Array }).body, utf8("y".repeat(4097)));
+  // The read is cancelled once the oversized prefix is kept, even when one chunk overshoots it, and a cancel
+  // that never settles does not hold the answer.
+  for (const settles of [true, false]) {
+    let cancels = 0;
+    let pulls = 0;
+    const overshooting: HttpFetch = async () => ({
+      status: 200, redirected: false,
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) { pulls++; controller.enqueue(new Uint8Array(10_000).fill(7)); },
+        cancel() { cancels++; return settles ? undefined : new Promise<void>(() => {}); },
+      }, { highWaterMark: 0 }),
+    });
+    const started = performance.now();
+    assert.deepEqual(await transport(overshooting).send(post("http://127.0.0.1:9/", { maxResponseBytes: 4096 })),
+      response(new Uint8Array(4097).fill(7)), String(settles));
+    assert.ok(since(started) < 1_000);
+    assert.equal(cancels, 1, String(settles));
+    assert.equal(pulls, 1, String(settles));
+  }
 });
 
 test("incomplete_or_failed_exchanges_are_failed", async (t) => {
@@ -306,6 +359,9 @@ test("every_status_returns_its_body", async (t) => {
     const { origin } = await httpServer(t, (_request, res) => { res.writeHead(status); res.end(utf8(body)); });
     assert.deepEqual(await transport().send(post(origin)), response(utf8(body)), String(status));
   }
+  // A response with no body stream, such as a 204, fails closed (Decision 6); every Portal answer has a body.
+  const empty = await httpServer(t, (_request, res) => { res.writeHead(204); res.end(); });
+  assert.deepEqual(await transport().send(post(empty.origin)), FAILED);
 });
 
 // R14 — Boundary
