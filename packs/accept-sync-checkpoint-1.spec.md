@@ -77,13 +77,13 @@ As in `accept-ingest-batch@1`, after identity:
 - **Unknown:** retryable, failure `installation-unknown`.
 - **Active or draining:** delivery proceeds.
 
-A retryable answer writes nothing.
+Installation state is checked before sequence order and the generation, so a non-delivering installation's checkpoint is retryable even when it would otherwise be blocked. A retryable answer writes nothing.
 
 Tests: `test_non_delivering_installations_are_retryable`, `test_draining_installation_still_delivers`.
 
 ### R5 — Sequence order and gaps
 
-A never-archived sequence below the installation's highest archived sequence is blocked as `sequence-out-of-order`. A sequence more than one above the highest is accepted: `gap_after` reports the highest archived sequence, or 0 when none, and the store records the gap.
+A never-archived sequence below the installation's highest archived sequence is blocked as `sequence-out-of-order`, even when its generation is unknown: order is checked before the generation, as in the protocol. A sequence more than one above the highest is accepted: `gap_after` reports the highest archived sequence, or 0 when none, and the store records the gap.
 
 Tests: `test_older_unseen_sequence_is_blocked`, `test_gap_is_accepted_and_reported`.
 
@@ -99,7 +99,7 @@ A newly accepted checkpoint is archived in one store transaction before its rece
 - the exact envelope bytes, the exact receipt bytes, the receipt time `now`, and the staged generation;
 - the run sequence, trigger, the Sender's start and end times exactly as sent, the elapsed duration or none, the Background Scheduling Status, each record type's outcome, reason, and source-data-staged flag in the message's order, and both pre-checkpoint outbox counts.
 
-Last Delivery, the latest checkpoint receipt, and the Background Scheduling Status's receipt time all become `now`. Nothing else is written: no Health Summary, Data Watermark, Cutover Record, source evidence, or capability generation changes.
+Last Delivery, the latest checkpoint receipt, and the Background Scheduling Status's receipt time all become `now`. Nothing else is written: no Health Summary, Data Watermark, Cutover Record, source evidence, or capability generation changes. The test compares the whole database with a copy in which `operational-store@2`'s `archive_sync_checkpoint` archived the exact header and record directly.
 
 Implausible Sender times never block: a checkpoint whose times are reversed, in the future, or before enrollment is accepted and archived exactly (Decision 6).
 
@@ -153,7 +153,7 @@ Tests:
 
 ### R11 — Reading polling state
 
-`polling_state` writes nothing: every kind of state it reports leaves the whole database unchanged. An unknown installation propagates the store's `installation-unknown` refusal, and a busy store its retryable `store-busy` (Decision 10).
+`polling_state` writes nothing: every kind of state it reports leaves the whole database unchanged. It is a plain read, so it gives the same answers while another connection holds the write lock. An unknown installation propagates the store's `installation-unknown` refusal, and a busy store its retryable `store-busy` (Decision 10).
 
 Tests: `test_reading_polling_state_writes_nothing`, `test_reading_polling_state_propagates_store_failures`.
 
@@ -163,7 +163,7 @@ Free space is checked last: a would-be block is still blocked, with its record, 
 
 A busy store at any step — reading, archiving, or recording a block — gets retryable `temporarily-unavailable` with failure `store-busy`. None of these answers writes anything else.
 
-The caller serializes writes, so the store's own rechecks should never refuse an archive after this unit's read (`accept-ingest-batch@1` Decision 9). If one does, the unit still answers and never raises: a refused conflict, order, or generation gives the matching block, with its record, and an installation that stopped delivering gives its retryable failure.
+The caller serializes writes, so the store's own rechecks should never refuse an archive after this unit's read (`accept-ingest-batch@1` Decision 9). If one does, the unit still answers and never raises: a refused conflict, order, or generation gives the matching block, with its record. An installation that another writer retires between the read and the archive gets retryable `installation-ended`, and only the retirement is written.
 
 Tests:
 - `test_exhausted_reserve_is_retryable_and_blocks_still_win`
@@ -174,9 +174,9 @@ Tests:
 
 For an active installation with storage available, every answer equals `ingest-protocol@1`'s `evaluate_delivery` over the same history: the same outcome, exact body bytes, failure, and gap. The protocol does not model the storage reserve or a busy store, so R12's storage-availability answers are the only exceptions.
 
-Each block and each identical retry is checked against the whole database: a block changes only its own record, and a retry changes nothing. After each newly accepted checkpoint, the polling state reports it as the latest checkpoint.
+Each block and each identical retry is checked against the whole database: a block changes only its own record, and a retry changes nothing. After each newly accepted checkpoint, the polling state reports it as the latest checkpoint. After every step, the polling state at the step's time and at a later time equals the R8–R10 derivation from the latest accepted checkpoint.
 
-Seeded synthetic histories interleave checkpoints with Ingest Batches, accepted through `accept-ingest-batch@1`. They include every trigger, scheduling status, and lifecycle outcome, implausible Sender times, retries, conflicts, older unseen sequences, gaps, and unknown generations. The test requires each block failure, a gap, a retry, and a repeated block to occur.
+Seeded synthetic histories interleave checkpoints with Ingest Batches, accepted through `accept-ingest-batch@1`, while Portal time advances by minutes to days. They include every trigger, scheduling status, and lifecycle outcome, implausible Sender times, retries, conflicts, older unseen sequences, gaps, and unknown generations. The test requires each block failure, a gap, a retry, and a repeated block to occur, and also each clock condition, each freshness, a first poll in progress, and an overdue first checkpoint.
 
 Tests: `test_answers_match_the_protocol_evaluation`.
 
