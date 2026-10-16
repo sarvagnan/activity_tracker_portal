@@ -192,6 +192,18 @@ function failingWrites(database: SenderDatabase, rule: { mutation?: number; comm
   return wrap(database);
 }
 
+/** Records each write with the transaction it ran in (`null` outside one), into the shared `events`. */
+function tracing(database: SenderDatabase, events: { kind: string; transaction?: number | null; sql?: string }[]): SenderDatabase {
+  let transactions = 0;
+  const wrap = (inner: SenderDatabase, transaction: number | null): SenderDatabase => ({
+    execute: (sql, parameters) => { if (MUTATION.test(sql)) events.push({ kind: "write", transaction, sql }); return inner.execute(sql, parameters); },
+    query: (sql, parameters) => { if (MUTATION.test(sql)) events.push({ kind: "write", transaction, sql }); return inner.query(sql, parameters); },
+    transaction: (fn) => { const id = ++transactions; return inner.transaction((handle) => fn(wrap(handle, id))); },
+    close: () => inner.close(),
+  });
+  return wrap(database, null);
+}
+
 /** Logs every operation, including those inside transactions, to `operations` and `events`. */
 function logging(database: SenderDatabase, operations: string[], events?: string[]): SenderDatabase {
   const log = (entry: string) => { operations.push(entry); events?.push(`storage:${entry}`); };
@@ -523,10 +535,24 @@ test("storage_failures_change_nothing", async (t) => {
   assert.deepEqual(await contents(f.database), before);
   assert.deepEqual(await f.conditions.observe(changed), { outcome: "observed", conditions: ["storage-pressure"] });
   assert.deepEqual(f.notifier.names(), ["permission-missing", "storage-pressure"]);
-  // One observation clears two conditions and records two onsets. Each write failing in turn either changes
-  // nothing and notifies nothing, or, once every condition change has committed, fails only a success record.
+  // One observation clears two conditions and records two onsets. Every write before its first notification
+  // belongs to one transaction, however many statements an implementation uses.
   const swap = observation({ summary: summary(["blocked", "record-too-large"], ["blocked", "projection-refusal"]) });
-  let observationWrites = 0;
+  {
+    const g = await fixture(t);
+    await g.conditions.observe(observation({ summary: summary(["blocked", "permission-missing"], ["deferred", "storage-pressure"]) }));
+    const trace: { kind: string; transaction?: number | null; sql?: string }[] = [];
+    const notifier: ConditionNotifier = { async notify() { trace.push({ kind: "notify" }); } };
+    assert.equal((await g.make({ database: tracing(g.database, trace), notifier }).observe(swap)).outcome, "observed");
+    const first = trace.findIndex((event) => event.kind === "notify");
+    assert.ok(first > 0, JSON.stringify(trace));
+    const before = trace.slice(0, first);
+    assert.ok(before.length > 0 && before.every((event) => event.kind === "write"));
+    assert.equal(new Set(before.map((event) => event.transaction)).size, 1, JSON.stringify(before));
+    assert.notEqual(before[0].transaction, null, JSON.stringify(before));
+  }
+  // Each write failing in turn either changes nothing and notifies nothing, or, once every condition change
+  // has committed, fails only a success record.
   let completed = false;
   for (let mutation = 1; mutation <= 64 && !completed; mutation++) {
     const g = await fixture(t);
@@ -539,7 +565,6 @@ test("storage_failures_change_nothing", async (t) => {
     if (g.notifier.calls.length === calls) {
       assert.deepEqual(result, { outcome: "storage-failed" }, String(mutation));
       assert.deepEqual(after, start, String(mutation));
-      observationWrites = mutation;
     } else {
       assert.deepEqual(conditions, ["projection-refused", "record-too-large"], String(mutation));
       completed = result.outcome === "observed";
@@ -547,8 +572,6 @@ test("storage_failures_change_nothing", async (t) => {
     }
   }
   assert.ok(completed);
-  // The two clearings and two onsets are at least four writes, all inside the observation's transaction.
-  assert.ok(observationWrites >= 4, String(observationWrites));
 });
 
 test("an_unrecorded_success_notifies_again", async (t) => {
