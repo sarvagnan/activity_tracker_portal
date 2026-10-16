@@ -1342,8 +1342,8 @@ test("destruction_deletes_the_key_then_every_row", async (t) => {
   assert.equal(await f.base.keyStatus(ALIAS), "missing");
   assert.equal(await f.base.keyStatus(OTHER_KEY_ALIAS), "present");
   assert.deepEqual(await contents(f.database), emptied(before));
-  // Foreign keys stay enforced: destruction never turns them off, and they hold afterwards.
-  assert.deepEqual(operations.filter((sql) => /\bforeign_keys\b/i.test(sql) && !/^\s*PRAGMA\s+foreign_keys\s*$/i.test(sql)), []);
+  // Foreign keys stay enforced: destruction never sets the pragma, though it may read it, and they hold afterwards.
+  assert.deepEqual(operations.filter((sql) => /\bforeign_keys\b\s*(=|\()/i.test(sql)), []);
   assert.deepEqual(await f.database.query("PRAGMA foreign_keys"), [{ foreign_keys: 1 }]);
   await assert.rejects(f.database.execute("INSERT INTO z_child (id, parent) VALUES (1, 1)"));
   assert.deepEqual(await contents(f.database), emptied(before));
@@ -1570,6 +1570,73 @@ test("the_network_call_does_not_hold_the_storage_lane", async (t) => {
   assert.ok(gateDelete !== undefined, "the key was never deleted");
   try { assert.equal(await gFree(), "free"); } finally { gateDelete(); }
   assert.deepEqual(await destroying, { outcome: "destroyed" });
+});
+
+test("every_storage_operation_waits_for_the_shared_lane", async (t) => {
+  const f = await fixture(t);
+  // Records any storage operation that starts while another unit holds the shared lane.
+  let held = false;
+  const operations: string[] = [];
+  const violations: string[] = [];
+  const watch = (entry: string) => { operations.push(entry); if (held) violations.push(entry); };
+  const database: SenderDatabase = {
+    execute: (sql, parameters) => { watch(sql); return f.database.execute(sql, parameters); },
+    query: (sql, parameters) => { watch(sql); return f.database.query(sql, parameters); },
+    transaction: (fn) => { watch("transaction"); return f.database.transaction(fn); },
+    close: () => f.database.close(),
+  };
+  const lane = storageLane(database);
+  const enrollment = f.make({ database });
+  // During each cipher and transport call, another unit takes the lane for a while, so the storage that follows must wait.
+  const contended: string[] = [];
+  const contend = async (seam: string): Promise<void> => {
+    contended.push(seam);
+    let acquired!: () => void;
+    const holding = new Promise<void>((resolve) => { acquired = resolve; });
+    void lane(async () => { held = true; acquired(); await settle(30); held = false; });
+    if (await Promise.race([holding.then(() => "held"), settle(1_000).then(() => "blocked")]) === "blocked") {
+      violations.push(`${seam} held the lane`);
+    }
+  };
+  for (const method of ["isDeviceSecure", "create", "seal", "delete"] as const) {
+    f.cipher.script.set(method, Array.from({ length: 4 }, () => ({ before: () => contend(method) })));
+  }
+  const answer = (body: Uint8Array): Respond => () => contend("transport").then(() => ({ outcome: "response", body }));
+  // Each action also waits for a unit that took the lane before it started, and then completes.
+  const afterHolder = async <T>(action: () => Promise<T>): Promise<T> => {
+    let release!: () => void;
+    let acquired!: () => void;
+    const holding = new Promise<void>((resolve) => { acquired = resolve; });
+    const holder = lane(() => new Promise<void>((resolve) => { release = resolve; held = true; acquired(); }));
+    await holding;
+    const start = operations.length;
+    const pending = action();
+    await settle();
+    const touched = operations.slice(start);
+    held = false;
+    release();
+    await holder;
+    assert.deepEqual(touched, []);
+    return pending;
+  };
+  f.transport.respond = answer(retryable());
+  assert.deepEqual(await afterHolder(() => enrollment.enroll(scanned())), { outcome: "retryable", failure: "temporarily-unavailable" });
+  f.transport.respond = answer(advertisement(1));
+  assert.deepEqual(await afterHolder(() => enrollment.confirm()), { outcome: "enrolled", generation: 1 });
+  assert.deepEqual(await afterHolder(() => enrollment.status()), statusOf({ phase: "enrolled", stagingContext: staging(1) }));
+  f.transport.respond = answer(advertisement(2));
+  assert.deepEqual(await afterHolder(() => enrollment.refreshCapabilities()), { outcome: "adopted", generation: 2 });
+  assert.deepEqual(await afterHolder(() => enrollment.beginDrain()), { outcome: "refused", failure: "not-confirmed" });
+  assert.equal((await deliverNext(f)).outcome, "delivered");
+  assert.equal((await deliverNext(f)).outcome, "delivered");
+  assert.deepEqual(await afterHolder(() => enrollment.beginDrain()), { outcome: "draining" });
+  assert.deepEqual(await afterHolder(() => enrollment.unlink()), { outcome: "destroyed" });
+  f.transport.respond = answer(new Uint8Array());
+  assert.deepEqual(await afterHolder(() => enrollment.enroll(typed())), { outcome: "portal-refused", failure: "enrollment-refused" });
+  assert.deepEqual(await afterHolder(() => enrollment.reset({ acknowledgePossibleLoss: true })), { outcome: "destroyed" });
+  assert.deepEqual(violations, []);
+  assert.deepEqual([...new Set(contended)].sort(), ["create", "delete", "isDeviceSecure", "seal", "transport"]);
+  assert.equal(await enrollment.status(), null);
 });
 
 // R13 — The Sender schema migration

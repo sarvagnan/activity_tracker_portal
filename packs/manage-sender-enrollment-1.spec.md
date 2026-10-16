@@ -56,7 +56,7 @@ The declarations are:
 
 ## Requirements
 
-The 38 TypeScript `node:test` tests in `manage-sender-enrollment-1.test.ts` use:
+The 39 TypeScript `node:test` tests in `manage-sender-enrollment-1.test.ts` use:
 - the 3ug `node:sqlite` and `NodeInstallationCipher` substitutes;
 - synthetic transport and Portal fakes, whose answers are built with the protocol library;
 - the published `stage-outbox-batch@1` primitives;
@@ -207,7 +207,7 @@ Tests:
 
 Destruction proceeds in this order:
 1. It deletes the installation key. `keystore-unavailable` is `cipher-failed`, and nothing is destroyed. Any other result that is not success, including a throwing call, reads the same way. A missing or unusable key counts as deleted.
-2. In one transaction, it deletes every row of every Sender table, as listed in `sqlite_master`, keeping the schema and its version. Foreign keys stay enforced and are checked at commit: destruction never turns them off.
+2. In one transaction, it deletes every row of every Sender table, as listed in `sqlite_master`, keeping the schema and its version. Foreign keys stay enforced and are checked at commit: destruction never sets the `foreign_keys` pragma, though it may read it.
 
 A storage failure after the key is gone returns `storage-failed`. Repeating the request completes the destruction. The test adds two pairs of tables with foreign keys, standing in for a later unit's tables. One pair's parent sorts and is created before its child, and the other's after, so no fixed deletion order passes without checking foreign keys at commit.
 
@@ -226,7 +226,9 @@ Tests: `storage_failures_change_nothing`, `throwing_cipher_calls_read_as_unavail
 
 Every storage operation waits its turn in the shared storage lane. The transport, the cipher's `isDeviceSecure` and key creation and deletion, and the clock never hold it. The actions of one instance run one at a time, so two concurrent `enroll` calls create one installation, and a refresh, a drain, or a reset waits behind an unanswered request.
 
-Tests: `actions_run_one_at_a_time`, `the_network_call_does_not_hold_the_storage_lane`.
+Every action waits for a unit that took the lane before it started, and every storage step after a transport or cipher call waits for a unit that took the lane during that call. Each then completes.
+
+Tests: `actions_run_one_at_a_time`, `the_network_call_does_not_hold_the_storage_lane`, `every_storage_operation_waits_for_the_shared_lane`.
 
 ### R13 — The Sender schema migration
 
@@ -311,7 +313,7 @@ Its non-blocking findings are added too:
 - the write-failure loops allow up to 63 writes, rather than nine;
 - destruction is checked never to turn foreign keys off, and they hold afterwards.
 
-Against the stub, all 38 TypeScript tests fail and the two contract tests pass. A throwaway reference passes every test, and the suite kills all 113 of its mutants. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `enrollmentMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did. It also adds this unit's runner to the CI `sender` job.
+Against the stub, all 39 TypeScript tests fail and the two contract tests pass. A throwaway reference passes every test, and the suite kills all 123 of its mutants. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A. The implementation registers `enrollmentMigration` in `senderMigrations` and updates the enabling storage test, as each earlier Sender migration did. It also adds this unit's runner to the CI `sender` job.
 
 The binding is:
 - spec files: the contract and this pack;
