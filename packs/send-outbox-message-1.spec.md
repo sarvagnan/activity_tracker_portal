@@ -112,7 +112,7 @@ Tests:
 ### R5 — Everything else retains identical bytes
 
 Each of these answers keeps the head and writes nothing, and the next attempt resends identical bytes:
-- **No response.** The transport reports `failed`, rejects, or throws. The outcome is retryable `transport-failed`.
+- **No response.** The transport reports `failed`, rejects, throws, or returns anything but a response with a byte body. The outcome is retryable `transport-failed`.
 - **Oversized body.** The body is longer than 4096 bytes. It is not decoded, and the outcome is retryable `receipt-mismatch`.
 - **Undecodable or mismatched answer.** This covers a body that does not decode, a receipt for another installation, sequence, or digest, a Delivery Block for another message, and any other message kind. These are retryable `receipt-mismatch`, as `interpretResponse` decides.
 - **Retryable failure.** The outcome is retryable with the Portal's reason, `temporarily-unavailable` or `storage-reserve-exhausted`.
@@ -141,7 +141,7 @@ Tests:
 ### R7 — Local head checks
 
 The opened head must be the row's own message: canonical bytes that decode as an Outbox Message whose kind, `sender_installation`, and `sequence` equal the row's, and whose length equals the row's message bytes. Nothing is sent unless it is. The cipher results map as follows:
-- **`keystore-unavailable`:** retryable `keystore-unavailable`, and nothing is written.
+- **`keystore-unavailable`:** retryable `keystore-unavailable`, and nothing is written. A cipher call that throws, or returns a malformed result, reads the same way.
 - **`missing-key` or `unusable-key`:** `cipher-failed`, and nothing is written. This fails the whole installation, not the head (Decision 5).
 - **`authentication-failed` or `unsupported-format`:** a head block with origin `sender`, failure `head-unreadable`, and a `null` digest.
 - **A head that is not the row's own message:** a head block with origin `sender`, failure `head-invalid`, and the plaintext's digest.
@@ -157,7 +157,7 @@ Tests:
 ### R8 — One notification at each onset
 
 The notifier is called with the failure alone after a head block is first recorded, and its success is then recorded. That happens at most once per head block, at least once:
-- a notifier that throws, synchronously or not, is retried at the next attempt that observes the same block, until it succeeds;
+- a notifier that throws, synchronously or not, is retried at the next attempt for the same head, whatever that attempt's answer, until it succeeds or a receipt clears the block;
 - if its success cannot be recorded, `sendNext()` reports `storage-failed`, and the next attempt notifies again.
 
 A repeated block, including one with a new failure, does not notify again. A new head block after a receipt cleared the last one is a new onset. `sendNext()` resolves only after any notification attempt, and the attempt to record its success, have settled.
@@ -187,7 +187,7 @@ Tests:
 
 ### R11 — The Sender schema migration
 
-`deliveryMigration` is Sender schema version 7, registered after `schedule-background-polling@1`'s version 6. It leaves every earlier schema object unchanged, and it references no other unit's table. It creates exactly this table, compared token by token with whitespace ignored, and nothing else:
+`deliveryMigration` is Sender schema version 7, registered after `schedule-background-polling@1`'s version 6. It leaves every earlier schema object unchanged, and it references no other unit's table. It creates exactly this table, compared token by token with whitespace ignored, and its automatic primary-key index, and nothing else:
 
 ```sql
 CREATE TABLE outbox_head_block (
@@ -208,7 +208,7 @@ Tests: `migration_creates_version_seven`, `migration_is_idempotent`.
 
 ### R12 — Delivery under faults
 
-Seeded synthetic histories interleave staging every kind with attempts against a fake Portal. The fake Portal archives what it accepts and injects faults:
+Seeded synthetic histories interleave appending every kind through `stage-outbox-batch@1`'s Outbox with attempts against a fake Portal. The fake Portal archives what it accepts and injects faults:
 - requests lost before arrival;
 - responses lost after archival;
 - mismatched receipts and oversized bodies;
@@ -224,6 +224,17 @@ After every step:
 The test requires each fault, each kind, a block that clears, and a lost response retried to its identical receipt to occur.
 
 Tests: `delivery_survives_faults_in_sequence`.
+
+### R13 — Boundary
+
+The module reaches the network only through the transport seam: it names no `fetch`, `XMLHttpRequest`, `WebSocket`, or Node global. Its imports are:
+- the protocol library's `decodeMessage`, `interpretResponse`, and `messageSha256`;
+- `stage-outbox-batch@1`'s `outboxAad`;
+- the storage seam and lane.
+
+Its SQL names only the Outbox's rows and its own table. At run time it calls only the cipher's `open`.
+
+Tests: `the_module_stays_inside_its_boundary`.
 
 ## Decisions for the Operator
 
@@ -257,4 +268,4 @@ After Gate A, the executable pack adds:
 - the runner;
 - the Interface stub `send-outbox-message.ts`, whose functions throw, and whose types and constants are declared.
 
-Against the stub, every behaviour test fails and the two contract tests pass. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A.
+Against the stub, every behaviour test fails and the two contract tests pass. The implementation also registers `deliveryMigration` in `senderMigrations` and updates the enabling storage test that lists the production schema, as each earlier Sender migration did. GPT 6.1 Sol's read-only implementability review runs before Gate B. Every dependency is published, so Vouch records `specify` after Gate A.
