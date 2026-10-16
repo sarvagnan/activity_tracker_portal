@@ -67,6 +67,8 @@ export function createShellConditionObserver(options: {
   status: () => Promise<Status>;
   now: () => number;
   monotonicNow: () => number;
+  /** A receipt for the exact lifecycle state successfully applied by the unit. */
+  onApplied?: (enrollment: EnrollmentStatus | null) => void;
 }) {
   let submittingIdentity: string | null = null;
   let submittingDeadline = Infinity;
@@ -133,11 +135,15 @@ export function createShellConditionObserver(options: {
     submittingDeadline = item.deadline;
     submitted = true;
     const result = conditions.observe({ enrollment: latest, keyStatus, ...(run ? { summary: run.summary } : {}) });
+    const observed = result.then((value) => {
+      const applied = value.outcome === "observed";
+      if (applied) options.onApplied?.(latest);
+      return applied;
+    }, () => false);
     if (run) {
-      appliedRun = { identity: run.identity, runSequence: run.summary.runSequence,
-        observed: result.then((value) => value.outcome === "observed", () => false) };
+      appliedRun = { identity: run.identity, runSequence: run.summary.runSequence, observed };
     }
-    await result;
+    await observed;
   }
 
   function drain(): void {
@@ -167,20 +173,21 @@ export function createShellConditionObserver(options: {
     }
   }
 
-  async function receiveReplacement(run: Run, receivedRevision: number): Promise<void> {
+  async function receiveReplacement(run: Run, receivedRevision: number): Promise<boolean> {
     // Identity strings do not order installations. Unlike same-identity runs,
     // a foreign caller must prove it is current before evicting retained work.
     // This admission read is bounded even when observation admission expires.
     try {
       const current = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
-      if (current && "outcome" in current) return;
+      if (current && "outcome" in current) return false;
       const identity = installationIdentity(current);
-      if (identity !== run.identity) return;
+      if (identity !== run.identity) return true;
       if (verifiedInstallation && receivedRevision < verifiedInstallation.revision &&
-          identity !== verifiedInstallation.identity) return;
+          identity !== verifiedInstallation.identity) return true;
       verifiedInstallation = { identity, revision: Math.max(receivedRevision, verifiedInstallation?.revision ?? 0) };
       retain(run);
-    } catch { /* Unknown status cannot evict retained work. */ }
+      return true;
+    } catch { return false; /* Unknown status cannot evict retained work. */ }
   }
 
   function enqueue(deadline: number): Promise<void> {
@@ -205,7 +212,20 @@ export function createShellConditionObserver(options: {
     // admission. Submitted work keeps its allowance for that observation only.
     const admissionDeadline = Math.max(deadline, active && !submitted ? active.deadline : -Infinity);
     if (run && receivedRun && receivedRun.identity !== run.identity) {
-      const result = receiveReplacement(run, receivedRevision).then(() => enqueue(admissionDeadline));
+      const result = receiveReplacement(run, receivedRevision).then(async (known) => {
+        if (!known) {
+          // Let the next process refresh the verified identity, then retry this
+          // admission once. The caller owns this bounded handoff; there is still
+          // only one retained slot, and an unknown/stale caller cannot evict it.
+          await enqueue(admissionDeadline);
+          if (verifiedInstallation && verifiedInstallation.revision >= receivedRevision) {
+            if (verifiedInstallation.identity === run.identity) retain(run);
+          } else {
+            await receiveReplacement(run, receivedRevision);
+          }
+        }
+        await enqueue(admissionDeadline);
+      });
       return waitFor(result, deadline);
     }
     if (run) retain(run);

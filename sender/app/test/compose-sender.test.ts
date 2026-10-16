@@ -1379,7 +1379,7 @@ for (const count of [1, 32]) {
     await acknowledgements(f, count);
     await shell.manualSync();
     assert.equal(p.requests.length, count);
-    assert.equal(reads, 4, "two startup freshness reads, one preparation read and one delivery read, independent of queue length");
+    assert.equal(reads, 5, "two startup freshness reads, one preparation read and delivery reads before/after, independent of queue length");
   });
 }
 
@@ -1735,14 +1735,15 @@ for (const change of ["confirm", "refresh"] as const) {
   });
 }
 
-test("NOC: the next preparation observes a drain completed by delivery", { timeout: 5_000 }, async (t) => {
+test("NOC: the same trigger observes a drain completed by delivery", { timeout: 5_000 }, async (t) => {
   const f = await fixture(t);
   const p = portal(f);
   const notifications: string[] = [];
   p.state.answer = async (_url, init) => { f.state.status = enrolled({ phase: "draining", finalSequence: 9 }); return receipt(init.body!); };
   const shell = await composeSender({ ...p.options, conditionNotifier: { async notify(condition) { notifications.push(condition); } } });
   await shell.manualSync();
-  // The next preparation observes the external phase transition. No new run opens.
+  assert.deepEqual(notifications, ["drain-complete"]);
+  // Later preparations retain the onset without opening a new run.
   await shell.manualSync();
   assert.deepEqual(notifications, ["drain-complete"]);
   assert.deepEqual(conditionNames(await shell.conditions()), ["drain-complete"]);
@@ -2293,3 +2294,244 @@ test("NOC: a manual trigger observes a lifecycle change since the process-start 
   assert.deepEqual(notifications, ["enrollment-refused"]);
   assert.deepEqual(conditionNames(await shell.conditions()), ["enrollment-refused"]);
 });
+
+
+for (const kind of ["foreground", "manual", "background", "failure-safe"] as const) {
+  test(`NOC A: ${kind} records a drain completed by its own delivery pass`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t, enrolled({ phase: kind === "failure-safe" ? "enrolled" : "draining" }));
+    const p = portal(f);
+    const notifications: string[] = [];
+    let queued = false;
+    const failure = new Error("synthetic preparation failure");
+    const shell = await composeSender({ ...p.options,
+      conditionNotifier: { async notify(condition) {
+        assert.ok(f.clock.monotonicNow() + CONDITION_FINISH_RESERVE_MS < BACKGROUND_BUDGET_MS);
+        notifications.push(condition);
+      } },
+      async projectionSchemaVersions() {
+        if (kind === "failure-safe") { f.state.status = enrolled({ phase: "draining" }); throw failure; }
+        return f.state.versions;
+      },
+      enrollment(database, transport) {
+        return { ...f.options.enrollment(database, transport), async status() {
+          const current = f.state.status;
+          if (queued && current && !("outcome" in current) && current.phase === "draining") {
+            return { ...current, finalSequence: (await outboxMessages(database)).length === 0 ? 2 : null };
+          }
+          return current;
+        } };
+      },
+    });
+    await acknowledgements(f, 2);
+    queued = true;
+    const run = () => kind === "background" ? (async () => (await shell.backgroundPollingProvider())!.runTask())()
+      : kind === "foreground" ? shell.foreground() : shell.manualSync();
+    if (kind === "failure-safe") await assert.rejects(run(), (error) => error === failure);
+    else await run();
+    assert.deepEqual(await outboxMessages(f.database()), []);
+    assert.deepEqual(notifications, ["drain-complete"], "the same trigger observes the final receipt");
+    const records = await shell.conditions();
+    assert.deepEqual(conditionNames(records), ["drain-complete"]);
+    assert.ok(Array.isArray(records) && records[0].notified);
+    await run();
+    assert.deepEqual(notifications, ["drain-complete"], "one notification per onset");
+  });
+}
+
+for (const kind of ["foreground", "manual", "background"] as const) {
+  for (const failure of ["failed", "rejected"] as const) {
+    test(`NOC B: ${kind} ${failure} run observes its unusable key and keeps run conditions`, { timeout: 5_000 }, async (t) => {
+      const f = await fixture(t);
+      const p = portal(f);
+      const notifications: string[] = [];
+      const rejection = new TypeError("synthetic coordinator rejection");
+      let rejectClock = false;
+      const shell = await composeSender({ ...p.options,
+        now() { if (rejectClock) { rejectClock = false; throw rejection; } return f.clock.now(); },
+        conditionNotifier: { async notify(condition) { notifications.push(condition); } },
+      });
+      f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "read-permission-missing" });
+      checkpoint(await shell.manualSync());
+      f.clock.advance(1);
+      f.sources.next("snapshot", "steps", () => {
+        f.cipher.invalidate(KEY);
+        rejectClock = failure === "rejected";
+        return { outcome: "not-permitted", failure: "read-permission-missing" };
+      });
+      const result = kind === "background" ? (await shell.backgroundPollingProvider())!.runTask()
+        : kind === "foreground" ? shell.foreground() : shell.manualSync();
+      if (kind === "background") assert.equal(await result, "failed");
+      else if (failure === "rejected") await assert.rejects(result, (error) => error === rejection);
+      else assert.equal((await result as ShellRunResult).outcome, "failed");
+      const records = await shell.conditions();
+      assert.deepEqual(conditionNames(records), ["permission-missing", "installation-key-unusable"]);
+      assert.ok(Array.isArray(records) && records[0].lastSeenMs === NOW, "no failed run summary is applied");
+      assert.ok(Array.isArray(records) && records.every((record) => record.notified));
+      assert.deepEqual(notifications, ["permission-missing", "installation-key-unusable"]);
+    });
+  }
+}
+
+for (const kind of ["manual", "background"] as const) {
+  test(`NOC C: ${kind} retries a phase after its first condition write fails`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    const notifications: string[] = [];
+    let writes = 0;
+    let unavailable = true;
+    const shell = await composeSender({ ...f.options,
+      conditionNotifier: { async notify(condition) { notifications.push(condition); } },
+      async openDatabase() {
+        const database = await f.options.openDatabase();
+        const transaction = database.transaction.bind(database);
+        database.transaction = (body) => transaction((tx) => body({ ...tx, async execute(sql, params) {
+          if (sql.startsWith("INSERT INTO operator_conditions")) {
+            writes++;
+            if (unavailable) throw new Error("synthetic condition storage failure");
+          }
+          return tx.execute(sql, params);
+        } }));
+        return database;
+      },
+    });
+    f.state.status = enrolled({ phase: "refused" });
+    const run = () => kind === "manual" ? shell.manualSync()
+      : (async () => (await shell.backgroundPollingProvider())!.runTask())();
+    await run();
+    assert.equal(writes, 1, "one phase attempt per trigger");
+    assert.deepEqual(notifications, []);
+    assert.deepEqual(conditionNames(await shell.conditions()), []);
+    unavailable = false;
+    await run();
+    assert.equal(writes, 2);
+    assert.deepEqual(notifications, ["enrollment-refused"]);
+    assert.deepEqual(conditionNames(await shell.conditions()), ["enrollment-refused"]);
+    await run();
+    assert.deepEqual(notifications, ["enrollment-refused"]);
+  });
+}
+
+for (const failure of ["storage-failed", "rejected", "timeout"] as const) {
+  test(`NOC D: replacement survives a ${failure} admission and the next successful process applies it`, { timeout: 5_000 }, async (t) => {
+    const f = await observerFixture(t);
+    let unavailable = false;
+    const observer = createShellConditionObserver({ ...f.observerOptions, async status() {
+      if (unavailable) {
+        unavailable = false;
+        if (failure === "rejected") throw new Error("synthetic admission failure");
+        if (failure === "timeout") return new Promise<never>(() => {});
+        return { outcome: "storage-failed" as const };
+      }
+      return f.state.status;
+    } });
+    await observer.observe(f.run(9, "permission-missing"), f.clock.monotonicNow());
+    f.state.status = enrolled({ installationId: "00000000-0000-4000-8000-000000000002", keyAlias: "replacement" });
+    await f.cipher.create("replacement");
+    unavailable = true;
+    await observer.observe({ summary: summary(1, "record-too-large"), identity: installationIdentity(f.state.status)! });
+    assert.equal(observer.retainedSummaryCount(), 1);
+    await observer.observe();
+    assert.deepEqual(conditionNames(await observer.conditions()), ["record-too-large"]);
+    assert.deepEqual(f.notifications, ["record-too-large"]);
+  });
+}
+
+
+test("NOC A: the delivery pass after a deferred foreground refresh observes drain completion", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const p = portal(f);
+  const submissions = submissionClock(f.clock.now);
+  const notifications: string[] = [];
+  let refreshes = 0;
+  const shell = await composeSender({ ...p.options, onRunSubmitted: submissions.admitted,
+    conditionNotifier: { async notify(condition) { notifications.push(condition); } },
+    enrollment(database, transport) {
+      return { ...f.options.enrollment(database, transport),
+        async status() {
+          const current = f.state.status;
+          if (current && !("outcome" in current) && current.phase === "draining") {
+            return { ...current, finalSequence: (await outboxMessages(database)).length === 0 ? 9 : null };
+          }
+          return current;
+        },
+        async refreshCapabilities() {
+          refreshes++;
+          await acknowledgements(f, 2);
+          f.state.status = enrolled({ phase: "draining" });
+          return { outcome: "current" };
+        },
+      };
+    },
+  });
+  const held = f.sources.hold("snapshot", "steps");
+  f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "read-permission-missing" });
+  f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "read-permission-missing" });
+  try {
+    const active = shell.manualSync();
+    await held.arrived;
+    const returning = await submissions.submit(() => shell.foreground());
+    held.release();
+    checkpoint(await active);
+    checkpoint(await returning.result);
+    assert.equal(refreshes, 1);
+    assert.deepEqual(await outboxMessages(f.database()), []);
+    assert.deepEqual(notifications, ["permission-missing", "drain-complete"]);
+    assert.deepEqual(conditionNames(await shell.conditions()), ["permission-missing", "drain-complete"]);
+  } finally { held.release(); }
+});
+
+test("NOC C: a timed out lifecycle status read leaves the phase pending for the next manual trigger", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const notifications: string[] = [];
+  let transitionReads = 0;
+  let timeouts = 0;
+  const shell = await composeSender({ ...f.options,
+    conditionNotifier: { async notify(condition) { notifications.push(condition); } },
+    enrollment(database, transport) {
+      return { ...f.options.enrollment(database, transport), async status() {
+        const current = f.state.status;
+        if (current && !("outcome" in current) && current.phase === "refused" && ++transitionReads === 2) {
+          timeouts++;
+          return new Promise<never>(() => {});
+        }
+        return current;
+      } };
+    },
+  });
+  f.state.status = enrolled({ phase: "refused" });
+  assert.deepEqual(await shell.manualSync(), { outcome: "skipped" });
+  assert.equal(timeouts, 1);
+  assert.deepEqual(notifications, [], "no retry within the first trigger");
+  assert.deepEqual(await shell.manualSync(), { outcome: "skipped" });
+  assert.deepEqual(notifications, ["enrollment-refused"]);
+  assert.deepEqual(conditionNames(await shell.conditions()), ["enrollment-refused"]);
+});
+
+for (const pending of ["older-current", "newer-current"] as const) {
+  test(`NOC D: unavailable stale admission preserves ${pending} installation work`, { timeout: 5_000 }, async (t) => {
+    const f = await observerFixture(t);
+    const removed = f.run(9, "permission-missing");
+    let unavailable = false;
+    let failApplication = true;
+    const observer = createShellConditionObserver({ ...f.observerOptions,
+      now() { if (failApplication) throw new Error("synthetic unavailable application"); return f.clock.now(); },
+      async status() {
+        if (unavailable) { unavailable = false; return { outcome: "storage-failed" as const }; }
+        return f.state.status;
+      },
+    });
+    f.state.status = enrolled({ installationId: "00000000-0000-4000-8000-000000000002" });
+    const current = { identity: installationIdentity(f.state.status)!, summary: summary(2, "record-too-large") };
+    await observer.observe(current, f.clock.monotonicNow());
+    unavailable = true;
+    await observer.observe(removed);
+    assert.equal(observer.retainedSummaryCount(), 1);
+    if (pending === "newer-current") {
+      await observer.observe({ identity: current.identity, summary: summary(3, "storage-pressure") }, f.clock.monotonicNow());
+      await observer.observe(current, f.clock.monotonicNow());
+    }
+    failApplication = false;
+    await observer.observe();
+    assert.deepEqual(conditionNames(await observer.conditions()), [pending === "older-current" ? "record-too-large" : "storage-pressure"]);
+    assert.deepEqual(f.notifications, [pending === "older-current" ? "record-too-large" : "storage-pressure"]);
+  });
+}
