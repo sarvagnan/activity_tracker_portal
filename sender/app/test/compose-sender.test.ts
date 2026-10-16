@@ -2008,6 +2008,132 @@ test("NOC: a background duplicate during native reads preserves foreground admis
   assert.deepEqual(f.notifications, ["permission-missing"]);
 });
 
+test("NOC: lifecycle during a submitted observation does not reapply its successful summary", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal();
+  const release = signal();
+  const observer = createShellConditionObserver({ ...f.observerOptions, notifier: { async notify(condition) {
+    f.notifications.push(condition);
+    entered.resolve();
+    await release.promise;
+  } } });
+  const run = observer.observe(f.run(1, "record-too-large"));
+  await entered.promise;
+  f.clock.advance(1);
+  const lifecycle = observer.observe();
+  release.resolve();
+  await Promise.all([run, lifecycle]);
+  const records = await observer.conditions();
+  assert.ok(Array.isArray(records) && records[0].lastSeenMs === NOW, "the lifecycle observation omits the successful run summary");
+  assert.deepEqual(f.notifications, ["record-too-large"]);
+});
+
+for (const staleCaller of [false, true]) {
+  test(`NOC: replacement admitted during the final status read survives${staleCaller ? " a stale caller" : ""}`, { timeout: 5_000 }, async (t) => {
+    const f = await observerFixture(t);
+    const entered = signal();
+    const release = signal();
+    let reads = 0;
+    const observer = createShellConditionObserver({ ...f.observerOptions, async status() {
+      const captured = f.state.status;
+      if (++reads === 2) { entered.resolve(); await release.promise; }
+      return captured;
+    } });
+    const oldRun = f.run(9, "permission-missing");
+    const active = observer.observe(oldRun);
+    await entered.promise;
+    f.state.status = enrolled({ installationId: "00000000-0000-4000-8000-000000000002", keyAlias: "replacement" });
+    await f.cipher.create("replacement");
+    const replacement = { summary: summary(1, "record-too-large"), identity: installationIdentity(f.state.status)! };
+    const next = observer.observe(replacement);
+    const stale = staleCaller ? observer.observe(oldRun, f.clock.monotonicNow()) : Promise.resolve();
+    release.resolve();
+    await Promise.all([active, next, stale]);
+    assert.deepEqual(conditionNames(await observer.conditions()), ["record-too-large"]);
+    assert.deepEqual(f.notifications, ["record-too-large"]);
+    f.clock.advance(1);
+    await observer.observe();
+    const records = await observer.conditions();
+    assert.deepEqual(conditionNames(records), ["record-too-large"]);
+    assert.ok(Array.isArray(records) && records[0].lastSeenMs === NOW, "lifecycle does not reapply the applied summary");
+    assert.deepEqual(f.notifications, ["record-too-large"]);
+  });
+}
+
+for (const failure of ["expired", "storage-failed", "rejected"] as const) {
+  test(`NOC: retention stays bounded after 1000 distinct ${failure} admissions`, { timeout: 5_000 }, async (t) => {
+    const f = await observerFixture(t);
+    const observer = createShellConditionObserver({ ...f.observerOptions, async status() {
+      if (failure === "rejected") throw new Error("synthetic unavailable status");
+      return failure === "expired" ? f.state.status : { outcome: "storage-failed" as const };
+    } });
+    for (let index = 0; index < 1_000; index++) {
+      f.state.status = enrolled({ installationId: `synthetic-installation-${index}` });
+      await observer.observe({ identity: installationIdentity(f.state.status)!, summary: summary(1, "permission-missing") },
+        failure === "expired" ? f.clock.monotonicNow() : Infinity);
+    }
+    assert.ok(observer.retainedSummaryCount() <= 1, `retained ${observer.retainedSummaryCount()} summaries`);
+    assert.deepEqual(f.notifications, []);
+    if (failure === "expired") {
+      await observer.observe();
+      assert.deepEqual(conditionNames(await observer.conditions()), ["permission-missing"]);
+      assert.deepEqual(f.notifications, ["permission-missing"]);
+    }
+  });
+}
+
+test("NOC: a delayed foreign admission cannot evict newer verified installation work", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal();
+  const release = signal();
+  const removedStatus = enrolled();
+  const removed = f.run(9, "permission-missing");
+  let hold = false;
+  let rejectObservation = true;
+  const observer = createShellConditionObserver({ ...f.observerOptions, now() {
+    if (rejectObservation) throw new Error("synthetic unavailable observation");
+    return f.clock.now();
+  }, async status() {
+    if (hold) { hold = false; entered.resolve(); await release.promise; return removedStatus; }
+    return f.state.status;
+  } });
+  f.state.status = enrolled({ installationId: "00000000-0000-4000-8000-000000000002" });
+  const current = { summary: summary(1, "record-too-large"), identity: installationIdentity(f.state.status)! };
+  await observer.observe(current, f.clock.monotonicNow());
+  hold = true;
+  const stale = observer.observe(removed);
+  await entered.promise;
+  await observer.observe();
+  assert.deepEqual(f.notifications, [], "the verified current summary is still unapplied");
+  rejectObservation = false;
+  release.resolve();
+  await stale;
+  await observer.observe();
+  assert.deepEqual(conditionNames(await observer.conditions()), ["record-too-large"]);
+  assert.deepEqual(f.notifications, ["record-too-large"]);
+});
+
+test("NOC: unavailable status preserves a current summary for lifecycle recovery", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  let unavailable = true;
+  const observer = createShellConditionObserver({ ...f.observerOptions, async status() {
+    return unavailable ? { outcome: "storage-failed" as const } : f.state.status;
+  } });
+  await observer.observe(f.run(1, "storage-pressure"));
+  await observer.observe(f.run(2, "record-too-large"));
+  assert.equal(observer.retainedSummaryCount(), 1);
+  assert.deepEqual(f.notifications, []);
+  unavailable = false;
+  await observer.observe();
+  assert.deepEqual(conditionNames(await observer.conditions()), ["record-too-large"]);
+  assert.deepEqual(f.notifications, ["record-too-large"]);
+  f.clock.advance(1);
+  await observer.observe();
+  const records = await observer.conditions();
+  assert.ok(Array.isArray(records) && records[0].lastSeenMs === NOW);
+  assert.deepEqual(f.notifications, ["record-too-large"]);
+});
+
 test("NOC: a removed identity cannot replace retained work for the current installation", { timeout: 5_000 }, async (t) => {
   const f = await observerFixture(t);
   const observer = createShellConditionObserver(f.observerOptions);

@@ -90,11 +90,16 @@ export function createShellConditionObserver(options: {
   let active: Pending | null = null;
   let submitted = false;
   let revision = 0;
-  // Receiving is not applying. Keep the newest summary for each supplied
-  // identity until fresh status reads select the current installation. A late
-  // removed-identity caller must not replace the current one's retained work.
-  let receivedRuns = new Map<string, Run>();
-  let appliedRun: Run | undefined;
+  // Sender storage belongs to one installation. Receiving is not applying:
+  // retain one summary even if its caller has no observation budget left.
+  let receivedRun: Run | null = null;
+  // Install the completion receipt before awaiting the unit. Its immutable
+  // result distinguishes applied work from a rejected/failed application,
+  // without letting a superseded continuation mutate this marker afterward.
+  let appliedRun: { identity: string; runSequence: number; observed: Promise<boolean> } | null = null;
+  // A delayed admission identity check cannot overturn a newer verified
+  // installation. This marker retains no summary or per-installation history.
+  let verifiedInstallation: { identity: string | null; revision: number } | null = null;
 
   function hasTime(deadline: number): boolean {
     return options.monotonicNow() + CONDITION_OBSERVATION_BUDGET_MS <= deadline;
@@ -102,6 +107,9 @@ export function createShellConditionObserver(options: {
 
   async function process(item: Pending): Promise<void> {
     if (!hasTime(item.deadline)) return;
+    // The shell queue finishes the prior submission before starting this build,
+    // so its receipt is already settled and consumes no native-read allowance.
+    const applied = appliedRun ? await appliedRun.observed : false;
     const current = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
     if (current && "outcome" in current) return; // Unknown is not unlink.
     const identity = installationIdentity(current);
@@ -113,20 +121,23 @@ export function createShellConditionObserver(options: {
     const latest = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
     if (latest && "outcome" in latest) return;
     const latestIdentity = installationIdentity(latest);
-    // Only keep the current identity, including when a reset invalidates this
-    // build. Unknown status above never discards retained work.
-    const received = latestIdentity === null ? undefined : receivedRuns.get(latestIdentity);
-    receivedRuns = received ? new Map([[received.identity, received]]) : new Map();
-    if (appliedRun?.identity !== latestIdentity) appliedRun = undefined;
-    if (latestIdentity !== identity) return;
-    // Requests arriving during native reads supersede this unsubmitted build.
+    // All build mutations follow its last freshness read and revision check.
+    // In particular, a stale final status must not discard a replacement run.
     if (item.revision !== revision || !hasTime(item.deadline)) return;
-    const run = received && (!appliedRun || received.summary.runSequence > appliedRun.summary.runSequence) ? received : undefined;
+    verifiedInstallation = { identity: latestIdentity, revision: item.revision };
+    if (receivedRun?.identity !== latestIdentity) receivedRun = null;
+    if (appliedRun?.identity !== latestIdentity) appliedRun = null;
+    if (latestIdentity !== identity) return;
+    const run = receivedRun && (!appliedRun || !applied || receivedRun.summary.runSequence > appliedRun.runSequence) ? receivedRun : undefined;
     submittingIdentity = identity;
     submittingDeadline = item.deadline;
     submitted = true;
-    const result = await conditions.observe({ enrollment: latest, keyStatus, ...(run ? { summary: run.summary } : {}) });
-    if (run && result.outcome === "observed") appliedRun = run;
+    const result = conditions.observe({ enrollment: latest, keyStatus, ...(run ? { summary: run.summary } : {}) });
+    if (run) {
+      appliedRun = { identity: run.identity, runSequence: run.summary.runSequence,
+        observed: result.then((value) => value.outcome === "observed", () => false) };
+    }
+    await result;
   }
 
   function drain(): void {
@@ -150,32 +161,59 @@ export function createShellConditionObserver(options: {
     return remaining === 0 ? Promise.resolve() : within(() => result, remaining).catch(() => undefined);
   }
 
-  function observe(run?: Run, deadline = Infinity): Promise<void> {
-    if (run) {
-      const received = receivedRuns.get(run.identity);
-      if (!received || received.summary.runSequence < run.summary.runSequence) {
-        receivedRuns.set(run.identity, run);
-      }
+  function retain(run: Run): void {
+    if (receivedRun?.identity !== run.identity || receivedRun.summary.runSequence < run.summary.runSequence) {
+      receivedRun = run;
     }
-    revision++;
-    // A request superseding native reads also inherits the still-waiting
-    // caller's admission. Once submitted, that allowance belongs to that
-    // observation only; a later background request needs its own allowance.
-    const admissionDeadline = Math.max(deadline, active && !submitted ? active.deadline : -Infinity);
+  }
+
+  async function receiveReplacement(run: Run, receivedRevision: number): Promise<void> {
+    // Identity strings do not order installations. Unlike same-identity runs,
+    // a foreign caller must prove it is current before evicting retained work.
+    // This admission read is bounded even when observation admission expires.
+    try {
+      const current = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
+      if (current && "outcome" in current) return;
+      const identity = installationIdentity(current);
+      if (identity !== run.identity) return;
+      if (verifiedInstallation && receivedRevision < verifiedInstallation.revision &&
+          identity !== verifiedInstallation.identity) return;
+      verifiedInstallation = { identity, revision: Math.max(receivedRevision, verifiedInstallation?.revision ?? 0) };
+      retain(run);
+    } catch { /* Unknown status cannot evict retained work. */ }
+  }
+
+  function enqueue(deadline: number): Promise<void> {
     if (!pending) {
       let resolve!: () => void;
       const promise = new Promise<void>((done) => { resolve = done; });
-      pending = { deadline: admissionDeadline, revision, promise, resolve };
+      pending = { deadline, revision, promise, resolve };
     } else {
       // Any eligible waiter may admit the retained work. An expiring background
       // caller bounds only its own wait, never a foreground/lifecycle caller.
-      pending.deadline = Math.max(pending.deadline, admissionDeadline);
+      pending.deadline = Math.max(pending.deadline, deadline);
       pending.revision = revision;
     }
     const result = pending.promise;
     drain();
-    return waitFor(result, deadline);
+    return result;
   }
 
-  return { observe, conditions: conditions.conditions };
+  function observe(run?: Run, deadline = Infinity): Promise<void> {
+    const receivedRevision = ++revision;
+    // A request superseding native reads inherits the still-waiting caller's
+    // admission. Submitted work keeps its allowance for that observation only.
+    const admissionDeadline = Math.max(deadline, active && !submitted ? active.deadline : -Infinity);
+    if (run && receivedRun && receivedRun.identity !== run.identity) {
+      const result = receiveReplacement(run, receivedRevision).then(() => enqueue(admissionDeadline));
+      return waitFor(result, deadline);
+    }
+    if (run) retain(run);
+    return waitFor(enqueue(admissionDeadline), deadline);
+  }
+
+  return { observe, conditions: conditions.conditions,
+    /** Test-only cardinality inspection; exposes no summaries or installation data. */
+    retainedSummaryCount: () => receivedRun === null ? 0 : 1,
+  };
 }
