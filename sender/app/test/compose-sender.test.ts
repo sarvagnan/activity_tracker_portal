@@ -148,7 +148,7 @@ function submissionClock(now: () => number) {
   };
 }
 
-test("overlapping foreground, manual and background triggers share one strongest follow-up", { timeout: 5_000 }, async (t) => {
+test("foreground and manual retain the strongest follow-up while queued background admission can expire", { timeout: 5_000 }, async (t) => {
   const f = await fixture(t);
   const submissions = submissionClock(f.clock.now);
   const shell = await composeSender({ ...f.options, now: submissions.now });
@@ -161,7 +161,10 @@ test("overlapping foreground, manual and background triggers share one strongest
     // Registration reads now() once before foreground's trigger is submitted.
     const foreground = await submissions.submit(() => shell.foreground(), 2);
     const manual = await submissions.submit(() => shell.manualSync());
-    const background = await submissions.submit(() => backgroundTaskBody(shell.backgroundPollingProvider)());
+    // Background waits at the shell admission boundary instead of submitting a
+    // relative budget that the coordinator would restart after queueing.
+    const background = { result: backgroundTaskBody(shell.backgroundPollingProvider)() };
+    await new Promise<void>((resolve) => setImmediate(resolve));
     const settled: string[] = [];
     void foreground.result.then(() => settled.push("foreground"));
     void manual.result.then(() => settled.push("manual"));
@@ -170,7 +173,7 @@ test("overlapping foreground, manual and background triggers share one strongest
     activeRead.release();
     assert.equal(checkpoint(await active).runSequence, 1);
     await followUpRead.arrived;
-    assert.deepEqual(settled, []); // Background also awaits the follow-up, not the active result.
+    assert.deepEqual(settled, []); // Background admission still waits for the submitted runs.
     // Unbudgeted foreground/manual terms must remove the background budget.
     f.sources.callCostMs = 480_000;
     followUpRead.release();
@@ -182,7 +185,7 @@ test("overlapping foreground, manual and background triggers share one strongest
     assert.equal(second.runSequence, 2);
     assert.equal(second.summary.trigger, "manual");
     assert.ok(second.summary.recordTypes.every((type) => type.reason !== "time-budget-reached"));
-    assert.equal(backgroundResult, 1);
+    assert.equal(backgroundResult, 2); // The unbudgeted follow-up used the callback's entire deadline.
     assert.deepEqual((await runs(f.database())).map((row) => row.run_sequence), [1, 2]);
     const checkpoints = await f.database().query("SELECT run_sequence FROM run_checkpoints ORDER BY run_sequence");
     assert.deepEqual(checkpoints.map((row) => row.run_sequence), [1, 2]);
@@ -816,4 +819,286 @@ test("a context change during an unanswered request cannot start a second delive
     await shell.manualSync();
     assert.deepEqual(await outboxMessages(f.database()), []);
   } finally { release(); }
+});
+
+
+test("an expired queued background callback starts no fresh source reads", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const shell = await composeSender(f.options);
+  const held = f.sources.hold("snapshot", "steps");
+  f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "synthetic-permission-gap" });
+  try {
+    const active = shell.manualSync();
+    await held.arrived;
+    const calls = f.sources.calls.length;
+    const polling = await shell.backgroundPollingProvider();
+    const background = polling!.runTask();
+    // Flush preparation while the active source call remains explicitly held.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal((await runs(f.database())).length, 1);
+    f.clock.advance(BACKGROUND_BUDGET_MS + 1);
+    held.release();
+    checkpoint(await active);
+    const result = await background;
+    assert.equal(f.sources.calls.length, calls, "expired callback must not start snapshot, change, or token reads");
+    assert.equal(result, "failed");
+    assert.equal((await runs(f.database())).length, 1);
+  } finally { held.release(); }
+});
+
+test("a retryable old-context request preserves the overlapping replacement delivery trigger", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  let arrive!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  p.state.answer = async (_url, init) => {
+    if (p.requests.length === 1) {
+      arrive(); await released;
+      return encodeMessage({ wire_version: 1, kind: "retryable-failure", reason: "temporarily-unavailable" });
+    }
+    return receipt(init.body!);
+  };
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, 1);
+  const installation = "00000000-0000-4000-8000-000000000002";
+  const key = "replacement-key";
+  const url = "https://replacement.synthetic.invalid";
+  await f.cipher.create(key);
+  try {
+    const first = shell.manualSync();
+    await arrived;
+    await acknowledgements(f, 2, installation, key);
+    f.state.status = enrolled({ phase: "draining", deliveryContext: { installationId: installation, keyAlias: key, portalUrl: url } });
+    const next = shell.manualSync();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    await Promise.all([first, next]);
+    assert.equal(p.requests.length, 3, "replacement Portal must receive its queued messages after the retryable old request");
+    assert.ok(p.requests.slice(1).every((request) => request.url === `${url}/v1/outbox-messages`));
+    assert.equal(p.state.maxInFlight, 1);
+    assert.deepEqual((await outboxMessages(f.database())).map((message) => message.installationId), [INSTALLATION]);
+  } finally { release(); }
+});
+
+
+for (const terminal of ["blocked", "retryable"] as const) {
+  test(`overlapping triggers retain exactly one extra attempt for a ${terminal} head`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t, enrolled({ phase: "draining" }));
+    const p = portal(f);
+    let arrive!: () => void;
+    let release!: () => void;
+    const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    p.state.answer = async (_url, init) => {
+      if (p.requests.length === 1) { arrive(); await released; }
+      return terminal === "retryable"
+        ? encodeMessage({ wire_version: 1, kind: "retryable-failure", reason: "temporarily-unavailable" })
+        : encodeMessage({ wire_version: 1, kind: "delivery-block", failure: "sequence-out-of-order",
+          message_sha256: messageSha256(init.body!), sender_installation: INSTALLATION,
+          sequence: decodeMessage(init.body!).sequence });
+    };
+    const shell = await composeSender(p.options);
+    await acknowledgements(f, 2);
+    try {
+      const first = shell.manualSync();
+      await arrived;
+      const overlapping = Array.from({ length: 8 }, () => shell.manualSync());
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      release();
+      await Promise.all([first, ...overlapping]);
+      assert.equal(p.requests.length, 2, "one overlapping trigger set buys one extra pass, with no retry spin");
+      assert.deepEqual(p.requests[0].body, p.requests[1].body);
+      assert.equal(p.state.maxInFlight, 1);
+      assert.equal((await outboxMessages(f.database())).length, 2);
+      assert.deepEqual(f.state.notifications, terminal === "blocked" ? ["sequence-out-of-order"] : []);
+      await shell.manualSync();
+      assert.equal(p.requests.length, 3, "a later explicit trigger can retry again");
+    } finally { release(); }
+  });
+}
+
+test("work staged just after an empty Outbox observation gets the overlapping trigger's pass", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  let arrive!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let held = false;
+  const shell = await composeSender({ ...p.options, async openDatabase() {
+    const database = await f.options.openDatabase();
+    const query = database.query.bind(database);
+    database.query = async (sql, parameters) => {
+      const rows = await query(sql, parameters);
+      if (!held && sql.startsWith("SELECT sequence, kind, sealed, message_bytes FROM outbox_messages") && rows.length === 0) {
+        held = true; arrive(); await released;
+      }
+      return rows;
+    };
+    return database;
+  } });
+  try {
+    const first = shell.manualSync();
+    await arrived;
+    await acknowledgements(f, 1);
+    const next = shell.manualSync();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    await Promise.all([first, next]);
+    assert.equal(p.requests.length, 1);
+    assert.deepEqual(await outboxMessages(f.database()), []);
+    assert.equal(p.state.maxInFlight, 1);
+  } finally { release(); }
+});
+
+test("coalesced background delivery callers preserve the tightest pending deadline", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  let arrive!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  p.state.answer = async (_url, init) => {
+    if (p.requests.length === 1) { arrive(); await released; }
+    return receipt(init.body!);
+  };
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, 3);
+  try {
+    const first = shell.manualSync();
+    await arrived;
+    const polling = (await shell.backgroundPollingProvider())!;
+    const firstBackground = polling.runTask();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    f.clock.advance(100_000);
+    const laterBackground = polling.runTask();
+    const manual = shell.manualSync();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // Enough time for the later background caller, one millisecond too little
+    // for the earliest caller's full exchange plus receipt-bookkeeping reserve.
+    f.clock.advance(BACKGROUND_BUDGET_MS - 100_000 - DELIVERY_TIMEOUT_MS - DELIVERY_FINISH_RESERVE_MS + 1);
+    release();
+    const results = await Promise.all([first, firstBackground, laterBackground, manual]);
+    assert.deepEqual(results.slice(1, 3), ["failed", "failed"]);
+    assert.equal(p.requests.length, 1, "neither the later deadline nor manual intent can extend the pending pass");
+    assert.equal((await outboxMessages(f.database())).length, 2);
+    await shell.manualSync();
+    assert.equal(p.requests.length, 3);
+    assert.deepEqual(await outboxMessages(f.database()), []);
+  } finally { release(); }
+});
+
+test("queued background admission recomputes a positive budget and a later expired caller fails", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const shell = await composeSender(f.options);
+  const held = f.sources.hold("snapshot", "steps");
+  f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "synthetic-permission-gap" });
+  try {
+    const active = shell.manualSync();
+    await held.arrived;
+    const polling = (await shell.backgroundPollingProvider())!;
+    const first = polling.runTask();
+    const second = polling.runTask();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const before = f.sources.calls.length;
+    f.clock.advance(BACKGROUND_BUDGET_MS - 20);
+    held.release();
+    checkpoint(await active);
+    // Only the resumed snapshot can start in the 20ms left after queueing.
+    f.sources.callCostMs = 20;
+    assert.equal(await first, "success");
+    assert.equal(await second, "failed");
+    assert.equal(f.sources.calls.length, before + 1);
+    assert.equal(f.sources.calls.at(-1)!.method, "snapshot");
+    assert.equal((await runs(f.database())).length, 2);
+  } finally { held.release(); }
+});
+
+test("background setup cannot start sources after the absolute callback deadline", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const shell = await composeSender({ ...f.options, platform: { ...f.options.platform,
+    async restriction() { f.clock.advance(BACKGROUND_BUDGET_MS); return "available"; },
+  } });
+  // The coordinator opens its relative budget after the scheduling observation;
+  // the shell's final source boundary must still honor the callback's deadline.
+  assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "success");
+  assert.deepEqual(f.sources.calls, []);
+  assert.equal((await runs(f.database())).length, 1);
+});
+
+
+test("the pending delivery pass has its own attempt cap and consumes one overlapping trigger set", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  let arrive!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  p.state.answer = async (_url, init) => {
+    if (p.requests.length === 1) { arrive(); await released; }
+    return receipt(init.body!);
+  };
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, MAX_DELIVERY_ATTEMPTS * 2 + 1);
+  try {
+    const first = shell.manualSync();
+    await arrived;
+    const overlapping = Array.from({ length: 4 }, () => shell.manualSync());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    await Promise.all([first, ...overlapping]);
+    assert.equal(p.requests.length, MAX_DELIVERY_ATTEMPTS * 2);
+    assert.equal((await outboxMessages(f.database())).length, 1);
+    assert.equal(p.state.maxInFlight, 1);
+    await shell.manualSync();
+    assert.deepEqual(await outboxMessages(f.database()), []);
+  } finally { release(); }
+});
+
+test("only a fresh trigger during the extra retryable pass buys another pass", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  let firstArrive!: () => void;
+  let firstRelease!: () => void;
+  let secondArrive!: () => void;
+  let secondRelease!: () => void;
+  const firstArrived = new Promise<void>((resolve) => { firstArrive = resolve; });
+  const firstReleased = new Promise<void>((resolve) => { firstRelease = resolve; });
+  const secondArrived = new Promise<void>((resolve) => { secondArrive = resolve; });
+  const secondReleased = new Promise<void>((resolve) => { secondRelease = resolve; });
+  p.state.answer = async () => {
+    if (p.requests.length === 1) { firstArrive(); await firstReleased; }
+    if (p.requests.length === 2) { secondArrive(); await secondReleased; }
+    return encodeMessage({ wire_version: 1, kind: "retryable-failure", reason: "temporarily-unavailable" });
+  };
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, 1);
+  try {
+    const first = shell.manualSync();
+    await firstArrived;
+    const next = shell.manualSync();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    firstRelease();
+    await secondArrived;
+    const fresh = shell.manualSync();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    secondRelease();
+    await Promise.all([first, next, fresh]);
+    assert.equal(p.requests.length, 3);
+    assert.equal((await outboxMessages(f.database())).length, 1);
+    assert.equal(p.state.maxInFlight, 1);
+  } finally { firstRelease(); secondRelease(); }
+});
+
+test("background preparation exhausting the budget skips admission without a zero-budget trigger", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  const shell = await composeSender({ ...f.options, async projectionSchemaVersions() {
+    f.clock.advance(BACKGROUND_BUDGET_MS);
+    return f.state.versions;
+  } });
+  assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "failed");
+  assert.deepEqual(f.sources.calls, []);
+  assert.deepEqual(await runs(f.database()), []);
 });

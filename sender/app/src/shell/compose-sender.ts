@@ -113,14 +113,21 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
 
   let delivery: Promise<void> | null = null;
   let deliveryDeadline = Infinity;
+  let pendingDelivery: { deadline: number; promise: Promise<void>; resolve: () => void } | null = null;
   function hasTime(deadline: number, timeout: number): boolean {
     return options.monotonicNow() + timeout + DELIVERY_FINISH_RESERVE_MS <= deadline;
   }
   function deliver(deadline = Infinity): Promise<void> {
-    // All triggers coalesce onto one bounded loop, even across context replacement.
+    // Joining callers retain one subsequent pass, including after empty,
+    // retryable and blocked observations or a delivery-context replacement.
     if (delivery) {
       deliveryDeadline = Math.min(deliveryDeadline, deadline);
-      return delivery;
+      if (!pendingDelivery) {
+        let resolve!: () => void;
+        const promise = new Promise<void>((done) => { resolve = done; });
+        pendingDelivery = { deadline, promise, resolve };
+      } else pendingDelivery.deadline = Math.min(pendingDelivery.deadline, deadline);
+      return pendingDelivery.promise;
     }
     deliveryDeadline = deadline;
     delivery = Promise.resolve().then(async () => {
@@ -137,8 +144,20 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       }
     }).catch(() => { /* Delivery cannot erase a Polling Run's checkpoint result. */ }).finally(() => {
       delivery = null;
+      const next = pendingDelivery;
+      pendingDelivery = null;
+      // Consume the signal before opening the next bounded pass. A terminal
+      // head cannot repeat it; only another overlapping caller can request one.
+      if (next) void deliver(next.deadline).then(next.resolve);
     });
     return delivery;
+  }
+
+  // Admitted background work holds preparation until it settles, so this
+  // absolute source boundary never constrains an unbudgeted coordinator run.
+  let backgroundSourceDeadline = Infinity;
+  function checkSourceDeadline(): void {
+    if (options.monotonicNow() >= backgroundSourceDeadline) throw new Error("Background source deadline reached");
   }
 
   let coordinator: SenderSync | null = null;
@@ -167,6 +186,13 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     { readonly outcome: "failed"; readonly failure: "storage-failed" }
   > {
     const ready = preparation.then(async () => {
+      if (kind === "background") {
+        // The published coordinator starts relative budgets only when a run
+        // opens. Admit background work only when all submitted runs are done.
+        // Holding preparation here prevents another caller racing admission.
+        await Promise.allSettled(inFlight);
+        if (options.monotonicNow() >= deadline) return { outcome: "skipped" } as const;
+      }
       let current = await status();
       const refreshAfter = kind === "foreground" && inFlight.size > 0;
       if (isStatus(current) && (current.phase === "confirming" ||
@@ -199,7 +225,9 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       await prepare(current);
       return { pending: start(), refreshAfter };
     });
-    preparation = ready.catch(() => undefined);
+    preparation = ready.then(async (result) => {
+      if (kind === "background" && "pending" in result) await result.pending;
+    }).catch(() => undefined);
     return ready;
   }
 
@@ -227,7 +255,12 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     ).sort();
     const schemaVersions = Object.fromEntries(recordTypes.map((type) => [type, versions[type]]));
     coordinator = createSenderSync({
-      database, cipher: options.cipher, sources: options.sources, recordTypes,
+      database, cipher: options.cipher, recordTypes,
+      sources: {
+        async issue(type) { checkSourceDeadline(); return options.sources.issue(type); },
+        async readSnapshotPage(request) { checkSourceDeadline(); return options.sources.readSnapshotPage(request); },
+        async readChangePage(request) { checkSourceDeadline(); return options.sources.readChangePage(request); },
+      },
       projection: { implementationVersion: PROJECTION_IMPLEMENTATION_VERSION, schemaVersions },
       async context() {
         const latest = await status();
@@ -289,10 +322,15 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
         const deadline = options.monotonicNow() + BACKGROUND_BUDGET_MS;
         // A task-local trigger seam subtracts preparation time while the published
         // scheduling unit retains ownership of runTask's budget and result mapping.
-        const taskPolling = makePolling((request) => startRun({
-          ...request, budgetMs: Math.max(0, Math.min(request.budgetMs ?? BACKGROUND_BUDGET_MS,
-            deadline - options.monotonicNow())),
-        }, deadline));
+        const taskPolling = makePolling(async (request) => {
+          const budgetMs = Math.floor(Math.min(request.budgetMs ?? BACKGROUND_BUDGET_MS,
+            deadline - options.monotonicNow()));
+          // Never submit zero: the coordinator correctly rejects it as a caller error.
+          if (budgetMs <= 0) throw new Error("Background admission deadline reached");
+          backgroundSourceDeadline = deadline;
+          try { return await startRun({ ...request, budgetMs }, deadline); }
+          finally { backgroundSourceDeadline = Infinity; }
+        });
         const ready = await prepareAndStart("background", () => taskPolling.runTask(), deadline);
         if ("pending" in ready) return await ready.pending;
         await deliver(deadline);
