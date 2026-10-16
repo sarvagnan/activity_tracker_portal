@@ -1,0 +1,62 @@
+{
+  "contract_schema": 1,
+  "scope": "receipt-bound-delivery",
+  "version": "1",
+  "kind": "integration",
+  "purpose": "Prove across the real network and storage seams that Sender removal and Portal acknowledgement share one durability meaning for data and control messages: nothing staged is lost before its receipt, identical retries stay byte-identical and get the identical receipt, no receipt precedes the Portal's committed archival, and Last Delivery advances from the Portal receipt time of each newly accepted message only. The proof runs the published Sender units against the Portal ingress over HTTP through the Sender HTTP transport, whose network-seam behaviour it pins: exact bytes sent only to the given URL, no redirect followed, one timeout over the whole exchange, a bounded response read, and any incomplete exchange reported as no response.",
+  "inputs": [
+    { "name": "operator_intent", "mode": "pure", "description": "The Operator's enrollment offer and confirmation of the synthetic installation in the Portal." },
+    { "name": "staged_messages", "mode": "effectful", "description": "Outbox Messages staged by the published Sender units, sealed under the installation key in the Sender's SQLite database." },
+    { "name": "fetch", "mode": "effectful", "description": "The platform fetch the Sender HTTP transport performs each request with." },
+    { "name": "network", "mode": "volatile", "description": "The TCP path between Sender and Portal, which may lose a request, lose or truncate a response, reset a connection, stall, or redirect." },
+    { "name": "portal_ingress", "mode": "effectful", "description": "The Portal ingress shell's enrollment-confirmation, capabilities, and Outbox Message routes, running the published accept and installation units through one writer." },
+    { "name": "portal_store", "mode": "effectful", "description": "The Portal's Operational Store, which the accept units archive into and the proof reads." },
+    { "name": "portal_clock", "mode": "volatile", "description": "The Portal's receipt time." }
+  ],
+  "outputs": [
+    { "name": "http_transport", "description": "A Sender HTTP transport serving send-outbox-message@1's and manage-sender-enrollment@1's transport seams: one fetch per request with the exact method, URL, headers, and body bytes, no redirect followed, one timeout over the whole exchange, at most maxResponseBytes + 1 body bytes read, the body returned whatever the HTTP status, and every rejection, timeout, redirect, or incomplete body reported as no response." },
+    { "name": "durability_evidence", "description": "Executable evidence that every staged message is either still in the Sender Outbox or archived byte for byte by the Portal, that every request for a sequence carries identical bytes and every receipt for it is identical, that the Sender removes a message only after the Portal committed it, and that Last Delivery equals the Portal receipt time of the latest newly accepted message." }
+  ],
+  "named_failures": [
+    { "name": "request-timed-out", "outcome": "retryable" },
+    { "name": "network-failed", "outcome": "retryable" },
+    { "name": "redirect-refused", "outcome": "retryable" },
+    { "name": "response-incomplete", "outcome": "retryable" }
+  ],
+  "observable_effects": [
+    { "name": "portal-http-request", "description": "Performs exactly one HTTP request per transport call, to the given URL only." }
+  ],
+  "authority": {
+    "owns": [
+      "the end-to-end evidence that Sender removal and Portal acknowledgement share one durability meaning for data and control messages",
+      "the network-seam behaviour of the Sender HTTP transport that this evidence relies on: exact request bytes, the given URL only, no redirects, one timeout over the whole exchange, a bounded response read, and incomplete exchanges reported as no response"
+    ],
+    "does_not_own": [
+      "wire schemas, message identity, and receipt interpretation, which belong to ingest-protocol",
+      "staging, sealing, sequences, and the Outbox, which belong to stage-outbox-batch and the other stage units",
+      "delivery attempts, receipt-bound removal, and head blocks, which belong to send-outbox-message",
+      "the Portal's answers and archival, which belong to accept-ingest-batch, accept-sync-completion, accept-sync-checkpoint, and accept-capability-acknowledgement",
+      "enrollment and capability adoption, which belong to manage-sender-enrollment and manage-sender-installation",
+      "the Portal route, decompression, request limits, and Authorized Ingress, which belong to the Portal ingress shell",
+      "writing the HTTP client module, TLS, and Tailscale reachability, which the Sender shell enabling task provides; this unit pins only the behaviour its evidence relies on",
+      "when and how often to attempt delivery, which belongs to coordinate-sender-sync and the Sender shell"
+    ]
+  },
+  "dependencies": [
+    { "scope": "send-outbox-message", "version": "1" },
+    { "scope": "accept-ingest-batch", "version": "1" },
+    { "scope": "accept-sync-completion", "version": "1" },
+    { "scope": "accept-sync-checkpoint", "version": "1" },
+    { "scope": "accept-capability-acknowledgement", "version": "1" },
+    { "scope": "manage-sender-enrollment", "version": "1" }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/receipt-bound-delivery-1.spec.md",
+    "executable_tests": {
+      "typescript": "sender/app/test/receipt-bound-delivery-1.test.ts",
+      "python": "tests/acceptance/test_receipt_bound_delivery_1.py"
+    },
+    "runner": "tests/acceptance/run_receipt_bound_delivery_1.sh",
+    "languages": ["python", "typescript"]
+  }
+}
