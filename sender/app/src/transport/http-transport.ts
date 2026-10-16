@@ -86,11 +86,30 @@ export function createHttpTransport(options: HttpTransportOptions): HttpTranspor
       };
       let timer: ReturnType<typeof setTimeout> | undefined;
       const deadline = new Promise<HttpResult>((resolve) => {
-        timer = setTimeout(() => {
-          controller.abort();
-          cancelRead();
-          resolve({ outcome: "failed" });
-        }, timeoutMs);
+        let remaining = timeoutMs;
+        const schedule = (): void => {
+          const interval = Math.min(remaining, 2_147_483_647);
+          timer = setTimeout(() => {
+            // Subtract fired intervals: clocks need not advance with mocked setTimeout.
+            remaining -= interval;
+            if (remaining > 0) { schedule(); return; }
+            controller.abort();
+            cancelRead();
+            resolve({ outcome: "failed" });
+          }, interval);
+        };
+        schedule();
+      });
+      const yieldToTasks = (): Promise<void> => new Promise((resolve) => {
+        // setTimeout works on Hermes too; yield only after a bounded batch of reads,
+        // so short streams never depend on advancing a mocked task timer.
+        const resume = (): void => {
+          clearTimeout(taskTimer);
+          controller.signal.removeEventListener("abort", resume);
+          resolve();
+        };
+        const taskTimer = setTimeout(resume, 0);
+        controller.signal.addEventListener("abort", resume, { once: true });
       });
       try {
         // Snapshot caller-owned inputs before fetch can defer reading them.
@@ -103,16 +122,22 @@ export function createHttpTransport(options: HttpTransportOptions): HttpTranspor
           let complete = false;
           try {
             const response = await fetch(url, init);
-            if (controller.signal.aborted || typeof response !== "object" || response === null ||
-                (response.status >= 300 && response.status < 400) || response.redirected ||
+            if (typeof response !== "object" || response === null ||
                 response.body === null || typeof response.body?.getReader !== "function") {
               return { outcome: "failed" };
             }
+            // Acquire before refusal, including a fetch that resolves after abort, so finally
+            // cancels every abandoned body without waiting for its source to acknowledge it.
             reader = response.body.getReader();
+            if (controller.signal.aborted || (response.status >= 300 && response.status < 400) || response.redirected) {
+              return { outcome: "failed" };
+            }
             const chunks: Uint8Array[] = [];
             let size = 0;
             const limit = maxResponseBytes + 1;
-            while (true) {
+            let readsSinceYield = 0;
+            // Bytes bound retained data; task yields let the original deadline bound empty reads.
+            while (!complete && size < limit && !controller.signal.aborted) {
               const { done, value } = await reader.read();
               if (controller.signal.aborted) return { outcome: "failed" };
               if (done) {
@@ -129,7 +154,12 @@ export function createHttpTransport(options: HttpTransportOptions): HttpTranspor
                 cancelRead();
                 break;
               }
+              if (++readsSinceYield === 1_024) {
+                await yieldToTasks();
+                readsSinceYield = 0;
+              }
             }
+            if (controller.signal.aborted) return { outcome: "failed" };
             const body = new Uint8Array(size);
             let offset = 0;
             for (const chunk of chunks) {
@@ -140,7 +170,11 @@ export function createHttpTransport(options: HttpTransportOptions): HttpTranspor
           } catch {
             return { outcome: "failed" };
           } finally {
-            if (!complete) cancelRead();
+            if (!complete) {
+              // If a malformed or already-locked body prevented acquisition, abort the exchange instead.
+              if (reader === undefined) controller.abort();
+              cancelRead();
+            }
             try { reader?.releaseLock(); } catch { /* cleanup must not reject send */ }
           }
         };
