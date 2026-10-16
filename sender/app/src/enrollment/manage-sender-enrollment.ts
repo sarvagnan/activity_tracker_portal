@@ -227,9 +227,32 @@ export function createSenderEnrollment(options: SenderEnrollmentOptions): Sender
     return response?.outcome === "response" && response.body instanceof Uint8Array ? new Uint8Array(response.body) : null;
   }
 
-  async function adopt(row: DatabaseRow, bytes: Uint8Array, advertisement: Advertisement, instant: number): Promise<CipherFailed | null> {
+  function adopt(mode: "confirm", row: DatabaseRow, bytes: Uint8Array, advertisement: Advertisement, instant: number): Promise<ConfirmationResult>;
+  function adopt(mode: "refresh", row: DatabaseRow, bytes: Uint8Array, advertisement: Advertisement, instant: number): Promise<RefreshResult>;
+  async function adopt(
+    mode: "confirm" | "refresh", row: DatabaseRow, bytes: Uint8Array, advertisement: Advertisement, instant: number,
+  ): Promise<ConfirmationResult | RefreshResult> {
     const installationId = row.installation_id as string;
-    const lastSequence = await lane(() => lastOutboxSequence(database, installationId));
+    async function revalidate(handle: SenderDatabase): Promise<Refused | { outcome: "draining" | "current" } | null> {
+      const current = await enrollmentRow(handle);
+      if (mode === "confirm") {
+        return current?.installation_id === installationId && current.phase === "confirming"
+          ? null : { outcome: "refused", failure: "not-confirming" };
+      }
+      if (!current || current.installation_id !== installationId || current.generation === null || current.advertisement === null) {
+        return { outcome: "refused", failure: "not-enrolled" };
+      }
+      if (current.phase === "draining") return { outcome: "draining" };
+      if (current.phase !== "enrolled") return { outcome: "refused", failure: "not-enrolled" };
+      return (current.generation as number) >= advertisement.generation ? { outcome: "current" } : null;
+    }
+    // Reset may already have deleted the old key while the Portal answer was pending.
+    const prepared = await lane(async () => {
+      const stale = await revalidate(database);
+      return stale ?? await lastOutboxSequence(database, installationId);
+    });
+    if (typeof prepared !== "number") return prepared;
+    const lastSequence = prepared;
     const sequence = lastSequence + 1;
     const acknowledgement = encodeMessage({
       wire_version: 1, kind: "capability-acknowledgement", sender_installation: installationId,
@@ -243,15 +266,18 @@ export function createSenderEnrollment(options: SenderEnrollmentOptions): Sender
     }
     if (sealed?.status !== "ok" || !(sealed.value instanceof Uint8Array) || sealed.value.length === 0) return unavailableCipher();
     const ciphertext = sealed.value;
-    await lane(() => database.transaction(async (transaction) => {
+    return lane(() => database.transaction(async (transaction): Promise<ConfirmationResult | RefreshResult> => {
+      // Sealing is asynchronous; identity, phase, and generation must still be eligible at commit.
+      const stale = await revalidate(transaction);
+      if (stale) return stale;
       if (!await appendOutboxMessages(transaction, installationId, lastSequence, [{
         kind: "capability-acknowledgement", sealed: ciphertext, messageBytes: acknowledgement.length,
       }])) throw new Error("Outbox high-water mark moved during adoption");
       await transaction.execute(`UPDATE sender_enrollment SET phase = 'enrolled', refusal = NULL,
         advertisement = ?, generation = ?, acknowledgement_sequence = COALESCE(acknowledgement_sequence, ?), adopted_at_ms = ?
         WHERE singleton = 1`, [bytes, advertisement.generation, sequence, instant]);
+      return { outcome: mode === "confirm" ? "enrolled" : "adopted", generation: advertisement.generation };
     }));
-    return null;
   }
 
   async function attempt(row: DatabaseRow, instant: number): Promise<ConfirmationResult> {
@@ -266,15 +292,18 @@ export function createSenderEnrollment(options: SenderEnrollmentOptions): Sender
     if (answer?.kind === "capability-advertisement") {
       const advertisement = answer as unknown as Advertisement;
       if (advertisement.wire_versions.includes(1)) {
-        const failed = await adopt(row, bytes, advertisement, instant);
-        return failed ?? { outcome: "enrolled", generation: advertisement.generation };
+        return adopt("confirm", row, bytes, advertisement, instant);
       }
       failure = "capabilities-unsupported";
     }
-    await lane(() => database.transaction(async (transaction) => {
+    return lane(() => database.transaction(async (transaction): Promise<ConfirmationResult> => {
+      const current = await enrollmentRow(transaction);
+      if (current?.installation_id !== row.installation_id || current.phase !== "confirming") {
+        return { outcome: "refused", failure: "not-confirming" };
+      }
       await transaction.execute("UPDATE sender_enrollment SET phase = 'refused', refusal = ? WHERE singleton = 1", [failure]);
+      return { outcome: "portal-refused", failure };
     }));
-    return { outcome: "portal-refused", failure };
   }
 
   /** Called only with the shared lane held, including the Outbox observations. */
@@ -390,8 +419,7 @@ export function createSenderEnrollment(options: SenderEnrollmentOptions): Sender
         const advertisement = answer as unknown as Advertisement;
         if (advertisement.generation <= (row.generation as number)) return { outcome: "current" };
         if (!advertisement.wire_versions.includes(1)) return { outcome: "incompatible" };
-        const failed = await adopt(row, bytes, advertisement, instant);
-        return failed ?? { outcome: "adopted", generation: advertisement.generation };
+        return adopt("refresh", row, bytes, advertisement, instant);
       });
     },
     async beginDrain() {
@@ -420,10 +448,12 @@ export function createSenderEnrollment(options: SenderEnrollmentOptions): Sender
       return serialize(async () => destroy(await lane(() => enrollmentRow(database))));
     },
     async status() {
-      return serialize(() => lane(async () => {
-        const row = await enrollmentRow(database);
-        return row ? statusFrom(database, row) : null;
-      }));
+      try {
+        return await lane(async () => {
+          const row = await enrollmentRow(database);
+          return row ? statusFrom(database, row) : null;
+        });
+      } catch { return { outcome: "storage-failed" }; }
     },
   };
 }
