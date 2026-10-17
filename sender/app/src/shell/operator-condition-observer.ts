@@ -129,10 +129,13 @@ export function createShellConditionObserver(options: {
       requireExecution();
       const deadline = Math.min(executionDeadline - CONDITION_FINISH_RESERVE_MS,
         options.monotonicNow() + CONDITION_NOTIFICATION_TIMEOUT_MS);
+      const notificationIdentity = submittingIdentity;
+      const notificationDestructionEpoch = submittingDestructionEpoch;
       return within(async (expired) => {
         const allowance: ConditionNotificationAllowance = {
           remainingMs: () => Math.max(0, Math.min(deadline, executionDeadline - CONDITION_FINISH_RESERVE_MS) - options.monotonicNow()),
-          expired: () => expired() || remainingExecution() <= 0 || options.monotonicNow() >= deadline,
+          expired: () => expired() || remainingExecution() <= 0 || options.monotonicNow() >= deadline ||
+            notificationDestructionEpoch !== destructionEpoch || options.identityHint() !== notificationIdentity,
         };
         // Destruction is serialized with this application; the epoch also bars
         // a request made mid-application. The hint rejects any other identity

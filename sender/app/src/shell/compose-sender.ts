@@ -485,6 +485,9 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       finally {
         await deliver(deadline, completion.attempt);
         if (completion.observe) await completion.observe();
+        // Skipped collection still retries unnotified lifecycle onsets. Delivery
+        // may already have started this callback's observation for a new phase.
+        else if (!completion.attempt.pending) await observeLifecycle(completion.attempt, deadline);
         await observePhase(completion.attempt, deadline);
         // This is the observer's caller-bounded signal, never its worker promise.
         await completion.attempt.pending;

@@ -3049,3 +3049,104 @@ test("NOC R6: an identity-hint change before notification bars the post", async 
   await observer.observe();
   assert.deepEqual(f.notifications, ["storage-pressure"]);
 });
+
+
+// Round 7 regressions keep the published notification unit unchanged.
+for (const action of ["reset", "unlink"] as const) {
+  test(`NOC R7 P1: shell ${action} during native permission await bars the post`, async (t) => {
+    const f = await fixture(t);
+    const permission = signal(), release = signal();
+    const posts: string[] = [];
+    let destructionStarted = false;
+    async function destroy() {
+      destructionStarted = true;
+      await execute(f.database(), "DELETE FROM operator_conditions");
+      f.state.status = null;
+      return { outcome: "destroyed" as const };
+    }
+    const shell = await composeSender({ ...f.options,
+      enrollment(database, transport) {
+        return { ...f.options.enrollment(database, transport), reset: destroy, unlink: destroy };
+      },
+      conditionNotifier: conditionNotifier({
+        async notificationsEnabled() { permission.resolve(); await release.promise; return true; },
+        async postOperatorNotification(condition) { posts.push(condition); },
+      }),
+    });
+    f.state.status = enrolled({ phase: "refused" });
+    const observation = shell.observeConditions();
+    await permission.promise;
+    const destruction = action === "reset" ? shell.reset({ acknowledgePossibleLoss: true }) : shell.unlink();
+    try {
+      assert.equal(destructionStarted, false, "destruction remains serialized behind the application");
+    } finally {
+      release.resolve();
+      await Promise.all([observation, destruction]);
+    }
+    assert.deepEqual(await destruction, { outcome: "destroyed" });
+    assert.deepEqual(posts, [], "a destruction request during permission checking invalidates the native post");
+    assert.deepEqual(conditionNames(await shell.conditions()), []);
+  });
+}
+
+test("NOC R7 P1: an identity-hint change during native permission await bars the post", async (t) => {
+  const f = await observerFixture(t);
+  const permission = signal(), release = signal();
+  const posts: string[] = [];
+  let hint = installationIdentity(enrolled());
+  const observer = createShellConditionObserver({ ...f.observerOptions,
+    identityHint: () => hint,
+    notifier: conditionNotifier({
+      async notificationsEnabled() { permission.resolve(); await release.promise; return true; },
+      async postOperatorNotification(condition) { posts.push(condition); },
+    }),
+  });
+  const observation = observer.observe(f.run(1, "storage-pressure"));
+  await permission.promise;
+  hint = installationIdentity(enrolled({ installationId: "00000000-0000-4000-8000-000000000002" }));
+  release.resolve();
+  await observation;
+  assert.deepEqual(posts, []);
+  const records = await observer.conditions();
+  assert.deepEqual(conditionNames(records), ["storage-pressure"]);
+  assert.ok(Array.isArray(records) && !records[0].notified, "a skipped native post leaves the onset unnotified");
+  hint = installationIdentity(enrolled());
+  await observer.observe();
+  assert.deepEqual(posts, ["storage-pressure"]);
+});
+
+for (const firstObservation of ["startup", "phase transition"] as const) {
+  for (const phase of ["refused", "draining"] as const) {
+    test(`NOC R7 P2: skipped background retries stable ${phase} after ${firstObservation} notifier failure`, async (t) => {
+      const lifecycle = enrolled({ phase, finalSequence: phase === "draining" ? 7 : null });
+      const f = await fixture(t, firstObservation === "startup" ? lifecycle : enrolled());
+      const posts: string[] = [];
+      let attempts = 0;
+      const shell = await composeSender({ ...f.options,
+        conditionNotifier: { async notify(condition) {
+          if (++attempts === 1) throw new Error("synthetic first lifecycle notification failure");
+          posts.push(condition);
+        } },
+      });
+      const polling = (await shell.backgroundPollingProvider())!;
+      if (firstObservation === "phase transition") {
+        f.state.status = lifecycle;
+        assert.equal(await polling.runTask(), "failed");
+      }
+      const condition = phase === "refused" ? "enrollment-refused" : "drain-complete";
+      assert.equal(attempts, 1, "the first observation attempts notification once");
+      assert.deepEqual(posts, []);
+      const pending = await shell.conditions();
+      assert.deepEqual(conditionNames(pending), [condition]);
+      assert.ok(Array.isArray(pending) && !pending[0].notified);
+      assert.equal(await polling.runTask(), "failed");
+      assert.deepEqual(posts, [condition], "a later skipped callback retries the unnotified onset");
+      assert.equal(await polling.runTask(), "failed");
+      assert.deepEqual(posts, [condition], "success is notified exactly once per onset");
+      assert.equal(attempts, 2);
+      const notified = await shell.conditions();
+      assert.ok(Array.isArray(notified) && notified[0].notified);
+      assert.deepEqual(await runs(f.database()), [], "lifecycle retries do not invent a Polling Run");
+    });
+  }
+}
