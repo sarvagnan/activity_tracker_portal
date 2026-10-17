@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1645,9 +1646,17 @@ async function observerFixture(t: TestContext) {
   const database = await f.options.openDatabase();
   assert.equal((await migrate(database, senderMigrations)).status, "ready");
   const notifications: string[] = [];
+  let hint: string | null | undefined;
   const options = {
     database, cipher: f.cipher, now: f.clock.now, monotonicNow: f.clock.monotonicNow,
     status: async () => f.state.status,
+    // Fixture status assignments stand in for successful shell observations.
+    // The hint admits a slot; worker status reads still authorize its use.
+    identityHint() {
+      const current = f.state.status;
+      if (!(current && "outcome" in current)) hint = installationIdentity(current);
+      return hint;
+    },
     notifier: { async notify(condition: string) { notifications.push(condition); } },
   };
   const run = (sequence: number, reason?: OutcomeReason) => ({ summary: summary(sequence, reason), identity: installationIdentity(enrolled())! });
@@ -2535,3 +2544,126 @@ for (const pending of ["older-current", "newer-current"] as const) {
     assert.deepEqual(f.notifications, [pending === "older-current" ? "record-too-large" : "storage-pressure"]);
   });
 }
+
+
+test("NOC R4: expired overlapping replacement callers retain only one summary during stalled storage", { timeout: 45_000 }, async (t) => {
+  // npm's runner has no GC flag. Re-run only this regression in a GC-enabled
+  // child, checking real reachability rather than trusting the cardinality seam.
+  if (!globalThis.gc) {
+    const child = spawnSync(process.execPath, ["--expose-gc", "--test", "--test-name-pattern=expired overlapping replacement callers", import.meta.filename],
+      { encoding: "utf8", timeout: 30_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
+    assert.equal(child.status, 0, `signal=${child.signal}; error=${child.error}\n${child.stdout}${child.stderr}`);
+    return;
+  }
+  const f = await observerFixture(t);
+  const entered = signal();
+  const release = signal();
+  let unavailable = false;
+  const database = f.observerOptions.database;
+  const transaction = database.transaction.bind(database);
+  let held = false;
+  database.transaction = async (body) => {
+    if (!held) { held = true; entered.resolve(); await release.promise; }
+    return transaction(body);
+  };
+  const observer = createShellConditionObserver({ ...f.observerOptions, async status() {
+    return unavailable ? { outcome: "storage-failed" as const } : f.state.status;
+  } });
+  const references: WeakRef<RunSummary>[] = [];
+  function start(): Promise<void> {
+    const run = f.run(1, "storage-pressure");
+    references.push(new WeakRef(run.summary));
+    return observer.observe(run);
+  }
+  const active = start();
+  await entered.promise;
+  try {
+    f.state.status = enrolled({ installationId: "replacement", keyAlias: KEY });
+    unavailable = true;
+    function submit(index: number): Promise<void> {
+      const value = summary(index, index === 100 ? "permission-missing" : "record-too-large");
+      references.push(new WeakRef(value));
+      return observer.observe({ identity: installationIdentity(f.state.status as EnrollmentStatus)!, summary: value }, f.clock.monotonicNow());
+    }
+    await Promise.all(Array.from({ length: 100 }, (_, index) => submit(index + 1)));
+    for (let pass = 0; pass < 4; pass++) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      globalThis.gc();
+    }
+    const live = references.filter((reference) => reference.deref() !== undefined).length;
+    assert.ok(live <= 1, `${live} summaries are still reachable after callers expired`);
+    assert.equal(observer.retainedSummaryCount(), live, "the seam reports the actual retained replacement slot");
+  } finally {
+    unavailable = false;
+    release.resolve();
+    await active;
+    await observer.observe();
+  }
+  assert.deepEqual(conditionNames(await observer.conditions()), ["permission-missing"], "the newest replacement survives for lifecycle recovery");
+});
+
+test("NOC R4: a background join cannot inherit an unbudgeted post-delivery observation", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  const entered = signal();
+  const releaseRead = signal();
+  const notification = signal();
+  const releaseNotification = signal();
+  let holdRead = false;
+  let backgroundPreparing = false;
+  let backgroundDeadline = Infinity;
+  let returned = false;
+  let returnedAt = Infinity;
+  const latePosts: number[] = [];
+  const shell = await composeSender({ ...p.options,
+    enrollment(database, transport) {
+      return { ...f.options.enrollment(database, transport), async status() {
+        if (backgroundPreparing) {
+          backgroundPreparing = false;
+          f.clock.advance(BACKGROUND_BUDGET_MS - 40);
+        }
+        if (holdRead) {
+          holdRead = false;
+          entered.resolve();
+          await releaseRead.promise;
+          return enrolled({ phase: "draining", finalSequence: 1 });
+        }
+        return f.state.status;
+      } };
+    },
+    conditionNotifier: { async notify() {
+      if (f.clock.monotonicNow() > backgroundDeadline && !returned) latePosts.push(f.clock.monotonicNow());
+      notification.resolve();
+      await releaseNotification.promise;
+    } },
+  });
+  await acknowledgements(f, 1);
+  p.state.answer = async (_url, init) => { holdRead = true; return receipt(init.body!); };
+  const foreground = shell.manualSync();
+  await entered.promise;
+  const polling = (await shell.backgroundPollingProvider())!;
+  backgroundDeadline = f.clock.monotonicNow() + BACKGROUND_BUDGET_MS;
+  backgroundPreparing = true;
+  const background = polling.runTask().then((result) => {
+    returnedAt = f.clock.monotonicNow(); returned = true; return result;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  f.clock.advance(41);
+  f.state.status = enrolled({ phase: "draining", finalSequence: 1 });
+  releaseRead.resolve();
+  try {
+    const winner = await Promise.race([
+      background.then(() => "returned"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 150)),
+    ]);
+    assert.equal(winner, "returned", "the background caller returns without waiting for the native notification");
+    assert.ok(returnedAt <= backgroundDeadline, "the background caller returns by its own deadline");
+    assert.deepEqual(latePosts, [], "no notification starts after the deadline while the background caller is waiting");
+  } finally {
+    releaseRead.resolve();
+    releaseNotification.resolve();
+    await Promise.all([foreground, background]);
+  }
+  await shell.observeConditions();
+  await notification.promise;
+});

@@ -101,8 +101,13 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     throw error;
   }
 
+  let installationHint: string | null | undefined;
   async function readStatus(): Promise<Status> {
-    try { return await enrollment.status(); }
+    try {
+      const current = await enrollment.status();
+      if (!(current && "outcome" in current)) installationHint = installationIdentity(current);
+      return current;
+    }
     catch { return { outcome: "storage-failed" }; }
   }
 
@@ -111,13 +116,13 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   // outside this composition; Android schedules this module in the app process.
   let observedPhase: string | undefined;
   let phaseChanged = false;
-  type ObservationAttempt = { phase?: string; failedRun?: boolean };
+  type ObservationAttempt = { phase?: string; failedRun?: boolean; pending?: Promise<void> };
   function phaseIdentity(current: EnrollmentStatus | null): string {
     return JSON.stringify([installationIdentity(current), current?.phase, current?.finalSequence]);
   }
   const operator = createShellConditionObserver({
     database, notifier: options.conditionNotifier, cipher: options.cipher,
-    status, now: options.now, monotonicNow: options.monotonicNow,
+    status, identityHint: () => installationHint, now: options.now, monotonicNow: options.monotonicNow,
     onApplied(current) { phaseChanged = observedPhase !== phaseIdentity(current); },
   });
   function trackPhase(current: Status): Status {
@@ -128,10 +133,9 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     return current;
   }
   async function status(): Promise<Status> { return trackPhase(await readStatus()); }
-  async function observeLifecycle(attempt: ObservationAttempt, deadline = Infinity,
-    run?: Parameters<typeof operator.observe>[0]): Promise<void> {
+  async function observeLifecycle(attempt: ObservationAttempt, deadline = Infinity): Promise<void> {
     attempt.phase = observedPhase;
-    await operator.observe(run, deadline);
+    await (attempt.pending = operator.observe(undefined, deadline));
     // A fresh read inside the observer can discover the transition itself.
     // Only its application receipt clears phaseChanged; this marker just bars
     // retrying that same phase within this trigger after an unavailable read/write.
@@ -141,17 +145,21 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     if (!phaseChanged || attempt.phase === observedPhase) return;
     await observeLifecycle(attempt, deadline);
   }
-  async function afterDelivery(attempt: ObservationAttempt, deadline: number): Promise<void> {
+  async function afterDelivery(attempt: ObservationAttempt, deadline: () => number): Promise<void> {
     // One extra bounded read per pass, independent of Outbox length. Reserve
     // the full observation allowance as well as this read before starting it.
-    if (!hasTime(deadline, CONDITION_OBSERVATION_BUDGET_MS)) return;
+    if (!hasTime(deadline(), CONDITION_OBSERVATION_BUDGET_MS)) return;
     try {
       await completeWithin(async (expired) => {
         const current = await readStatus();
         if (!expired()) trackPhase(current);
       });
     } catch { /* The next trigger can read the lifecycle again. */ }
-    await observePhase(attempt, deadline);
+    // A joining caller can tighten the deadline while the status read awaits.
+    // Record through the same observer path, but never put its wait in delivery.
+    if (hasTime(deadline(), CONDITION_OBSERVATION_BUDGET_MS)) {
+      void observePhase(attempt, deadline()).catch(() => undefined);
+    }
   }
 
   let sender: OutboxSender | null = null;
@@ -185,7 +193,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
         const promise = new Promise<DeliveryPass>((done) => { resolve = done; });
         pendingDelivery = { deadline, attempt: observation, promise, resolve };
       } else pendingDelivery.deadline = Math.min(pendingDelivery.deadline, deadline);
-      return pendingDelivery.promise;
+      return waitDelivery(pendingDelivery.promise, deadline, observation);
     }
     deliveryDeadline = deadline;
     delivery = Promise.resolve().then(async (): Promise<DeliveryPass> => {
@@ -195,7 +203,8 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       // draining messages remain deliverable without opening a Polling Run.
       if (!isStatus(current) || !["enrolled", "draining"].includes(current.phase)) return "stopped";
       const outbox = currentSender(current);
-      // Read enrollment once per pass: status() materializes the whole Outbox.
+      // Two enrollment reads per admitted delivery pass: this context read and
+      // the post-delivery lifecycle read, independent of Outbox length.
       // Delivery pack R3 scopes every head read to this installation; reset or
       // unlink removes its rows, so sendNext then returns empty without sending.
       // The next pass observes enrollment again, including a replacement context.
@@ -209,7 +218,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       }
       return "stopped";
     }).catch((): DeliveryPass => "terminal").finally(async () => {
-      await afterDelivery(observation, deliveryDeadline).catch(() => undefined);
+      await afterDelivery(observation, () => deliveryDeadline).catch(() => undefined);
       delivery = null;
       const next = pendingDelivery;
       pendingDelivery = null;
@@ -217,7 +226,24 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       // head cannot repeat it; only another overlapping caller can request one.
       if (next) void deliver(next.deadline, next.attempt).then(next.resolve);
     });
-    return delivery;
+    return waitDelivery(delivery, deadline, observation);
+  }
+
+  async function waitDelivery(result: Promise<DeliveryPass>, deadline: number, observation: ObservationAttempt): Promise<DeliveryPass> {
+    if (!Number.isFinite(deadline)) {
+      const pass = await result;
+      await observation.pending;
+      await observePhase(observation);
+      return pass;
+    }
+    const remaining = deadline - options.monotonicNow() - DELIVERY_FINISH_RESERVE_MS;
+    if (remaining <= 0) return "stopped";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([result, new Promise<DeliveryPass>((resolve) => {
+        timer = setTimeout(() => resolve("stopped"), remaining);
+      })]);
+    } finally { clearTimeout(timer); }
   }
 
   let coordinator: SenderSync | null = null;
@@ -238,11 +264,15 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     inFlight.add(run);
     void run.then(() => inFlight.delete(run), () => inFlight.delete(run));
     return run.then(async (result) => {
-      const observe = () => observeLifecycle(observation, completion?.deadline,
-        result.outcome === "checkpointed" ? { summary: result.summary, identity: runIdentity } : undefined);
+      // Hand off before any delivery wait. This request records only; delivery
+      // keeps its full exchange window before an eligible lifecycle wake.
+      if (result.outcome === "checkpointed") {
+        void operator.observe({ summary: result.summary, identity: runIdentity }, options.monotonicNow());
+      }
+      const observe = () => observeLifecycle(observation, completion?.deadline);
       if (completion) {
-        // The published polling adapter maps the result, while its shell callback
-        // retains the summary until its deadline-bound delivery pass has finished.
+        // The callback keeps only a completion request; the observer already
+        // owns the summary independently of this caller and its deadline.
         completion.observe = observe;
       } else {
         const pass = await deliver(Infinity, observation);
@@ -450,6 +480,8 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
         await deliver(deadline, completion.attempt);
         if (completion.observe) await completion.observe();
         await observePhase(completion.attempt, deadline);
+        // This is the observer's caller-bounded signal, never its worker promise.
+        await completion.attempt.pending;
       }
     },
   });

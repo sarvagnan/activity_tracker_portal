@@ -11,9 +11,8 @@ export const CONDITION_NOTIFICATION_TIMEOUT_MS = 1_000;
 export const CONDITION_FINISH_RESERVE_MS = 1_000;
 const CONDITION_READ_TIMEOUT_MS = 1_000;
 // Three bounded freshness reads plus all eight possible notifier calls. Storage
-// gets the final reserve. The eight-minute deadline is soft, like the existing
-// delivery window: do not admit work without this allowance, bound the caller's
-// wait, and recheck the deadline before each native post.
+// gets the final reserve. This is a caller admission allowance only: admitted
+// work belongs to the worker, while each caller independently bounds its wait.
 export const CONDITION_OBSERVATION_BUDGET_MS =
   OPERATOR_CONDITIONS.length * CONDITION_NOTIFICATION_TIMEOUT_MS +
   3 * CONDITION_READ_TIMEOUT_MS + CONDITION_FINISH_RESERVE_MS;
@@ -59,181 +58,154 @@ export function installationIdentity(current: EnrollmentStatus | null): string |
 type Status = EnrollmentStatus | null | { readonly outcome: "storage-failed" };
 type Run = { readonly summary: RunSummary; readonly identity: string };
 
-/** One shell queue outside the unit's R9 queue: at most one active and one pending observation. */
+/** Synchronous ownership hand-off; only the worker reads or applies observations. */
 export function createShellConditionObserver(options: {
   database: SenderDatabase;
   notifier: ConditionNotifier;
   cipher: Pick<InstallationCipher, "keyStatus">;
   status: () => Promise<Status>;
+  /** Most recent successful shell enrollment observation; admission only. */
+  identityHint: () => string | null | undefined;
   now: () => number;
   monotonicNow: () => number;
-  /** A receipt for the exact lifecycle state successfully applied by the unit. */
   onApplied?: (enrollment: EnrollmentStatus | null) => void;
 }) {
   let submittingIdentity: string | null = null;
-  let submittingDeadline = Infinity;
   const conditions = createOperatorConditions({ database: options.database, now: options.now, notifier: {
     notify(condition) {
-      // Include the identity read in the bound. A reset while an earlier onset's
-      // notifier is running must not start another notification for that identity.
       return completeWithin(async (expired) => {
         const current = await options.status();
         if (expired() || current && "outcome" in current) throw new Error("Sender condition observation unavailable");
         if (installationIdentity(current) !== submittingIdentity) throw new Error("Sender installation changed before notification");
-        if (options.monotonicNow() + CONDITION_NOTIFICATION_TIMEOUT_MS + CONDITION_FINISH_RESERVE_MS > submittingDeadline) {
-          throw new Error("Sender condition notification deadline reached");
-        }
         await options.notifier.notify(condition);
       });
     },
   } });
-  type Pending = { deadline: number; revision: number; promise: Promise<void>; resolve: () => void };
-  let pending: Pending | null = null;
-  let active: Pending | null = null;
-  let submitted = false;
+  type Signal = { promise: Promise<void>; resolve: () => void };
+  let pending: Signal | null = null;
+  let running = false;
+  let wakeRequested = false;
+  let dirty = false;
   let revision = 0;
-  // Sender storage belongs to one installation. Receiving is not applying:
-  // retain one summary even if its caller has no observation budget left.
-  let receivedRun: Run | null = null;
-  // Install the completion receipt before awaiting the unit. Its immutable
-  // result distinguishes applied work from a rejected/failed application,
-  // without letting a superseded continuation mutate this marker afterward.
-  let appliedRun: { identity: string; runSequence: number; observed: Promise<boolean> } | null = null;
-  // A delayed admission identity check cannot overturn a newer verified
-  // installation. This marker retains no summary or per-installation history.
-  let verifiedInstallation: { identity: string | null; revision: number } | null = null;
+  let retained: { identity: string; runSequence: number; summary: RunSummary } | null = null;
+  let applied: { identity: string; runSequence: number } | null = null;
+  const MAX_PASSES_PER_WAKE = 4;
 
-  function hasTime(deadline: number): boolean {
-    return options.monotonicNow() + CONDITION_OBSERVATION_BUDGET_MS <= deadline;
+  function completion(): Signal {
+    if (!pending) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => { resolve = done; });
+      pending = { promise, resolve };
+    }
+    return pending;
   }
 
-  async function process(item: Pending): Promise<void> {
-    if (!hasTime(item.deadline)) return;
-    // The shell queue finishes the prior submission before starting this build,
-    // so its receipt is already settled and consumes no native-read allowance.
-    const applied = appliedRun ? await appliedRun.observed : false;
-    const current = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
-    if (current && "outcome" in current) return; // Unknown is not unlink.
-    const identity = installationIdentity(current);
-    let keyStatus;
-    if (current) {
-      try { keyStatus = await within(() => options.cipher.keyStatus(current.keyAlias), CONDITION_READ_TIMEOUT_MS); }
-      catch { keyStatus = "unavailable" as const; }
-    }
-    const latest = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
-    if (latest && "outcome" in latest) return;
-    const latestIdentity = installationIdentity(latest);
-    // All build mutations follow its last freshness read and revision check.
-    // In particular, a stale final status must not discard a replacement run.
-    if (item.revision !== revision || !hasTime(item.deadline)) return;
-    verifiedInstallation = { identity: latestIdentity, revision: item.revision };
-    if (receivedRun?.identity !== latestIdentity) receivedRun = null;
-    if (appliedRun?.identity !== latestIdentity) appliedRun = null;
-    if (latestIdentity !== identity) return;
-    const run = receivedRun && (!appliedRun || !applied || receivedRun.summary.runSequence > appliedRun.runSequence) ? receivedRun : undefined;
-    submittingIdentity = identity;
-    submittingDeadline = item.deadline;
-    submitted = true;
-    const result = conditions.observe({ enrollment: latest, keyStatus, ...(run ? { summary: run.summary } : {}) });
-    const observed = result.then((value) => {
-      const applied = value.outcome === "observed";
-      if (applied) options.onApplied?.(latest);
-      return applied;
-    }, () => false);
-    if (run) {
-      appliedRun = { identity: run.identity, runSequence: run.summary.runSequence, observed };
-    }
-    await observed;
-  }
-
-  function drain(): void {
-    if (active || !pending) return;
-    const item = pending;
-    pending = null;
-    active = item;
-    submitted = false;
-    void process(item).catch(() => { /* Conditions never affect sync, delivery, or task results (R8). */ }).finally(() => {
-      active = null;
-      item.resolve();
-      drain(); // Event-driven; each admission consumes one slot, never a retry loop.
+  // This synchronous call deliberately passes no summary into the worker's
+  // async frame. The published unit derives condition flags synchronously;
+  // replacing our slot cannot leave an old summary in a suspended continuation.
+  function submit(current: EnrollmentStatus | null, keyStatus: Awaited<ReturnType<typeof options.cipher.keyStatus>> | undefined) {
+    return conditions.observe({ enrollment: current, keyStatus,
+      ...(retained && (applied?.identity !== retained.identity || applied.runSequence < retained.runSequence)
+        ? { summary: retained.summary } : {}),
     });
   }
 
+  async function pass(): Promise<boolean> {
+    const currency = revision;
+    dirty = false;
+    try {
+      const current = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
+      if (currency !== revision) { dirty = true; return true; }
+      if (current && "outcome" in current) { dirty = true; return false; }
+      const identity = installationIdentity(current);
+      const keyStatus = current
+        ? await within(() => options.cipher.keyStatus(current.keyAlias), CONDITION_READ_TIMEOUT_MS)
+        : undefined;
+      if (currency !== revision) { dirty = true; return true; }
+      const latest = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
+      if (currency !== revision) { dirty = true; return true; }
+      if (latest && "outcome" in latest) { dirty = true; return false; }
+      const latestIdentity = installationIdentity(latest);
+      // Only this fresh, current worker read can clear a foreign slot. The
+      // admission hint never supplies application or clearing authority.
+      if (retained && retained.identity !== latestIdentity) retained = null;
+      if (applied && applied.identity !== latestIdentity) applied = null;
+      if (identity !== latestIdentity) { dirty = true; return false; }
+      submittingIdentity = identity;
+      const submittedIdentity = retained?.identity;
+      const submittedSequence = retained?.runSequence;
+      const result = await submit(latest, keyStatus);
+      // Requests during application can change the slot, but a lifecycle-only
+      // request cannot invalidate this exact summary's successful receipt.
+      if (result.outcome === "observed") {
+        if (retained?.identity === submittedIdentity && retained?.runSequence === submittedSequence && retained) {
+          applied = { identity: retained.identity, runSequence: retained.runSequence };
+        }
+        options.onApplied?.(latest);
+      } else {
+        dirty = true;
+        return false;
+      }
+      return true;
+    } catch {
+      // No automatic retry after an unavailable read/application. A later wake
+      // retries the dirty work; failure never affects sync or delivery results.
+      dirty = true;
+      return false;
+    }
+  }
+
+  async function work(): Promise<void> {
+    try {
+      for (let count = 0; count < MAX_PASSES_PER_WAKE && dirty; count++) {
+        const signal = pending;
+        pending = null;
+        wakeRequested = false;
+        const succeeded = await pass();
+        signal?.resolve();
+        if (!succeeded) break;
+      }
+    } finally {
+      running = false;
+      // Only a new eligible request can schedule another wake, never a failed
+      // read or an expired caller. Each wake has a fixed pass bound.
+      if (dirty && wakeRequested) wake();
+    }
+  }
+
+  function wake(): void {
+    wakeRequested = true;
+    if (running) return;
+    running = true;
+    void Promise.resolve().then(work);
+  }
+
   function waitFor(result: Promise<void>, deadline: number): Promise<void> {
-    // A background caller may be queued behind foreground work. Its wait ends
-    // inside its own task window, independently of other callers' admission.
     if (!Number.isFinite(deadline)) return result;
     const remaining = Math.max(0, deadline - options.monotonicNow() - CONDITION_FINISH_RESERVE_MS);
     return remaining === 0 ? Promise.resolve() : within(() => result, remaining).catch(() => undefined);
   }
 
-  function retain(run: Run): void {
-    if (receivedRun?.identity !== run.identity || receivedRun.summary.runSequence < run.summary.runSequence) {
-      receivedRun = run;
-    }
-  }
-
-  async function receiveReplacement(run: Run, receivedRevision: number): Promise<boolean> {
-    // Identity strings do not order installations. Unlike same-identity runs,
-    // a foreign caller must prove it is current before evicting retained work.
-    // This admission read is bounded even when observation admission expires.
-    try {
-      const current = await within(() => options.status(), CONDITION_READ_TIMEOUT_MS);
-      if (current && "outcome" in current) return false;
-      const identity = installationIdentity(current);
-      if (identity !== run.identity) return true;
-      if (verifiedInstallation && receivedRevision < verifiedInstallation.revision &&
-          identity !== verifiedInstallation.identity) return true;
-      verifiedInstallation = { identity, revision: Math.max(receivedRevision, verifiedInstallation?.revision ?? 0) };
-      retain(run);
-      return true;
-    } catch { return false; /* Unknown status cannot evict retained work. */ }
-  }
-
-  function enqueue(deadline: number): Promise<void> {
-    if (!pending) {
-      let resolve!: () => void;
-      const promise = new Promise<void>((done) => { resolve = done; });
-      pending = { deadline, revision, promise, resolve };
-    } else {
-      // Any eligible waiter may admit the retained work. An expiring background
-      // caller bounds only its own wait, never a foreground/lifecycle caller.
-      pending.deadline = Math.max(pending.deadline, deadline);
-      pending.revision = revision;
-    }
-    const result = pending.promise;
-    drain();
-    return result;
-  }
-
   function observe(run?: Run, deadline = Infinity): Promise<void> {
-    const receivedRevision = ++revision;
-    // A request superseding native reads inherits the still-waiting caller's
-    // admission. Submitted work keeps its allowance for that observation only.
-    const admissionDeadline = Math.max(deadline, active && !submitted ? active.deadline : -Infinity);
-    if (run && receivedRun && receivedRun.identity !== run.identity) {
-      const result = receiveReplacement(run, receivedRevision).then(async (known) => {
-        if (!known) {
-          // Let the next process refresh the verified identity, then retry this
-          // admission once. The caller owns this bounded handoff; there is still
-          // only one retained slot, and an unknown/stale caller cannot evict it.
-          await enqueue(admissionDeadline);
-          if (verifiedInstallation && verifiedInstallation.revision >= receivedRevision) {
-            if (verifiedInstallation.identity === run.identity) retain(run);
-          } else {
-            await receiveReplacement(run, receivedRevision);
-          }
-        }
-        await enqueue(admissionDeadline);
-      });
-      return waitFor(result, deadline);
+    // Runs are prepared from the shell's recorded enrollment observation, so a
+    // genuine replacement carries the hint. A run prepared from an observation
+    // never recorded by the shell would be dropped; all coordinators are built
+    // only after status() records that observation, so that path cannot occur.
+    if (run && run.identity === options.identityHint() &&
+        (retained?.identity !== run.identity || retained.runSequence < run.summary.runSequence)) {
+      retained = { identity: run.identity, runSequence: run.summary.runSequence, summary: run.summary };
     }
-    if (run) retain(run);
-    return waitFor(enqueue(admissionDeadline), deadline);
+    revision++;
+    dirty = true;
+    const eligible = options.monotonicNow() + CONDITION_OBSERVATION_BUDGET_MS <= deadline;
+    if (!eligible && !running) return Promise.resolve(); // Record without waking.
+    const result = completion().promise;
+    if (eligible) wake();
+    return waitFor(result, deadline);
   }
 
   return { observe, conditions: conditions.conditions,
-    /** Test-only cardinality inspection; exposes no summaries or installation data. */
-    retainedSummaryCount: () => receivedRun === null ? 0 : 1,
+    /** The only owner of a summary is the retained slot, including during waits. */
+    retainedSummaryCount: () => retained === null ? 0 : 1,
   };
 }
