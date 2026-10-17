@@ -130,7 +130,11 @@ The published `@1` module, with that stub, is the RED baseline. It ignores `dead
 One more mutant was dropped as equivalent. It removes the deadline check that follows each conditions read inside the shared condition guard, but keeps the separate check immediately before each read and issuance, which also follows that call's conditions read. No source call therefore starts late, and R25 still holds. The mutant differs only in whether a completion left pending by an earlier run is staged after the deadline. R10 leaves that open, as it does for a budget.
 
 The binding is:
-- spec files: the contract and this pack;
-- test files: both TypeScript suites, `synthetic-sync-sources.ts`, `node-database.ts`, `node-installation-cipher.ts`, the Python suite, and the runner.
+- **spec files:**
+  - this contract and pack;
+  - `@1`'s contract and pack, which R1–R22 carry over and the contract test compares against;
+- **test files:**
+  - the new suite `coordinate-sender-sync-2.test.ts`, `test_coordinate_sender_sync_2.py`, and the `@2` runner;
+  - every file `coordinate-sender-sync-pack/1` binds: `coordinate-sender-sync-1.test.ts`, its synthetic fake `support/synthetic-sync-sources.ts`, the 3ug substitutes `support/node-database.ts` and `support/node-installation-cipher.ts`, `test_coordinate_sender_sync_1.py`, and `run_coordinate_sender_sync_1.sh`. The new suite uses the same fake and substitutes.
 
 GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation adds the runner to the project CI `test` job.
