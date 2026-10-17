@@ -17,6 +17,11 @@ import time
 from urllib.parse import urlsplit
 
 MODES = ("pass", "drop", "truncate", "stall", "oversize", "refuse-large", "redirect")
+ROUTE_LABELS = {
+    "/v1/outbox-messages": "outbox",
+    "/v1/enrollment-confirmation": "enrollment",
+    "/v1/capabilities": "capabilities",
+}
 MAX_REQUEST_BYTES = 32 * 1024 * 1024
 MAX_FILLER_BYTES = 64 * 1024 * 1024
 STALL_SECONDS = 180
@@ -174,7 +179,8 @@ class FaultProxy:
         ordinal = self.ordinal
         started = time.monotonic()
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        method, target, mode, upstream = "UNKNOWN", "/", "pass", "error"
+        method_label, route_label = "-", "-"
+        mode, upstream, downstream = "pass", "-", "-"
         request_bytes, sent = 0, 0
         body_label = "-"
         ended = "complete"
@@ -194,6 +200,7 @@ class FaultProxy:
                 sent += len(data)
 
         async def head(status: int, content_type: str | None, length: int | None, location: str | None = None) -> None:
+            nonlocal downstream
             reason = http.client.responses.get(status, "Response")
             fields = [f"HTTP/1.1 {status} {reason}", "Connection: close"]
             if content_type:
@@ -203,6 +210,7 @@ class FaultProxy:
             if location:
                 fields.append(f"Location: {location}")
             await send(("\r\n".join(fields) + "\r\n\r\n").encode("latin-1"))
+            downstream = str(status)
 
         try:
             try:
@@ -213,6 +221,8 @@ class FaultProxy:
             except (BadRequest, ValueError, UnicodeError, asyncio.IncompleteReadError, TimeoutError):
                 await head(400, None, 0)
                 return
+            method_label = method if method in ("GET", "POST") else "other"
+            route_label = ROUTE_LABELS.get(urlsplit(target).path, "other")
             request_bytes = len(body)
             if method == "POST":
                 digest = hashlib.sha256(body).digest()
@@ -221,6 +231,7 @@ class FaultProxy:
                 self.bodies[digest] = (body_number, attempt)
                 body_label = f"{body_number}#{attempt}"
             mode = self.take_fault(method, target)
+            upstream = "error"
             try:
                 status, content_type, response = await asyncio.to_thread(self.forward, method, target, values, body)
                 upstream = str(status)
@@ -233,8 +244,9 @@ class FaultProxy:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
                 ended = "dropped"
                 writer.transport.abort()
-            elif mode in ("oversize", "refuse-large"):
-                await head(200 if mode == "oversize" else 409, "application/json", None)
+            elif mode in ("oversize", "refuse-large", "redirect"):
+                fault_status = {"oversize": 200, "refuse-large": 300, "redirect": 307}[mode]
+                await head(fault_status, "application/json", None, target if mode == "redirect" else None)
                 chunk = b" " * 65536
                 for _ in range(MAX_FILLER_BYTES // len(chunk)):
                     if reader.at_eof():
@@ -244,9 +256,6 @@ class FaultProxy:
                     # Give a bounded client time to abort before filling its
                     # receive buffers with the entire synthetic response.
                     await asyncio.sleep(0.001)
-            elif mode == "redirect":
-                await head(307, "application/json", 65536, target)
-                await send(b" " * 65536, body=True)
             else:
                 await head(status, content_type, len(response))
                 if mode == "truncate":
@@ -276,10 +285,9 @@ class FaultProxy:
                 await writer.wait_closed()
             except (OSError, asyncio.CancelledError):
                 pass
-            # Query strings are not diagnostics and may carry secrets.
-            path = urlsplit(target).path
-            entry = (f"{timestamp} #{ordinal} {method} {path} mode={mode} req_bytes={request_bytes} "
-                     f"upstream={upstream} resp_bytes_sent={sent} ended={ended} "
+            # Only fixed labels reach diagnostics; methods and paths may carry secrets.
+            entry = (f"{timestamp} #{ordinal} method={method_label} route={route_label} mode={mode} req_bytes={request_bytes} "
+                     f"upstream={upstream} status={downstream} resp_bytes_sent={sent} ended={ended} "
                      f"ms={int((time.monotonic() - started) * 1000)} body={body_label}")
             try:
                 with (self.state_dir / "requests.log").open("a", encoding="utf-8") as output:

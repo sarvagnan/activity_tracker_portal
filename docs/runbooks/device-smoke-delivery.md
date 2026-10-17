@@ -131,8 +131,24 @@ uv run --frozen python tools/device_smoke/fault_proxy.py serve --listen <tailsca
 
 If macOS asks whether Python may accept incoming connections, allow it.
 
+Each request the proxy handles logs one line in terminal C, and the same line in `~/activity-tracker-smoke/proxy/requests.log`:
+
+```text
+<UTC time> #<n> method=POST route=outbox mode=pass req_bytes=… upstream=200 status=200 resp_bytes_sent=… ended=complete ms=… body=3#1
+```
+
+| Field | Meaning |
+|---|---|
+| `route` | `outbox`, `enrollment`, `capabilities`, or `other`. Paths and query strings are never logged. |
+| `mode` | The fault applied to this request, or `pass`. |
+| `upstream` | The status the Portal returned. |
+| `status` | The status the proxy sent to the phone, or `-` when it sent none. |
+| `resp_bytes_sent` | Response body bytes the Mac's network stack accepted for the phone. This is not proof the phone read them: a few socket buffers can sit between them. |
+| `ended` | `complete`, `client-closed` (the phone gave up), `dropped`, `timeout`, or `error`. |
+| `body=<k>#<a>` | The proxy numbers each distinct `POST` body `k` in the order it first sees it, and `a` counts its attempts. Other methods log `body=-`. |
+
 Check the whole path from the phone: in the phone's browser, open `http://<portal-name>:8765/v1/capabilities`.
-- You should see a short JSON capability advertisement, and terminal C logs a `GET /v1/capabilities` line.
+- You should see a short JSON capability advertisement, and terminal C logs a `method=GET route=capabilities … status=200` line.
 - If the page does not load, check that Tailscale is connected on the phone and that the proxy is listening on `<tailscale-ip>`.
 
 ### Helper commands and the running Portal
@@ -161,13 +177,13 @@ The proxy can keep running throughout. While the Portal is stopped, the phone se
 5. The screen reads **Enroll Sender**. Type the Portal URL exactly as `offer` printed it, then the enrollment code, and tap **Enroll**.
 6. **Expected:**
    - The title reads **Enrolled; awaiting confirmation**, and a 64-character fingerprint appears.
-   - Terminal C logs `POST /v1/enrollment-confirmation … upstream=200`.
+   - Terminal C logs `method=POST route=enrollment … status=200`.
    - If instead it reads **Confirming enrollment**, the Portal was unreachable: fix the connection and tap **Retry confirmation**.
 7. Stop the Portal, then list installations:
    ```sh
    uv run --frozen python tools/device_smoke/portal_smoke.py status --config ~/activity-tracker-smoke/portal.json
    ```
-   `installation 1` is `pending`. Compare its fingerprint with the phone's, all 64 characters, in groups of eight.
+   The new installation is the one in state `pending`. Compare its fingerprint with the phone's, all 64 characters, in groups of eight.
 8. Only if they match, confirm it:
    ```sh
    uv run --frozen python tools/device_smoke/portal_smoke.py confirm --config ~/activity-tracker-smoke/portal.json --installation <installation-id> --fingerprint <fingerprint>
@@ -187,9 +203,7 @@ The proxy can keep running throughout. While the Portal is stopped, the phone se
 ## 7. Initial snapshot
 
 1. Note the time, then tap **Sync now**.
-2. Watch terminal C. Each delivered message logs one `POST /v1/outbox-messages … upstream=200 … ended=complete` line, and each line's `body=<k>#1` shows a first attempt.
-   - The proxy numbers each distinct message body `k` in the order it first sees it, and counts attempts after the `#`.
-   - Requests other than `POST`, like `GET /v1/capabilities`, log `body=-`.
+2. Watch terminal C. Each delivered message logs one `method=POST route=outbox … status=200 … ended=complete` line, and each line's `body=<k>#1` shows a first attempt.
 3. **Interrupt once.** While messages are still arriving, kill the app from terminal D:
    ```sh
    adb shell am force-stop org.activitytracker.sender
@@ -197,7 +211,7 @@ The proxy can keep running throughout. While the Portal is stopped, the phone se
    Reopen the app and tap **Sync now**.
    - **Expected:** delivery resumes where it stopped. Any `#2` attempt is a message the Portal may already hold, and the Portal treats it as a safe repeat.
    - If the snapshot finishes too quickly to interrupt, skip this and use the stall case in step 9 instead.
-4. Repeat **Sync now** until the Sync result reads **Sync finished.** and no new outbox lines appear. A large history takes several runs.
+4. Repeat **Sync now** until the Sync result reads **Sync finished.** and a tap delivers only one new outbox message. That message is the run's own Sync Checkpoint: every completed run stages one, so a caught-up Sync still delivers a single message. A large history takes several runs.
 5. Note the time again.
 6. Write down:
    - roughly how long the snapshot took;
@@ -236,18 +250,20 @@ For each case below:
 3. Read the new line in terminal C, and the **Sender status** text on the phone.
 4. Tap **Sync now** once more, with no fault set.
 
-**After every case:** the second Sync must deliver the same message, shown as `body=<k>#2 … upstream=200 … ended=complete`, and the Sync must finish. The final report must still show 0 gaps.
+**After every case:** the second Sync must deliver the same message, shown as `status=200 … ended=complete … body=<k>#2`, and the Sync must finish. The final report must still show 0 gaps.
 
 | Case | Command | Expected on the proxy | Expected on the phone |
 |---|---|---|---|
-| Truncated body | `uv run --frozen python tools/device_smoke/fault_proxy.py set-fault --state-dir ~/activity-tracker-smoke/proxy truncate` | `resp_bytes_sent` below the receipt's length | A delivery failure, normally "The Portal could not be reached. Try again." |
-| Dropped connection | `… set-fault … drop` | One line with `upstream=200 resp_bytes_sent=0 ended=dropped`, and **no second line for the same `body=<k>`** until you tap **Sync now** again | A delivery failure |
+| Truncated body | `uv run --frozen python tools/device_smoke/fault_proxy.py set-fault --state-dir ~/activity-tracker-smoke/proxy truncate` | `status=200`, with `resp_bytes_sent` below the receipt's length | A delivery failure, normally "The Portal could not be reached. Try again." |
+| Dropped connection | `… set-fault … drop` | One line with `upstream=200 status=- resp_bytes_sent=0 ended=dropped`, and **no second line for the same `body=<k>`** until you tap **Sync now** again | A delivery failure |
 | Stalled body | `… set-fault … stall` | `ended=client-closed` after about 60,000 ms, never the full 180 s | The Sync stays busy for about a minute, then shows a delivery failure |
 | Oversized body | `… set-fault … oversize` | `ended=client-closed` with `resp_bytes_sent` far below 64 MiB, soon after the request | A delivery failure |
-| Refused, large body | `… set-fault … refuse-large` | As for the oversized body | A delivery failure |
-| Redirect | `… set-fault … redirect` | One `307` line, and **no second line for the same `body=<k>`** until you tap **Sync now** again | A delivery failure |
+| Refused, large body | `… set-fault … refuse-large` | `status=300`, then `ended=client-closed` within a second or two, with `resp_bytes_sent` far below 64 MiB. The Sender must refuse a 3xx answer and cancel its body at once, without reading it | A delivery failure |
+| Redirect | `… set-fault … redirect` | One `status=307` line that ends `client-closed` within a second or two, with `resp_bytes_sent` far below 64 MiB, and **no second line for the same `body=<k>`** until you tap **Sync now** again | A delivery failure |
 
-Record each case's `resp_bytes_sent` and `ms`. The installed `expo/fetch` buffers some bytes natively before JavaScript reads them, so a few hundred KiB after a cancellation is acceptable. A download that runs on to tens of MiB is a finding.
+Record each case's `resp_bytes_sent` and `ms`. Read them with two limits in mind:
+- **What the numbers measure.** `resp_bytes_sent` counts what the Mac's network stack accepted, and some socket buffering always sits between the Mac and the phone. The installed `expo/fetch` also buffers some bytes natively before JavaScript reads them. So a few hundred KiB after a cancellation is acceptable. A download that runs on to tens of MiB, or a stream that ends `complete`, is a finding.
+- **What the truncation case proves.** It gives the phone a response shorter than its declared length. The proxy's timing cannot show whether Android noticed before or after the Sender acquired its reader; either way the Sender must report a failure and redeliver.
 
 The **native retry** check spans every case, and the dropped-connection and redirect cases target it directly. OkHttp, beneath `expo/fetch`, can silently retry a request whose connection fails, or follow a redirect. One tap must cause exactly one attempt: a body's attempt number rises by one per tap, never by two.
 
@@ -281,7 +297,8 @@ The **native retry** check spans every case, and the dropped-connection and redi
 
 ## 12. Re-enroll and destructive reset
 
-1. Repeat step 5 to enroll a second installation, `installation 2`, with a fresh code. Confirm it, and tap **Sync now** once.
+1. Repeat step 5 to enroll and confirm a second installation, with a fresh code. Then tap **Sync now** once.
+   - In `status`, the new installation is the one in state `pending` whose fingerprint matches the phone. The list is ordered by installation id, not by age, so it need not be the last one.
    - You need not wait for its whole initial snapshot.
 2. **Optional:** in the phone's Health Connect settings, revoke one permission for the Sender, then tap **Refresh status**.
    - **Expected:** the access text reports missing access, and an Operator condition about Health Connect access appears after the next Sync.
@@ -290,7 +307,7 @@ The **native retry** check spans every case, and the dropped-connection and redi
    - **Expected:** the screen returns to **Enroll Sender**.
 4. Stop the Portal, and retire the second installation destructively:
    ```sh
-   uv run --frozen python tools/device_smoke/portal_smoke.py retire-destructively --config ~/activity-tracker-smoke/portal.json --installation <installation-2-id> --acknowledge-possible-loss
+   uv run --frozen python tools/device_smoke/portal_smoke.py retire-destructively --config ~/activity-tracker-smoke/portal.json --installation <second-installation-id> --acknowledge-possible-loss
    ```
 
 ## 13. Report and clean up

@@ -193,6 +193,7 @@ class StubHandler(BaseHTTPRequestHandler):
         self.wfile.write(BODY)
 
     do_GET = do_POST
+    do_SENTINELMETHOD = do_POST
 
     def log_message(self, *_):
         pass
@@ -242,9 +243,11 @@ class FaultProxyTests(unittest.IsolatedAsyncioTestCase):
         finally:
             writer.close()
             await writer.wait_closed()
-        await self.logged()
+        entries = await self.logged()
         header, body = data.split(b"\r\n\r\n", 1)
         self.assertIn(b"Connection: close", header)
+        status = header.split(b" ", 2)[1].decode()
+        self.assertIn(f" status={status} ", entries[-1])
         return header, body
 
     async def logged(self, count=None):
@@ -272,6 +275,43 @@ class FaultProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private-body", log)
         self.assertNotIn(hashlib.sha256(b"synthetic-private-body").hexdigest(), log)
 
+    async def test_request_labels_exclude_client_text_and_forward_unchanged(self):
+        cases = (
+            ("GET", "/SENTINELPATH/weight-72?secret=SENTINELQUERY", "other"),
+            ("SENTINELMETHOD", "/v1/outbox-messages?secret=SENTINELQUERY", "outbox"),
+            ("POST", "/v1/enrollment-confirmation?secret=SENTINELQUERY", "enrollment"),
+            ("GET", "/v1/capabilities?secret=SENTINELQUERY", "capabilities"),
+            ("GET", "/v1/capabilities/SENTINELSUFFIX", "other"),
+        )
+        for method, target, route in cases:
+            await self.response(method=method, path=target, body=b"SENTINELBODY")
+            self.assertEqual(self.upstream.requests[-1][:3], (method, target, b"SENTINELBODY"))
+            entry = (await self.logged())[-1]
+            label = method if method in ("GET", "POST") else "other"
+            self.assertRegex(entry, rf"^\d{{4}}-\d{{2}}-\d{{2}}T[0-9:.]+Z #\d+ method={label} route={route} "
+                             r"mode=pass req_bytes=12 upstream=200 status=200 resp_bytes_sent=\d+ "
+                             r"ended=complete ms=\d+ body=(?:-|\d+#\d+)$")
+        await self.response(raw=b"SENTINELMETHOD /SENTINELREJECTED?SENTINELQUERY HTTP/1.1\r\nBadHeader\r\n\r\n")
+        self.assertIn("method=- route=-", (await self.logged())[-1])
+        log = (self.directory / "requests.log").read_text()
+        self.assertEqual(self.output.getvalue(), log)
+        for sentinel in ("SENTINELPATH", "weight-72", "SENTINELMETHOD", "SENTINELQUERY", "secret=",
+                         "SENTINELBODY", "SENTINELSUFFIX", "SENTINELREJECTED", "/v1/"):
+            self.assertNotIn(sentinel, log)
+            self.assertNotIn(sentinel, self.output.getvalue())
+
+    async def test_no_status_when_response_never_sent(self):
+        with patch.object(self.proxy, "forward", side_effect=RuntimeError("SENTINELERROR")):
+            reader, writer = await self.open()
+            try:
+                self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        entry = (await self.logged())[-1]
+        self.assertIn("upstream=error status=- resp_bytes_sent=0 ended=error", entry)
+        self.assertNotIn("SENTINELERROR", self.output.getvalue())
+
     async def test_drop_forwards_without_response_and_is_one_shot(self):
         fault_proxy.set_fault(self.directory, "drop")
         for method, path in (("GET", "/v1/capabilities"), ("POST", "/v1/enrollment-confirmation")):
@@ -294,7 +334,7 @@ class FaultProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.upstream.requests[-1][:3],
                          ("POST", "/v1/outbox-messages", b"synthetic-private-body"))
         self.assertIn("mode=drop", entries[-1])
-        self.assertIn("upstream=200 resp_bytes_sent=0 ended=dropped", entries[-1])
+        self.assertIn("upstream=200 status=- resp_bytes_sent=0 ended=dropped", entries[-1])
         self.assertFalse((self.directory / "fault").exists())
         header, body = await self.response(mode=None)
         self.assertIn(b"200 OK", header)
@@ -336,7 +376,7 @@ class FaultProxyTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(fault_proxy, "STALL_SECONDS", 3):
             await asyncio.wait_for(asyncio.to_thread(client), 2.5)
             entries = await self.logged()
-        self.assertIn("resp_bytes_sent=1 ended=client-closed", entries[-1])
+        self.assertIn("upstream=200 status=200 resp_bytes_sent=1 ended=client-closed", entries[-1])
 
     async def test_stall_timeout(self):
         with patch.object(fault_proxy, "STALL_SECONDS", 0.05):
@@ -345,32 +385,55 @@ class FaultProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body, BODY[:1])
         self.assertIn("ended=timeout", (await self.logged())[-1])
 
-    async def test_oversize_and_refuse_large_abort_promptly(self):
-        for mode, status in (("oversize", b"200"), ("refuse-large", b"409")):
-            reader, writer = await self.open(mode)
-            header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 2)
-            self.assertIn(status, header)
-            self.assertNotIn(b"Content-Length", header)
-            self.assertEqual(await asyncio.wait_for(reader.readexactly(100), 2), b" " * 100)
-            writer.close()
-            await writer.wait_closed()
-            entry = (await self.logged())[-1]
-            self.assertIn("ended=client-closed", entry)
-            sent = int(re.search(r"resp_bytes_sent=(\d+)", entry).group(1))
-            self.assertGreaterEqual(sent, 100)
-            self.assertLess(sent, 1024 * 1024)
+    async def test_large_responses_abort_promptly(self):
+        for mode, status in (("oversize", 200), ("refuse-large", 300), ("redirect", 307)):
+            with self.subTest(mode=mode):
+                reader, writer = await self.open(mode)
+                try:
+                    header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 2)
+                    self.assertTrue(header.startswith(f"HTTP/1.1 {status} ".encode()))
+                    self.assertIn(b"Content-Type: application/json", header)
+                    self.assertNotIn(b"Content-Length", header)
+                    if mode == "redirect":
+                        self.assertIn(b"Location: /v1/outbox-messages\r\n", header)
+                    else:
+                        self.assertNotIn(b"Location:", header)
+                    if mode == "oversize":
+                        self.assertEqual(await asyncio.wait_for(reader.readexactly(100), 2), b" " * 100)
+                    # 3xx clients cancel on headers, before reading any body.
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                entry = (await self.logged())[-1]
+                self.assertIn(f"upstream=200 status={status} ", entry)
+                self.assertIn("ended=client-closed", entry)
+                sent = int(re.search(r"resp_bytes_sent=(\d+)", entry).group(1))
+                self.assertLess(sent, 1024 * 1024)
 
-    async def test_redirect_and_identical_body_attempts(self):
-        header, body = await self.response(mode="redirect")
-        self.assertIn(b"307 Temporary Redirect", header)
-        self.assertIn(b"Location: /v1/outbox-messages", header)
-        self.assertEqual(len(body), 65536)
-        await self.response(mode=None)
-        entries = await self.logged(2)
-        self.assertIn("body=1#1", entries[0])
-        self.assertIn("body=1#2", entries[1])
-        self.assertIn("mode=pass", entries[1])
-        self.assertEqual(len(self.upstream.requests), 2)
+    async def test_large_responses_continue_past_one_chunk(self):
+        for attempt, (mode, status) in enumerate((("oversize", 200), ("refuse-large", 300), ("redirect", 307)), 1):
+            with self.subTest(mode=mode):
+                reader, writer = await self.open(mode)
+                try:
+                    header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 2)
+                    self.assertTrue(header.startswith(f"HTTP/1.1 {status} ".encode()))
+                    body = await asyncio.wait_for(reader.readexactly(4 * 65536), 2)
+                    self.assertEqual(body, b" " * (4 * 65536))
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                entry = (await self.logged())[-1]
+                self.assertIn(f"upstream=200 status={status} ", entry)
+                self.assertIn("ended=client-closed", entry)
+                sent = int(re.search(r"resp_bytes_sent=(\d+)", entry).group(1))
+                self.assertGreaterEqual(sent, len(body))
+                self.assertLess(sent, 2 * 1024 * 1024)
+                await self.response(mode=None)
+                entries = await self.logged()
+                self.assertIn(f"body=1#{2 * attempt - 1}", entry)
+                self.assertIn(f"body=1#{2 * attempt}", entries[-1])
+                self.assertIn("mode=pass", entries[-1])
+                self.assertEqual(len(self.upstream.requests), 2 * attempt)
 
     async def test_one_shot_bypasses_enrollment_and_capabilities(self):
         fault_proxy.set_fault(self.directory, "truncate")
@@ -408,7 +471,9 @@ class FaultProxyTests(unittest.IsolatedAsyncioTestCase):
         for request in malformed:
             header, _ = await self.response(raw=request)
             self.assertIn(b"400 Bad Request", header)
-            self.assertTrue((await self.logged())[-1].endswith(" body=-"))
+            entry = (await self.logged())[-1]
+            self.assertIn("method=- route=-", entry)
+            self.assertTrue(entry.endswith(" body=-"))
         self.assertEqual(len(self.proxy.bodies), 1)
 
     async def test_request_body_limit_length_and_chunked(self):
@@ -419,7 +484,9 @@ class FaultProxyTests(unittest.IsolatedAsyncioTestCase):
             header, body = await self.response(raw=request)
             self.assertIn(b"HTTP/1.1 413 ", header)
             self.assertEqual(body, b"")
-            self.assertTrue((await self.logged())[-1].endswith(" body=-"))
+            entry = (await self.logged())[-1]
+            self.assertIn("method=- route=-", entry)
+            self.assertTrue(entry.endswith(" body=-"))
         self.assertEqual(self.upstream.requests, [])
         self.assertEqual(self.proxy.bodies, {})
 
