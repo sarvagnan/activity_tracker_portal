@@ -2667,3 +2667,298 @@ test("NOC R4: a background join cannot inherit an unbudgeted post-delivery obser
   await shell.observeConditions();
   await notification.promise;
 });
+
+
+// Round 5 regressions cover shell wiring; no existing test is revised.
+test("NOC R5 item 1: background allowance survives storage waits and eligible foreground joins", { timeout: 5_000 }, async (t) => {
+  for (const foreground of [false, true]) {
+    const f = await observerFixture(t);
+    const entered = signal(), release = signal();
+    const transaction = f.database().transaction.bind(f.database());
+    let hold = true;
+    f.database().transaction = async (body) => {
+      if (hold) { hold = false; entered.resolve(); await release.promise; }
+      return transaction(body);
+    };
+    const observer = createShellConditionObserver(f.observerOptions);
+    const background = observer.observe(f.run(1, "permission-missing"), f.clock.monotonicNow() + CONDITION_OBSERVATION_BUDGET_MS);
+    await entered.promise;
+    const joined = foreground ? observer.observe() : Promise.resolve();
+    f.clock.advance(CONDITION_OBSERVATION_BUDGET_MS + 1);
+    release.resolve();
+    await Promise.all([background, joined]);
+    assert.deepEqual(f.notifications, foreground ? ["permission-missing"] : []);
+    assert.equal(observer.retainedSummaryCount(), 1);
+    await observer.observe();
+    assert.deepEqual(f.notifications, ["permission-missing"]);
+  }
+});
+for (const failure of ["rejected", "timeout"] as const) {
+  test(`NOC R5 item 2/6: ${failure} key read preserves unrelated conditions`, { timeout: 5_000 }, async (t) => {
+    const f = await observerFixture(t);
+    const observer = createShellConditionObserver({ ...f.observerOptions, cipher: { async keyStatus() {
+      if (failure === "rejected") throw new Error("synthetic unavailable key");
+      return new Promise<never>(() => {});
+    } } });
+    await observer.observe(f.run(1, "storage-pressure"));
+    assert.deepEqual(conditionNames(await observer.conditions()), ["storage-pressure"]);
+    assert.deepEqual(f.notifications, ["storage-pressure"]);
+  });
+}
+for (const initialFailure of ["write", "read"] as const) {
+  for (const phase of ["refused", "draining"] as const) {
+    test(`NOC R5 item 3: first readable ${phase} retries after startup ${initialFailure} failure`, { timeout: 5_000 }, async (t) => {
+      const f = await fixture(t, enrolled({ phase, finalSequence: phase === "draining" ? 7 : null }));
+      let fail = true;
+      const notifications: string[] = [];
+      const shell = await composeSender({ ...f.options,
+        conditionNotifier: { async notify(condition) { notifications.push(condition); } },
+        enrollment(database, transport) { return { ...f.options.enrollment(database, transport), async status() {
+          return initialFailure === "read" && fail ? { outcome: "storage-failed" as const } : f.state.status;
+        } }; },
+        async openDatabase() {
+          const database = await f.options.openDatabase();
+          const transaction = database.transaction.bind(database);
+          database.transaction = (body) => transaction((tx) => body({ ...tx, async execute(sql, params) {
+            if (initialFailure === "write" && fail && sql.startsWith("INSERT INTO operator_conditions")) throw new Error("synthetic write failure");
+            return tx.execute(sql, params);
+          } }));
+          return database;
+        },
+      });
+      assert.deepEqual(notifications, []);
+      fail = false;
+      await shell.manualSync();
+      assert.deepEqual(notifications, [phase === "refused" ? "enrollment-refused" : "drain-complete"]);
+    });
+  }
+}
+test("NOC R5 item 4: a late finite status read teaches the next observation a sufficient bound", { timeout: 8_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal(), release = signal(), settled = signal();
+  let reads = 0, stuck = false;
+  const observer = createShellConditionObserver({ ...f.observerOptions, async status() {
+    if (stuck) return new Promise<never>(() => {});
+    if (++reads === 1) {
+      entered.resolve(); await release.promise;
+      f.clock.advance(1_200); settled.resolve();
+    } else if (reads === 2) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+      f.clock.advance(1_100);
+    }
+    return f.state.status;
+  } });
+  const first = observer.observe(f.run(1, "storage-pressure"));
+  await entered.promise;
+  await first;
+  assert.deepEqual(f.notifications, []);
+  release.resolve(); await settled.promise;
+  await observer.observe();
+  assert.deepEqual(f.notifications, ["storage-pressure"]);
+  assert.deepEqual(conditionNames(await observer.conditions()), ["storage-pressure"]);
+  // Successful fast reads restored the base bound. Even continuous admissions
+  // cannot turn a subsequent never-settling read into an unbounded wait.
+  stuck = true;
+  const waiting = observer.observe();
+  const arrivals = setInterval(() => { void observer.observe(); }, 20);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([waiting, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("stuck read stranded a superseded caller")), 1_500);
+    })]);
+  } finally { clearInterval(arrivals); clearTimeout(timer); }
+});
+test("NOC R5 item 5: native notification shares the outer identity-read deadline", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  let reads = 0, posts = 0;
+  const permission = signal(), release = signal();
+  const observer = createShellConditionObserver({ ...f.observerOptions,
+    async status() {
+      if (++reads === 3) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 700));
+        f.clock.advance(700);
+      }
+      return f.state.status;
+    },
+    notifier: conditionNotifier({
+      async notificationsEnabled() { permission.resolve(); await release.promise; return true; },
+      async postOperatorNotification() { posts++; },
+    }),
+  });
+  const observation = observer.observe(f.run(1, "permission-missing"));
+  await permission.promise;
+  await observation;
+  release.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(posts, 0);
+});
+test("NOC R5 item 7: a superseded caller waits for the coalesced state to apply", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const first = signal(), releaseFirst = signal(), second = signal(), releaseSecond = signal();
+  let reads = 0, returned = false;
+  const observer = createShellConditionObserver({ ...f.observerOptions, cipher: { async keyStatus() {
+    if (++reads === 1) { first.resolve(); await releaseFirst.promise; }
+    else if (reads === 2) { second.resolve(); await releaseSecond.promise; }
+    return "present";
+  } } });
+  const earlier = observer.observe(f.run(1, "storage-pressure")).then(() => { returned = true; });
+  await first.promise;
+  const newer = observer.observe(f.run(2, "permission-missing"));
+  releaseFirst.resolve(); await second.promise;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(returned, false, "superseding a read is not an application receipt");
+  releaseSecond.resolve();
+  await Promise.all([earlier, newer]);
+  assert.deepEqual(f.notifications, ["permission-missing"]);
+});
+for (const action of ["reset", "unlink"] as const) {
+  test(`NOC R5 item 9: shell ${action} serializes the final read through condition application`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    const entered = signal(), release = signal();
+    let hold = false, destructionStarted = false, reads = 0;
+    const result = { outcome: "destroyed" as const };
+    async function destroy() {
+      destructionStarted = true;
+      await execute(f.database(), "DELETE FROM operator_conditions");
+      f.state.status = null;
+      return result;
+    }
+    const shell = await composeSender({ ...f.options,
+      enrollment(database, transport) { return { ...f.options.enrollment(database, transport),
+        async reset(acknowledgement: { readonly acknowledgePossibleLoss: true }) {
+          assert.deepEqual(acknowledgement, { acknowledgePossibleLoss: true }); return destroy();
+        },
+        async unlink() { return destroy(); },
+        async status() {
+          const current = f.state.status;
+          if (hold && ++reads === 2) { hold = false; entered.resolve(); await release.promise; }
+          return current;
+        },
+      }; },
+    });
+    await execute(f.database(), "INSERT INTO operator_conditions VALUES ('storage-pressure', ?, ?, 1)", [NOW, NOW]);
+    f.state.status = enrolled({ phase: "refused" });
+    hold = true;
+    const observation = shell.observeConditions();
+    await entered.promise;
+    const destruction = action === "reset" ? shell.reset({ acknowledgePossibleLoss: true }) : shell.unlink();
+    const queued = shell.observeConditions();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(destructionStarted, false, "destruction waits for the protected application window");
+    release.resolve();
+    assert.strictEqual(await destruction, result);
+    await Promise.all([observation, queued]);
+    assert.deepEqual(conditionNames(await shell.conditions()), []);
+    f.state.status = enrolled({ installationId: "00000000-0000-4000-8000-000000000002" });
+    await shell.observeConditions();
+    assert.deepEqual(conditionNames(await shell.conditions()), []);
+  });
+}
+
+
+test("NOC R5: stable initial-run fixture status-read counts", { timeout: 5_000 }, async (t) => {
+  const counts: Record<string, number> = {};
+  for (const action of ["startup", "UI observation", "foreground", "manual", "background"] as const) {
+    const f = await fixture(t);
+    let reads = 0;
+    const shell = await composeSender({ ...f.options, enrollment(database, transport) {
+      return { ...f.options.enrollment(database, transport), async status() { reads++; return f.state.status; } };
+    } });
+    if (action !== "startup") reads = 0;
+    if (action === "UI observation") await shell.observeConditions();
+    if (action === "foreground") await shell.foreground();
+    if (action === "manual") await shell.manualSync();
+    if (action === "background") await (await shell.backgroundPollingProvider())!.runTask();
+    counts[action] = reads;
+  }
+  t.diagnostic(JSON.stringify(counts));
+});
+
+
+test("NOC R5 item 1: expired background follow-up cannot borrow a completed foreground allowance", { timeout: 5_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const entered = signal(), release = signal();
+  const observer = createShellConditionObserver({ ...f.observerOptions, notifier: { async notify(condition) {
+    f.notifications.push(condition);
+    if (condition === "storage-pressure") { entered.resolve(); await release.promise; }
+  } } });
+  const foreground = observer.observe(f.run(1, "storage-pressure"));
+  await entered.promise;
+  const background = observer.observe(f.run(2, "permission-missing"), f.clock.monotonicNow() + CONDITION_OBSERVATION_BUDGET_MS);
+  f.clock.advance(CONDITION_OBSERVATION_BUDGET_MS + 1);
+  release.resolve();
+  await Promise.all([foreground, background]);
+  assert.deepEqual(f.notifications, ["storage-pressure"]);
+  await observer.observe();
+  assert.deepEqual(f.notifications, ["storage-pressure", "permission-missing"]);
+});
+
+for (const action of ["reset", "unlink"] as const) {
+  test(`NOC R5 item 9: shell ${action} preserves destruction and failure results`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    const results = [
+      { outcome: "destroyed" },
+      { outcome: "refused", failure: "not-drained" },
+      { outcome: "cipher-failed", failure: "keystore-unavailable" },
+      { outcome: "storage-failed" },
+    ] as const;
+    let result: Awaited<ReturnType<SenderEnrollment["reset"]>> = results[0];
+    let unavailable = false;
+    const shell = await composeSender({ ...f.options, enrollment(database, transport) {
+      return { ...f.options.enrollment(database, transport),
+        async reset() { return result; }, async unlink() { return result; },
+        async status() { if (unavailable) throw new Error("synthetic observation failure"); return f.state.status; },
+      };
+    } });
+    unavailable = true;
+    for (result of results) {
+      assert.strictEqual(await (action === "reset" ? shell.reset({ acknowledgePossibleLoss: true }) : shell.unlink()), result);
+    }
+  });
+}
+
+
+for (const action of ["reset", "unlink"] as const) {
+  test(`NOC R5 item 9: shell ${action} waits for a submitted application and bars new applications until destruction settles`, { timeout: 5_000 }, async (t) => {
+    const f = await fixture(t);
+    const applying = signal(), releaseApplication = signal(), destroying = signal(), releaseDestruction = signal();
+    let hold = false, applications = 0, destructionStarted = false;
+    const shell = await composeSender({ ...f.options,
+      async openDatabase() {
+        const database = await f.options.openDatabase();
+        const transaction = database.transaction.bind(database);
+        database.transaction = async (body) => {
+          applications++;
+          if (hold) { hold = false; applying.resolve(); await releaseApplication.promise; }
+          return transaction(body);
+        };
+        return database;
+      },
+      enrollment(database, transport) { return { ...f.options.enrollment(database, transport), reset: destroy, unlink: destroy }; },
+    });
+    async function destroy() {
+      destructionStarted = true; destroying.resolve();
+      await releaseDestruction.promise;
+      await execute(f.database(), "DELETE FROM operator_conditions");
+      f.state.status = null;
+      return { outcome: "destroyed" as const };
+    }
+    f.state.status = enrolled({ phase: "refused" });
+    hold = true;
+    const observation = shell.observeConditions();
+    await applying.promise;
+    const destruction = action === "reset" ? shell.reset({ acknowledgePossibleLoss: true }) : shell.unlink();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(destructionStarted, false);
+    releaseApplication.resolve();
+    await destroying.promise;
+    const before = applications;
+    const queued = shell.observeConditions();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(applications, before, "new applications wait for destruction settlement");
+    releaseDestruction.resolve();
+    assert.deepEqual(await destruction, { outcome: "destroyed" });
+    await Promise.all([observation, queued]);
+    assert.deepEqual(conditionNames(await shell.conditions()), []);
+  });
+}

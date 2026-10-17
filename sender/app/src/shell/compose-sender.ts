@@ -1,5 +1,5 @@
-import { completeWithin, CONDITION_OBSERVATION_BUDGET_MS, createShellConditionObserver, installationIdentity } from "./operator-condition-observer.ts";
-import type { ConditionNotifier, OperatorConditions } from "../notifications/notify-operator-conditions.ts";
+import { completeWithin, CONDITION_OBSERVATION_BUDGET_MS, createShellConditionObserver, installationIdentity, type ShellConditionNotifier } from "./operator-condition-observer.ts";
+import type { OperatorConditions } from "../notifications/notify-operator-conditions.ts";
 import type { InstallationCipher } from "../installation-cipher.ts";
 import { createOutboxSender, DELIVERY_TIMEOUT_MS } from "../delivery/send-outbox-message.ts";
 import type { DeliveryNotifier, OutboxSender } from "../delivery/send-outbox-message.ts";
@@ -22,7 +22,10 @@ export const STORAGE_PRESSURE_FREE_BYTES = 536_870_912;
 
 type Status = Awaited<ReturnType<SenderEnrollment["status"]>>;
 type DeliveryPass = "drained" | "stopped" | "terminal";
-type ShellEnrollment = Pick<SenderEnrollment, "status" | "confirm" | "refreshCapabilities">;
+type ShellEnrollment = Pick<SenderEnrollment, "status" | "confirm" | "refreshCapabilities" | "unlink" | "reset">;
+// Older shell fixtures supply only the read/confirmation surface. Production
+// supplies the full enrollment; destruction is checked when explicitly invoked.
+type EnrollmentBoundary = Omit<ShellEnrollment, "unlink" | "reset"> & Partial<Pick<ShellEnrollment, "unlink" | "reset">>;
 
 export const MAX_DELIVERY_ATTEMPTS = 64;
 // Leave time for receipt bookkeeping after the unit's full network timeout.
@@ -32,10 +35,10 @@ export type ShellRunResult = RunResult | { readonly outcome: "skipped" };
 export interface ComposeSenderOptions {
   readonly openDatabase: () => Promise<SenderDatabase>;
   /** The production boundary constructs the published enrollment on this migrated handle. */
-  readonly enrollment: (database: SenderDatabase, transport: HttpTransport) => ShellEnrollment;
+  readonly enrollment: (database: SenderDatabase, transport: HttpTransport) => EnrollmentBoundary;
   readonly fetch: HttpFetch;
   readonly deliveryNotifier: DeliveryNotifier;
-  readonly conditionNotifier: ConditionNotifier;
+  readonly conditionNotifier: ShellConditionNotifier;
   readonly cipher: InstallationCipher;
   readonly sources: SyncSources;
   readonly projectionSchemaVersions: () => Promise<Readonly<Record<string, number>>>;
@@ -54,7 +57,10 @@ export interface SenderShell {
   foreground(): Promise<ShellRunResult>;
   manualSync(): Promise<ShellRunResult>;
   readonly backgroundPollingProvider: BackgroundPollingProvider;
-  /** Call after a screen performs any enrollment action, including reset/unlink. */
+  /** 2rv.8 screens call these methods for reset/unlink, never enrollment directly. */
+  unlink: SenderEnrollment["unlink"];
+  reset: SenderEnrollment["reset"];
+  /** Call after other screen enrollment actions to observe their current lifecycle. */
   observeConditions(): Promise<void>;
   conditions: OperatorConditions["conditions"];
 }
@@ -91,7 +97,7 @@ export async function readSyncConditions(options: {
 export async function composeSender(options: ComposeSenderOptions): Promise<SenderShell> {
   const transport = createHttpTransport({ fetch: options.fetch });
   const database = await options.openDatabase();
-  let enrollment: ShellEnrollment;
+  let enrollment: EnrollmentBoundary;
   try {
     const migration = await migrate(database, senderMigrations);
     if (migration.status !== "ready") throw new Error("Sender database is frozen");
@@ -128,7 +134,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   function trackPhase(current: Status): Status {
     if (current && "outcome" in current) return current;
     const phase = phaseIdentity(current);
-    phaseChanged ||= observedPhase !== undefined && phase !== observedPhase;
+    phaseChanged ||= phase !== observedPhase;
     observedPhase = phase;
     return current;
   }
@@ -489,6 +495,14 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   await operator.observe(); // App/headless process start, without inventing a run summary.
 
   return {
+    unlink: () => operator.destroy(() => {
+      if (!enrollment.unlink) throw new TypeError("Sender enrollment unlink is unavailable");
+      return enrollment.unlink();
+    }),
+    reset: (acknowledgement) => operator.destroy(() => {
+      if (!enrollment.reset) throw new TypeError("Sender enrollment reset is unavailable");
+      return enrollment.reset(acknowledgement);
+    }),
     observeConditions: () => operator.observe(),
     conditions: operator.conditions,
     foreground: () => trigger("foreground"),
