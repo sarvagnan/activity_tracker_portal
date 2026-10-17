@@ -24,7 +24,10 @@ Plan for about two hours. The background step can add an hour of waiting.
 - Some data already in Health Connect from another app, such as Google Fit, Fitbit, or Samsung Health. More types and a longer history make a better test.
 - A secure screen lock: a PIN, pattern, or password. The Sender refuses to enroll without one.
 - The Tailscale app, signed in to the same tailnet as the Mac.
-- Developer options enabled, with USB debugging on. A USB cable.
+- Developer options enabled, with **Wireless debugging** available. Every Android 14 phone has it.
+- For the one-time `adb` pairing and later `adb` commands, the phone and the Mac on the same Wi-Fi network.
+
+Everything runs over Tailscale and Wi-Fi, so no cable is needed. The background step is more realistic that way, because Android relaxes its background limits while a phone is charging. If wireless debugging is unavailable, use [USB instead](#using-usb-instead).
 
 **Rules for the data**
 - The Portal store lives in `~/activity-tracker-smoke`, outside the repository. Never copy anything from it into the repository, Beads, CI, or chat.
@@ -60,41 +63,7 @@ fnm exec --using=26.11.1 -- npm ci --prefix sender
 
 `portal runtime` must print the supported Python and SQLite versions and exit without an error.
 
-## 2. Build and install the Sender
-
-Still in terminal D:
-
-```sh
-fnm exec --using=26.11.1 -- npm run prebuild --prefix sender
-fnm exec --using=26.11.1 -- npm run build:android --prefix sender
-```
-
-The first build downloads the pinned JDK and Android packages, and takes several minutes. It produces `sender/app/android/app/build/outputs/apk/debug/app-debug.apk`.
-
-Connect the phone over USB and accept the debugging prompt on the phone. Then:
-
-```sh
-adb devices
-adb uninstall org.activitytracker.sender
-adb install sender/app/android/app/build/outputs/apk/debug/app-debug.apk
-adb reverse tcp:8081 tcp:8081
-```
-
-`adb devices` must list the phone as `device`, not `unauthorized`.
-
-`adb uninstall` starts the run from a clean Sender. It deletes any earlier development Sender's enrollment, queued messages, and Health Connect grants. It prints `Failure [DELETE_FAILED_INTERNAL_ERROR]` or `Unknown package` when no Sender is installed, which is fine.
-
-`adb reverse` lets the phone reach Metro on the Mac. Repeat it whenever you reconnect the cable.
-
-In terminal A, start Metro and leave it running:
-
-```sh
-fnm exec --using=26.11.1 -- npm run start --prefix sender/app
-```
-
-The development build loads its JavaScript from Metro, including for background tasks. Keep the phone connected and Metro running for the whole smoke test.
-
-## 3. Find the Mac's Tailscale name
+## 2. Find the Mac's Tailscale name
 
 In terminal D:
 
@@ -104,11 +73,61 @@ In terminal D:
 
 The first line is `<portal-name>`, for example `my-mac.tail1234.ts.net`. The second is `<tailscale-ip>`, for example `100.101.102.103`.
 
-The Portal URL is `http://<portal-name>:8765`:
-- all lowercase;
-- no path and no trailing slash.
+The phone reaches the Mac at this name for two things:
+- **Metro**, at `http://<portal-name>:8081`.
+- **The Portal**, at `http://<portal-name>:8765`:
+  - all lowercase;
+  - no path and no trailing slash.
 
-The Sender accepts plain `http` only for `ts.net` names.
+  The Sender accepts plain `http` only for `ts.net` names.
+
+## 3. Build, install, and connect the Sender
+
+Still in terminal D, build the development app:
+
+```sh
+fnm exec --using=26.11.1 -- npm run prebuild --prefix sender
+fnm exec --using=26.11.1 -- npm run build:android --prefix sender
+```
+
+The first build downloads the pinned JDK and Android packages, and takes several minutes. It produces `sender/app/android/app/build/outputs/apk/debug/app-debug.apk`.
+
+**Pair `adb` with the phone over Wi-Fi.** You do this once; the pairing survives reboots.
+1. On the phone, open *Developer options → Wireless debugging*. On Pixels, Developer options are under *Settings → System*. Turn Wireless debugging on, and allow the current network.
+2. Tap **Pair device with pairing code**. The phone shows an IP address and port, and a six-digit code.
+3. In terminal D, run the following, then enter the code:
+   ```sh
+   adb pair <phone-ip>:<pairing-port>
+   ```
+4. Back on the Wireless debugging screen, read the **IP address & Port** at the top. It is a different port from the pairing port. Then connect:
+   ```sh
+   adb connect <phone-ip>:<port>
+   adb devices
+   ```
+   `adb devices` must list `<phone-ip>:<port>` as `device`.
+
+The connection port changes whenever Wireless debugging restarts, for example after a reboot or a Wi-Fi change. Repeat `adb connect` with the new port when that happens. You don't need to pair again.
+
+**Install a clean Sender:**
+
+```sh
+adb uninstall org.activitytracker.sender
+adb install sender/app/android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+`adb uninstall` starts the run from a clean Sender. It deletes any earlier development Sender's enrollment, queued messages, and Health Connect grants. It prints `Failure [DELETE_FAILED_INTERNAL_ERROR]` or `Unknown package` when no Sender is installed, which is fine.
+
+**Start Metro.** In terminal A, start it and leave it running:
+
+```sh
+fnm exec --using=26.11.1 -- npm run start --prefix sender/app
+```
+
+Metro listens on every network interface, so the phone reaches it over Tailscale. If macOS asks whether `node` may accept incoming connections, allow it.
+
+Check the path from the phone: open `http://<portal-name>:8081/status` in the phone's browser. It must show `packager-status:running`. If it does not load, check that Tailscale is connected on the phone.
+
+The development build loads its JavaScript from Metro, including for background tasks. Keep Metro running, and Tailscale connected on the phone, for the whole smoke test. The phone can be anywhere: Metro gives the phone bundle URLs on the same host the phone used, so they also work over Tailscale away from the Mac's Wi-Fi.
 
 ## 4. Create and start the Portal
 
@@ -175,7 +194,8 @@ The proxy can keep running throughout. While the Portal is stopped, the phone se
    It prints the Portal URL, a 16-character code, and its expiry. **The code expires after 10 minutes.**
 3. Start the Portal again (terminal B).
 4. On the phone, open **Activity Tracker Sender**.
-   - If the development launcher appears, choose the Metro server at `http://localhost:8081`.
+   - The development launcher appears the first time. Open **Enter URL manually**, type `http://<portal-name>:8081`, and tap **Connect**.
+   - The launcher remembers the server, and lists it under recently opened servers afterwards.
    - Allow notifications when asked.
 5. The screen reads **Enroll Sender**. Type the Portal URL exactly as `offer` printed it, then the enrollment code, and tap **Enroll**.
 6. **Expected:**
@@ -211,6 +231,8 @@ The proxy can keep running throughout. While the Portal is stopped, the phone se
    ```sh
    adb shell am force-stop org.activitytracker.sender
    ```
+   Without `adb`, use *Settings → Apps → Activity Tracker Sender → Force stop* instead.
+
    Reopen the app and tap **Sync now**.
    - **Expected:** delivery resumes where it stopped. Any `#2` attempt is a message the Portal may already hold, and the Portal treats it as a safe repeat.
    - If the snapshot finishes too quickly to interrupt, skip this and use the stall case in step 9 instead.
@@ -274,7 +296,9 @@ The **native retry** check spans every case, and the dropped-connection and redi
 
 ## 10. Background polling
 
-1. Press the phone's home button, leaving the app in the background. Keep the cable connected and Metro running.
+1. Unplug the phone if it is charging, so it runs on battery. Press the home button, leaving the app in the background.
+   - Keep Metro running on the Mac, and Tailscale connected on the phone.
+   - If a background run cannot reach the Mac, open *Settings → Apps → Tailscale → Battery* and choose **Unrestricted**, so Android keeps the VPN running. Leave the Sender's own battery setting at its default; that is the case being tested.
 2. The Sender asks Android for a background run at least every 60 minutes, and Android may defer it. Either wait, or force the job from terminal D:
    ```sh
    adb shell dumpsys jobscheduler | grep -i -A4 org.activitytracker.sender
@@ -282,7 +306,7 @@ The **native retry** check spans every case, and the dropped-connection and redi
    ```
    Find the line for the Sender's `androidx.work.impl.background.systemjob.SystemJobService` job. It looks like `JOB #u0a172/4: … org.activitytracker.sender/androidx.work…`, and `<job-id>` is the number **after the slash**, `4` in that example.
 
-   If forcing does not run anything, wait for Android instead.
+   If forcing does not run anything, wait for Android instead. On battery, Android may defer the run well past 60 minutes. That is the realistic case: record how long it took.
 3. **Expected:**
    - Terminal C logs outbox deliveries while the app stays in the background.
    - The next report shows a Sync Checkpoint with trigger `background`, and the installation's background scheduling status.
@@ -326,7 +350,7 @@ The **native retry** check spans every case, and the dropped-connection and redi
 2. Read it through before sharing it. It must contain no identifiers, URLs, record values, or record times.
 3. Fill in the smoke report below, and add it to Beads kv7. You can hand both to Claude to record.
 4. File every surprise as its own bead.
-5. Stop Metro, the Portal, and the proxy.
+5. Stop Metro, the Portal, and the proxy, and turn off Wireless debugging on the phone.
 6. The store holds real health data. When you no longer need it, delete it:
    ```sh
    rm -rf ~/activity-tracker-smoke
@@ -377,5 +401,20 @@ The **native retry** check spans every case, and the dropped-connection and redi
 | "The Portal could not be reached. Try again." outside a fault case | Tailscale is off on the phone, the Portal or proxy is stopped, or the macOS firewall is blocking Python. |
 | The title stays **Enrolled; awaiting confirmation** | The Portal has not confirmed the installation, or the phone has not synced since. Run step 5.7 to 5.9 again. |
 | "Sync waits for a confirmed enrollment." | Tap **Sync now** again after confirming. |
-| The development launcher shows no app | Metro is not running, or the cable was reconnected without `adb reverse tcp:8081 tcp:8081`. |
+| The development launcher shows no app, or cannot connect | Metro is not running, the URL is not `http://<portal-name>:8081`, Tailscale is off on the phone, or the macOS firewall is blocking `node`. Check `http://<portal-name>:8081/status` in the phone's browser. |
+| `adb devices` lists nothing, or `adb connect` fails | Wireless debugging restarted with a new port, or the phone left the Mac's Wi-Fi. Read the current **IP address & Port** and run `adb connect` again. |
 | `The Portal is running: stop portal serve, then retry.` | Stop the Portal in terminal B, then rerun the helper command. |
+
+## Using USB instead
+
+The cable replaces only the `adb` connection. Metro, the Portal, and the fault proxy are still reached over Tailscale, so the launcher URL and every other step stay the same.
+
+1. Turn on **USB debugging** in Developer options.
+2. Connect the cable, and accept the debugging prompt on the phone.
+3. In step 3, replace the pairing and `adb connect` with:
+   ```sh
+   adb devices
+   ```
+   It must list the phone as `device`.
+
+Unplug the cable before step 10, so the background run happens on battery. To force the job over USB, plug in only for the `cmd jobscheduler run` command, then unplug. Or wait for a natural run.
