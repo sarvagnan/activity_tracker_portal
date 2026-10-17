@@ -24,7 +24,7 @@ Plan for about two hours. The background step can add an hour of waiting.
 - Some data already in Health Connect from another app, such as Google Fit, Fitbit, or Samsung Health. More types and a longer history make a better test.
 - A secure screen lock: a PIN, pattern, or password. The Sender refuses to enroll without one.
 - The Tailscale app, signed in to the same tailnet as the Mac.
-- Developer options enabled, with **Wireless debugging** available. Every Android 14 phone has it.
+- Developer options enabled, with **Wireless debugging** available. Android 11 and later support it, though a device policy can turn it off.
 - For the one-time `adb` pairing and later `adb` commands, the phone and the Mac on the same Wi-Fi network.
 
 Everything runs over Tailscale and Wi-Fi, so no cable is needed. The background step is more realistic that way, because Android relaxes its background limits while a phone is charging. If wireless debugging is unavailable, use [USB instead](#using-usb-instead).
@@ -106,7 +106,7 @@ The first build downloads the pinned JDK and Android packages, and takes several
    ```
    `adb devices` must list `<phone-ip>:<port>` as `device`.
 
-The connection port changes whenever Wireless debugging restarts, for example after a reboot or a Wi-Fi change. Repeat `adb connect` with the new port when that happens. You don't need to pair again.
+The connection port can change when Wireless debugging restarts, for example after a reboot or a Wi-Fi change. If `adb` loses the phone, read the current port and repeat `adb connect`. You don't need to pair again.
 
 **Install a clean Sender:**
 
@@ -127,7 +127,9 @@ Metro listens on every network interface, so the phone reaches it over Tailscale
 
 Check the path from the phone: open `http://<portal-name>:8081/status` in the phone's browser. It must show `packager-status:running`. If it does not load, check that Tailscale is connected on the phone.
 
-The development build loads its JavaScript from Metro, including for background tasks. Keep Metro running, and Tailscale connected on the phone, for the whole smoke test. The phone can be anywhere: Metro gives the phone bundle URLs on the same host the phone used, so they also work over Tailscale away from the Mac's Wi-Fi.
+The development build loads its JavaScript from Metro. Keep Metro running, and Tailscale connected on the phone, for the whole smoke test.
+- **Location.** The phone can be anywhere. Metro gives the phone bundle URLs on the same host the phone used, so they also work over Tailscale away from the Mac's Wi-Fi.
+- **The development build's limit.** The launcher keeps Metro's address in memory only, and the background task loader does not use it. A background run while the app's process is still alive uses the JavaScript already loaded. A background run that has to start the app from scratch, after Android killed its process, may fail to load any JavaScript. Step 10 tests only the first case; see the note there.
 
 ## 4. Create and start the Portal
 
@@ -194,8 +196,9 @@ The proxy can keep running throughout. While the Portal is stopped, the phone se
    It prints the Portal URL, a 16-character code, and its expiry. **The code expires after 10 minutes.**
 3. Start the Portal again (terminal B).
 4. On the phone, open **Activity Tracker Sender**.
-   - The development launcher appears the first time. Open **Enter URL manually**, type `http://<portal-name>:8081`, and tap **Connect**.
-   - The launcher remembers the server, and lists it under recently opened servers afterwards.
+   - The development launcher appears the first time. Under **DEVELOPMENT SERVERS**, type `http://<portal-name>:8081` in the URL field and tap **Connect**.
+   - If the launcher already lists a server it found on the network, expand **New development server** to reach the URL field.
+   - The launcher lists the app under recently opened apps afterwards.
    - Allow notifications when asked.
 5. The screen reads **Enroll Sender**. Type the Portal URL exactly as `offer` printed it, then the enrollment code, and tap **Enroll**.
 6. **Expected:**
@@ -297,8 +300,9 @@ The **native retry** check spans every case, and the dropped-connection and redi
 ## 10. Background polling
 
 1. Unplug the phone if it is charging, so it runs on battery. Press the home button, leaving the app in the background.
+   - Do not swipe the app away or force-stop it.
    - Keep Metro running on the Mac, and Tailscale connected on the phone.
-   - If a background run cannot reach the Mac, open *Settings → Apps → Tailscale → Battery* and choose **Unrestricted**, so Android keeps the VPN running. Leave the Sender's own battery setting at its default; that is the case being tested.
+   - If a background run cannot reach the Mac, open *Settings → Apps → Tailscale → Battery* and choose **Unrestricted**, to reduce battery-related VPN interruptions. Leave the Sender's own battery setting at its default; that is the case being tested.
 2. The Sender asks Android for a background run at least every 60 minutes, and Android may defer it. Either wait, or force the job from terminal D:
    ```sh
    adb shell dumpsys jobscheduler | grep -i -A4 org.activitytracker.sender
@@ -310,6 +314,8 @@ The **native retry** check spans every case, and the dropped-connection and redi
 3. **Expected:**
    - Terminal C logs outbox deliveries while the app stays in the background.
    - The next report shows a Sync Checkpoint with trigger `background`, and the installation's background scheduling status.
+
+**What this step does not cover.** It exercises a background run while the app's process is still alive. In a development build, a background run that starts the app from scratch, after Android killed its process, may fail to load its JavaScript at all, because the launcher keeps Metro's address in memory only. That is a limit of the development build, not of the Sender. Record whether any background run did not happen, and whether Android had killed the app before it. Cold-start background runs need a build with the JavaScript embedded, and are tracked in Beads 2rv.16.
 
 ## 11. Drain, retire, and unlink
 
