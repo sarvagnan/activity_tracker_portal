@@ -1,6 +1,7 @@
 package org.activitytracker.healthconnect
 
 import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.HealthConnectFeatures
 import org.activitytracker.healthconnect.projection.PROJECTION_SCHEMA_VERSIONS
 import org.activitytracker.healthconnect.snapshot.SnapshotRecordTypes
 
@@ -14,4 +15,10 @@ internal object HealthPermissionRequests {
     )
 
     fun filter(permissions: Collection<String>): Set<String> = permissions.toSet().intersect(allowed)
+
+    /** Pure, health-data-free feature inventory for the screen's permission request. */
+    fun featureStatuses(getFeatureStatus: (Int) -> Int): Map<String, Int> = mapOf(
+        "READ_HEALTH_DATA_HISTORY" to getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_HISTORY),
+        "READ_HEALTH_DATA_IN_BACKGROUND" to getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND),
+    )
 }

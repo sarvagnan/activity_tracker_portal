@@ -3,10 +3,11 @@ import type { OperatorCondition, OperatorConditions } from "../notifications/not
 import type { ShellFailure } from "../shell/failure-observation.ts";
 import type { ShellRunResult } from "../shell/compose-sender.ts";
 import { resultMessage } from "../shell/result-message.ts";
+import type { HealthFeatureStatuses, HealthPermissionFeature } from "../native-health-permissions.ts";
 
 export type EnrollmentState = Awaited<ReturnType<SenderEnrollment["status"]>>;
 export type ConditionsState = Awaited<ReturnType<OperatorConditions["conditions"]>>;
-export type PermissionState = "unknown" | "unavailable" | "update-required" | "missing" | "granted" | "failed";
+export type PermissionState = "unknown" | "unavailable" | "update-required" | "features-unavailable" | "missing" | "granted" | "failed";
 export type ScreenAction = "enroll" | "confirm" | "beginDrain" | "unlink" | "reset";
 export type OfferValidation = { readonly offer: Extract<EnrollmentOffer, { kind: "typed" }>; readonly error: null }
   | { readonly offer: null; readonly error: string };
@@ -17,8 +18,9 @@ export function typedOffer(portalUrl: string, enrollmentCode: string): OfferVali
   const code = enrollmentCode.trim();
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error();
-  } catch { return { offer: null, error: "Enter an http or https Portal URL." }; }
+    const tailscale = parsed.hostname === "ts.net" || parsed.hostname.endsWith(".ts.net");
+    if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && tailscale)) throw new Error();
+  } catch { return { offer: null, error: "Use an https Portal URL, or http only for a Tailscale ts.net name." }; }
   if (!code) return { offer: null, error: "Enter the enrollment code." };
   return { offer: { kind: "typed", portalUrl: url, enrollmentCode: code }, error: null };
 }
@@ -66,14 +68,35 @@ const PERMISSIONS: Record<PermissionState, string> = {
   unknown: "Health Connect access has not been checked.",
   unavailable: "Health Connect is unavailable on this device.",
   "update-required": "Install or update the Health Connect provider, then refresh status.",
-  missing: "Allow per-record read access, health data history, and background health data access.",
+  "features-unavailable": "All available Health Connect permissions are granted. Full-history or background access needs a Health Connect update (on Android 14+, a Google Play system update). Then refresh status and allow access.",
+  missing: "Allow the requested per-record read access and any available history and background health data access.",
   granted: "All requested Health Connect read, history, and background permissions are granted.",
   failed: "Health Connect access could not be checked or requested. Try again.",
 };
-export function permissionState(sdkStatus: number, granted: readonly string[], requested: readonly string[]): PermissionState {
+const FEATURE_PERMISSIONS: Readonly<Record<HealthPermissionFeature, string>> = {
+  READ_HEALTH_DATA_HISTORY: "android.permission.health.READ_HEALTH_DATA_HISTORY",
+  READ_HEALTH_DATA_IN_BACKGROUND: "android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND",
+};
+/** FEATURE_STATUS_AVAILABLE is 2; FEATURE_STATUS_UNAVAILABLE is 1 in connect-client 1.1.0. */
+export function requestableHealthPermissions(requested: readonly string[], features: HealthFeatureStatuses): readonly string[] {
+  const unavailable = new Set<string>();
+  for (const feature of Object.keys(FEATURE_PERMISSIONS) as HealthPermissionFeature[]) {
+    if (features[feature] !== 1 && features[feature] !== 2) throw new Error("Invalid Health Connect feature status");
+    if (features[feature] === 1) unavailable.add(FEATURE_PERMISSIONS[feature]);
+  }
+  return requested.filter((permission) => !unavailable.has(permission));
+}
+export function permissionState(
+  sdkStatus: number, granted: readonly string[], requested: readonly string[], features?: HealthFeatureStatuses,
+): PermissionState {
   if (sdkStatus === 2) return "update-required";
   if (sdkStatus !== 3) return "unavailable";
-  return requested.every((permission) => granted.includes(permission)) ? "granted" : "missing";
+  if (!features) return "failed";
+  try {
+    const requestable = requestableHealthPermissions(requested, features);
+    if (!requestable.every((permission) => granted.includes(permission))) return "missing";
+    return requestable.length < requested.length ? "features-unavailable" : "granted";
+  } catch { return "failed"; }
 }
 
 export function senderScreenModel(input: {

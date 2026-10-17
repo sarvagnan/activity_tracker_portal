@@ -29,6 +29,10 @@ class HealthConnectModule : Module() {
         AsyncFunction("sdkStatus") {
             HealthConnectClient.getSdkStatus(checkNotNull(appContext.reactContext))
         }
+        AsyncFunction("featureStatuses") {
+            val context = checkNotNull(appContext.reactContext)
+            HealthPermissionRequests.featureStatuses(HealthConnectClient.getOrCreate(context).features::getFeatureStatus)
+        }
         AsyncFunction("grantedPermissions") Coroutine { ->
             val context = checkNotNull(appContext.reactContext)
             HealthPermissionRequests.filter(

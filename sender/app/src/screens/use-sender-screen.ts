@@ -6,7 +6,9 @@ import { requestSenderNotificationPermission } from "../background/react-native-
 import { nativeHealthPermissions, SENDER_HEALTH_PERMISSIONS } from "../native-health-permissions.ts";
 import type { SenderShell, ShellRunResult } from "../shell/compose-sender.ts";
 import type { ShellFailure } from "../shell/failure-observation.ts";
-import { permissionState, resetAcknowledgement, senderScreenModel, typedOffer } from "./sender-screen-model.ts";
+import { resetAcknowledgement, senderScreenModel, typedOffer } from "./sender-screen-model.ts";
+import { checkHealthPermissions } from "./check-health-permissions.ts";
+import { refreshAroundForeground } from "./refresh-around-foreground.ts";
 import type { ConditionsState, EnrollmentState, PermissionState } from "./sender-screen-model.ts";
 
 /** Foreground controller: screens only render the model and forward gestures. */
@@ -23,11 +25,13 @@ export function useSenderScreen() {
   const [permission, setPermission] = useState<PermissionState>("unknown");
   const mounted = useRef(true);
   const identity = useRef<string | null | undefined>(undefined);
+  const refreshVersion = useRef(0);
+  const permissionVersion = useRef(0);
 
   async function refresh(shell: SenderShell) {
-    const status = await shell.status();
-    const conditions = await shell.conditions();
-    if (!mounted.current) return;
+    const version = ++refreshVersion.current;
+    const [status, conditions] = await Promise.all([shell.status(), shell.conditions()]);
+    if (!mounted.current || version !== refreshVersion.current) return;
     const nextIdentity = status && !("outcome" in status) ? status.installationId : null;
     if (nextIdentity !== identity.current) {
       identity.current = nextIdentity;
@@ -37,13 +41,11 @@ export function useSenderScreen() {
     setSnapshot({ status, conditions, failure: shell.latestFailure(), sync: shell.latestSyncResult() });
   }
   async function checkPermissions(request = false) {
+    const version = ++permissionVersion.current;
     try {
-      const native = nativeHealthPermissions();
-      const sdk = await native.sdkStatus();
-      const granted = sdk !== 3 ? [] : request
-        ? await native.requestPermissions(SENDER_HEALTH_PERMISSIONS) : await native.grantedPermissions();
-      if (mounted.current) setPermission(permissionState(sdk, granted, SENDER_HEALTH_PERMISSIONS));
-    } catch { if (mounted.current) setPermission("failed"); }
+      const state = await checkHealthPermissions(nativeHealthPermissions(), SENDER_HEALTH_PERMISSIONS, request);
+      if (mounted.current && version === permissionVersion.current) setPermission(state);
+    } catch { if (mounted.current && version === permissionVersion.current) setPermission("failed"); }
   }
   useEffect(() => {
     mounted.current = true;
@@ -54,8 +56,7 @@ export function useSenderScreen() {
         try { await requestSenderNotificationPermission(); } catch { /* Existing scheduling retries later. */ }
       }
       const shell = await expoSender();
-      try { await shell.foreground(); }
-      finally { await refresh(shell); await checkPermissions(); }
+      await refreshAroundForeground(() => shell.foreground(), () => refresh(shell), () => checkPermissions());
     }, () => { if (mounted.current) setNotice("Sender could not start sync."); });
     return () => { mounted.current = false; stop(); };
   }, []);
