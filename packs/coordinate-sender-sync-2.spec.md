@@ -33,7 +33,7 @@ Everything in `coordinate-sender-sync@1`'s Interface is unchanged. The module, i
 
 `coordinate-sender-sync@1`'s requirements R1–R22 carry over unchanged for every trigger without `deadlineMs`. The `@2` pack re-runs `@1`'s TypeScript suite unchanged, so every `@1` test must still pass exactly.
 
-The new requirements are bound to a new TypeScript suite, `sender/app/test/coordinate-sender-sync-2.test.ts`. It uses `@1`'s synthetic sources fake, the 3ug substitutes, and controllable clocks, and opens and decodes every staged checkpoint it asserts on. A new Python suite, `tests/acceptance/test_coordinate_sender_sync_2.py`, checks the contract.
+The new requirements are bound to the 12 tests of a new TypeScript suite, `sender/app/test/coordinate-sender-sync-2.test.ts`. It uses `@1`'s synthetic sources fake, the 3ug substitutes, and controllable clocks, and opens and decodes every staged checkpoint it asserts on. A new Python suite, `tests/acceptance/test_coordinate_sender_sync_2.py`, checks the contract.
 
 ### R23 — Governed Scope contract, version 2
 
@@ -43,7 +43,7 @@ Tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_m
 
 ### R24 — Caller errors
 
-`TypeError` is thrown, with nothing written and no source call made, for a `deadlineMs` that is not a safe integer. A deadline may already have passed. A deadline is allowed on any trigger kind.
+`TypeError` is thrown, with nothing written and no source call made, for a `deadlineMs` that is not a safe integer: a fraction, an integer outside the safe range, `NaN`, an infinity, or a value of another type, including `null`. A deadline may already have passed, and may be zero or negative. A deadline is allowed on any trigger kind, with or without a budget.
 
 Tests: `malformed_deadlines_are_caller_errors`.
 
@@ -60,6 +60,8 @@ At the effective deadline, R10 applies unchanged:
 - a read already in flight is staged;
 - a completion owed by a staged final page is still staged.
 
+A run reaches its absolute deadline once `monotonicNow()` reaches it, as a budget is reached in `@1`. The deadline is checked before every source call, including after the conditions read for that call, so it stops a run wherever it passes. A read that started before the deadline is staged with the completion it owes, so a type whose final read started in time still catches up.
+
 A type that did work but is not caught up is `progressed` with `time-budget-reached`. A type that did no work is `deferred` with `time-budget-reached`. A deadline stop is never reported as `read-failed`.
 
 Tests:
@@ -71,7 +73,7 @@ Tests:
 
 ### R26 — A run that opens past its deadline
 
-A run whose absolute deadline has passed when it opens still records its run marker. It makes no source call, and checkpoints with every managed type `deferred` with `time-budget-reached`. Its trigger returns `checkpointed`, like any run.
+A run whose absolute deadline has passed when it opens still records its run marker. It makes no source call, and checkpoints with every managed type `deferred` with `time-budget-reached`. Its trigger returns `checkpointed`, like any run. This holds for a run that opens exactly at its deadline, and whatever budget the trigger also carries. Progress saved by earlier runs is kept for the next run.
 
 Tests: `a_run_opening_past_its_deadline_reads_nothing_and_checkpoints`.
 
@@ -81,7 +83,7 @@ R8 still decides the follow-up's kind and priority, and the active run is still 
 - If any merged trigger is unbounded, the follow-up has neither a budget nor a deadline.
 - Otherwise, its budget is the latest budget among the merged triggers that have one, as in R8, and its deadline is the earliest deadline among those that have one.
 
-For triggers without deadlines, this is exactly R8. Every merged caller receives the follow-up's result.
+A trigger with only a budget, or only a deadline, is bounded: it neither lifts nor replaces the other limit. For triggers without deadlines, this is exactly R8. Every merged caller receives the follow-up's result.
 
 Tests:
 - `a_follow_up_keeps_the_earliest_deadline`
@@ -91,7 +93,7 @@ Tests:
 
 ### R28 — Deadlines stay in memory
 
-Deadlines are not persisted. The run marker, the coordinator's tables, and the checkpoint carry nothing new. A recovered run (R4) is checkpointed as interrupted whatever its trigger's deadline was.
+Deadlines are not persisted. The run marker, the coordinator's tables, and the checkpoint carry nothing new: a run bounded by a deadline leaves exactly the database that a run bounded by the same budget leaves, with sealed messages compared after opening them. A recovered run (R4) is checkpointed as interrupted whatever its trigger's deadline was.
 
 Tests: `deadlines_write_no_new_state`.
 
@@ -117,13 +119,18 @@ Deadline tests drive the monotonic clock explicitly, and never depend on real ti
 
 ## Freeze prerequisites
 
-Once the Operator approves the draft, the executable pack adds:
-- the TypeScript suite `coordinate-sender-sync-2.test.ts`;
-- the Python contract suite;
-- a runner that runs `@1`'s TypeScript suite unchanged and then `@2`'s.
+After Gate A, the executable pack adds:
+- the TypeScript suite `coordinate-sender-sync-2.test.ts`, with 12 tests;
+- the Python contract suite `tests/acceptance/test_coordinate_sender_sync_2.py`;
+- the runner `tests/acceptance/run_coordinate_sender_sync_2.sh`, which runs the version 2 contract check, `@1`'s bound runner unchanged, and then the `@2` suite under a per-test timeout and an external deadline;
+- the Interface stub: the optional `deadlineMs` field on `TriggerRequest`, a type with no behaviour.
 
-The published `@1` module is the RED baseline: it ignores `deadlineMs`, so the new tests fail against it, while `@1`'s suite and the Python tests pass. The binding is:
+The published `@1` module, with that stub, is the RED baseline. It ignores `deadlineMs`, so all 12 new tests fail against it, while `@1`'s 76 TypeScript tests and both Python suites pass. A throwaway reference passes all 12 tests, `@1`'s suite, and the whole Sender suite. The new suite kills all 30 of the reference's non-equivalent mutants.
+
+One more mutant was dropped as equivalent: it checks the deadline before each conditions read but not after it. A deadline check still precedes every read and issuance, so no source call starts late. It differs only in whether a completion left pending by an earlier run is staged after the deadline. R10 leaves that open, as it does for a budget.
+
+The binding is:
 - spec files: the contract and this pack;
 - test files: both TypeScript suites, `synthetic-sync-sources.ts`, `node-database.ts`, `node-installation-cipher.ts`, the Python suite, and the runner.
 
-GPT 6.1 Sol's read-only implementability review runs before Gate B.
+GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation adds the runner to the project CI `test` job.

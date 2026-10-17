@@ -99,6 +99,8 @@ export interface TriggerRequest {
   readonly kind: CheckpointTrigger;
   /** The soft execution budget in milliseconds; none when omitted. */
   readonly budgetMs?: number;
+  /** An absolute soft deadline on `monotonicNow()`; none when omitted (coordinate-sender-sync@2). */
+  readonly deadlineMs?: number;
   /** Record types to move forward once; manual triggers only. */
   readonly priority?: readonly string[];
 }
