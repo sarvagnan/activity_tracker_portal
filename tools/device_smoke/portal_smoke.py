@@ -16,9 +16,13 @@ def utc(value: datetime | None) -> str:
     return "none" if value is None else value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def ordered_installations(view: operational_store.StoreView) -> list[operational_store.InstallationStatus]:
+    return sorted(view.installations(), key=lambda item: (item.enrolled_at, item.installation_id))
+
+
 def status(view: operational_store.StoreView) -> str:
     lines = []
-    for number, item in enumerate(view.installations(), 1):
+    for number, item in enumerate(ordered_installations(view), 1):
         lines.append(f"installation {number}")
         for name in ("installation_id", "fingerprint", "state", "highest_sequence", "enrolled_at",
                      "activated_at", "draining_at", "retired_at", "retirement_kind", "last_delivery_at",
@@ -38,7 +42,7 @@ def counts(values: Counter) -> str:
 def report(view: operational_store.StoreView) -> str:
     """Select operational counts only; never decode envelopes or projections."""
     lines = ["# Device smoke delivery report"]
-    for number, item in enumerate(view.installations(), 1):
+    for number, item in enumerate(ordered_installations(view), 1):
         installation_id = item.installation_id
         lines.extend(["", f"## installation {number}", f"- state: {item.state}",
                       f"- retirement_kind: {item.retirement_kind or 'none'}",
@@ -48,8 +52,8 @@ def report(view: operational_store.StoreView) -> str:
             lines.append(f"  - {event.state}: {utc(event.at)}")
         messages = Counter()
         batches = defaultdict(Counter)
-        projections = Counter()
-        retractions = Counter()
+        projections = defaultdict(Counter)
+        retractions = defaultdict(Counter)
         completions = defaultdict(Counter)
         completed_records = defaultdict(Counter)
         checkpoints = []
@@ -61,8 +65,8 @@ def report(view: operational_store.StoreView) -> str:
             if message.batch is not None:
                 batch = message.batch
                 batches[batch.record_type][batch.cycle_kind] += 1
-                projections[batch.record_type] += sum(entry.projection is not None for entry in batch.items)
-                retractions[batch.record_type] += sum(entry.retracted_identity is not None for entry in batch.items)
+                projections[batch.record_type][batch.cycle_kind] += sum(entry.projection is not None for entry in batch.items)
+                retractions[batch.record_type][batch.cycle_kind] += sum(entry.retracted_identity is not None for entry in batch.items)
             if message.completion is not None:
                 completion = message.completion
                 key = f"{completion.completion_kind}/{completion.snapshot_kind or 'none'}"
@@ -72,9 +76,13 @@ def report(view: operational_store.StoreView) -> str:
                 checkpoints.append(message.checkpoint)
         lines.append(f"- messages: {counts(messages)}")
         for record_type in sorted(set(batches) | set(completions)):
-            lines.extend([f"- record_type: {record_type}", f"  - ingest_batches: {counts(batches[record_type])}",
-                          f"  - projections: {projections[record_type]}", f"  - retractions: {retractions[record_type]}",
-                          f"  - completions: {counts(completions[record_type])}",
+            lines.append(f"- record_type: {record_type}")
+            for cycle_kind in ("initial-snapshot", "reconciliation-snapshot", "change-cycle"):
+                if cycle_kind in batches[record_type]:
+                    lines.append(f"  - {cycle_kind}: batches={batches[record_type][cycle_kind]}, "
+                                 f"projections={projections[record_type][cycle_kind]}, "
+                                 f"retractions={retractions[record_type][cycle_kind]}")
+            lines.extend([f"  - completions: {counts(completions[record_type])}",
                           f"  - completion_record_counts: {counts(completed_records[record_type])}"])
         lines.append("- sync_checkpoints:")
         for checkpoint in checkpoints:

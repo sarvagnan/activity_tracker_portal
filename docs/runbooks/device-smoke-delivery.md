@@ -75,11 +75,14 @@ Connect the phone over USB and accept the debugging prompt on the phone. Then:
 
 ```sh
 adb devices
-adb install -r sender/app/android/app/build/outputs/apk/debug/app-debug.apk
+adb uninstall org.activitytracker.sender
+adb install sender/app/android/app/build/outputs/apk/debug/app-debug.apk
 adb reverse tcp:8081 tcp:8081
 ```
 
 `adb devices` must list the phone as `device`, not `unauthorized`.
+
+`adb uninstall` starts the run from a clean Sender. It deletes any earlier development Sender's enrollment, queued messages, and Health Connect grants. It prints `Failure [DELETE_FAILED_INTERNAL_ERROR]` or `Unknown package` when no Sender is installed, which is fine.
 
 `adb reverse` lets the phone reach Metro on the Mac. Repeat it whenever you reconnect the cable.
 
@@ -236,9 +239,11 @@ The proxy can keep running throughout. While the Portal is stopped, the phone se
 2. **A deletion.**
    1. In the Health Connect app, open *Data and access*, choose a type that has data, and delete one entry.
    2. Tap **Sync now**.
-3. **Expected,** with the Portal stopped and the report printed again:
-   - that type shows a `change-cycle` batch with at least one projection, after the new record;
-   - and one with at least one retraction, after the deletion.
+3. **Expected.** Print the report after each operation, with the Portal stopped:
+   - **After the new record:** that type's `change-cycle` line shows `projections` of at least 1.
+   - **After the deletion:** the deleted type's `change-cycle` line shows `retractions` of at least 1.
+
+   The report counts projections and retractions separately for each cycle kind, so the initial snapshot's records never count toward the change cycle.
 
 ## 9. Transport faults
 
@@ -275,7 +280,9 @@ The **native retry** check spans every case, and the dropped-connection and redi
    adb shell dumpsys jobscheduler | grep -i -A4 org.activitytracker.sender
    adb shell cmd jobscheduler run -f org.activitytracker.sender <job-id>
    ```
-   `<job-id>` is the number after `#` on the line naming `org.activitytracker.sender`, for its `androidx.work` job. If forcing does not run anything, wait for Android instead.
+   Find the line for the Sender's `androidx.work.impl.background.systemjob.SystemJobService` job. It looks like `JOB #u0a172/4: … org.activitytracker.sender/androidx.work…`, and `<job-id>` is the number **after the slash**, `4` in that example.
+
+   If forcing does not run anything, wait for Android instead.
 3. **Expected:**
    - Terminal C logs outbox deliveries while the app stays in the background.
    - The next report shows a Sync Checkpoint with trigger `background`, and the installation's background scheduling status.
@@ -298,7 +305,7 @@ The **native retry** check spans every case, and the dropped-connection and redi
 ## 12. Re-enroll and destructive reset
 
 1. Repeat step 5 to enroll and confirm a second installation, with a fresh code. Then tap **Sync now** once.
-   - In `status`, the new installation is the one in state `pending` whose fingerprint matches the phone. The list is ordered by installation id, not by age, so it need not be the last one.
+   - `status` and `report` number installations in enrollment order, so the new one is the last. Still pick it by its `pending` state and a fingerprint that matches the phone.
    - You need not wait for its whole initial snapshot.
 2. **Optional:** in the phone's Health Connect settings, revoke one permission for the Sender, then tap **Refresh status**.
    - **Expected:** the access text reports missing access, and an Operator condition about Health Connect access appears after the next Sync.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
@@ -103,6 +103,44 @@ class PortalSmokeTests(unittest.TestCase):
         self.assertEqual(self.command("confirm", "--installation", IDENTITY, "--fingerprint", FINGERPRINT),
                          (0, f"installation {IDENTITY} is now active\n", ""))
 
+    def test_installations_are_numbered_in_enrollment_order_with_id_ties(self):
+        earlier_id = "00000000-0000-4000-8000-000000000003"
+        later_id = "00000000-0000-4000-8000-000000000002"
+        writer = self.writer()
+        def write(store):
+            for identity, enrolled_at in ((earlier_id, NOW), (later_id, NOW + timedelta(seconds=1)),
+                                          (IDENTITY, NOW + timedelta(seconds=1))):
+                store.record_enrollment_offer(identity, NOW + timedelta(minutes=5), NOW)
+                store.enroll_installation(identity, identity, ingest_protocol.installation_fingerprint(identity), enrolled_at)
+        try:
+            writer.run(write)
+        finally:
+            writer.close()
+        for command in ("status", "report"):
+            with self.subTest(command=command):
+                code, output, error = self.command(command)
+                self.assertEqual((code, error), (0, ""))
+                marker = "## installation " if command == "report" else "installation "
+                sections = output.split(marker)[1:]
+                self.assertEqual(len(sections), 3)
+                for number, (section, identity, enrolled_at) in enumerate(zip(
+                        sections, (earlier_id, IDENTITY, later_id),
+                        (NOW, NOW + timedelta(seconds=1), NOW + timedelta(seconds=1))), 1):
+                    self.assertTrue(section.startswith(f"{number}\n"))
+                    if command == "status":
+                        self.assertIn(f"id: {identity}\n", section)
+                    else:
+                        self.assertIn(f"  - pending: {portal_smoke.utc(enrolled_at)}\n", section)
+        writer = self.writer()
+        try:
+            def check_order(store):
+                with store.read() as view:
+                    self.assertEqual([item.installation_id for item in portal_smoke.ordered_installations(view)],
+                                     [earlier_id, IDENTITY, later_id])
+            writer.run(check_order)
+        finally:
+            writer.close()
+
     def test_drain_and_retire(self):
         self.activate()
         self.assertEqual(self.command("drain", "--installation", IDENTITY)[1], f"installation {IDENTITY} is now draining\n")
@@ -157,6 +195,41 @@ class PortalSmokeTests(unittest.TestCase):
         finally:
             writer.close()
 
+    def test_report_attributes_projection_and_retraction_counts_to_cycle_kind(self):
+        self.activate()
+        writer = self.writer()
+        def archive(store, sequence, cycle_kind, items):
+            envelope = f"synthetic-private-envelope-{sequence}".encode()
+            header = os_store.MessageHeader(IDENTITY, sequence, hashlib.sha256(envelope).hexdigest(), 1,
+                                            NOW, envelope, b"synthetic-private-receipt")
+            store.archive_ingest_batch(header, os_store.IngestBatchRecord(
+                "weight", 1, cycle_kind, f"private-cycle-{sequence}", 1, 1, "private-chain", items))
+        try:
+            writer.run(lambda store: archive(store, 1, "initial-snapshot", (
+                os_store.BatchItem(projection=b"private-initial-1"),
+                os_store.BatchItem(projection=b"private-initial-2"))))
+            writer.run(lambda store: archive(store, 2, "reconciliation-snapshot", (
+                os_store.BatchItem(projection=b"private-reconciliation"),)))
+            writer.run(lambda store: archive(store, 3, "change-cycle", (
+                os_store.BatchItem(retracted_identity="private-retracted-identity"),)))
+        finally:
+            writer.close()
+        code, output, error = self.command("report")
+        self.assertEqual((code, error), (0, ""))
+        self.assertIn("- record_type: weight\n", output)
+        self.assertIn("  - initial-snapshot: batches=1, projections=2, retractions=0\n", output)
+        self.assertIn("  - reconciliation-snapshot: batches=1, projections=1, retractions=0\n", output)
+        self.assertIn("  - change-cycle: batches=1, projections=0, retractions=1\n", output)
+        writer = self.writer()
+        try:
+            writer.run(lambda store: archive(store, 4, "change-cycle", (
+                os_store.BatchItem(projection=b"private-new-projection"),)))
+        finally:
+            writer.close()
+        code, output, error = self.command("report")
+        self.assertEqual((code, error), (0, ""))
+        self.assertIn("  - change-cycle: batches=2, projections=1, retractions=1\n", output)
+
     def test_report_redacts_and_aggregates_and_reads_are_byte_identical(self):
         offered = self.activate()
         self.populate()
@@ -171,7 +244,7 @@ class PortalSmokeTests(unittest.TestCase):
                 for forbidden in (IDENTITY, FINGERPRINT, self.settings.portal_url, offered, "private-"):
                     self.assertNotIn(forbidden, output)
                 for expected in ("## installation 1", "ingest-batch×1", "missing×1", "sync-checkpoint×1",
-                                 "capability-acknowledgement×1", "initial-snapshot×1", "projections: 1", "retractions: 1",
+                                 "capability-acknowledgement×1", "initial-snapshot: batches=1, projections=1, retractions=1",
                                  "snapshot/initial×1", "completion_record_counts: snapshot/initial×2", "run_sequence=7",
                                  "trigger=manual", "elapsed_ms=42", "background_scheduling=available",
                                  "outbox_messages_before_checkpoint=2", "outbox_bytes_before_checkpoint=300",
