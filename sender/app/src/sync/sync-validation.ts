@@ -42,6 +42,7 @@ export function checkOptions(options: SenderSyncOptions): void {
 export function checkTrigger(request: TriggerRequest, managed: ReadonlySet<string>): void {
   if (!object(request) || !["background", "foreground", "manual"].includes(request.kind) ||
       (request.budgetMs !== undefined && !positive(request.budgetMs)) ||
+      (request.deadlineMs !== undefined && !Number.isSafeInteger(request.deadlineMs)) ||
       (request.priority !== undefined && (request.kind !== "manual" || !Array.isArray(request.priority) ||
         Array.from(request.priority).some((type) => !managed.has(type))))) throw new TypeError("Invalid sync trigger");
 }

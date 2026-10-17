@@ -99,6 +99,8 @@ export interface TriggerRequest {
   readonly kind: CheckpointTrigger;
   /** The soft execution budget in milliseconds; none when omitted. */
   readonly budgetMs?: number;
+  /** An absolute soft deadline on `monotonicNow()`; none when omitted (coordinate-sender-sync@2). */
+  readonly deadlineMs?: number;
   /** Record types to move forward once; manual triggers only. */
   readonly priority?: readonly string[];
 }
@@ -245,6 +247,7 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
     if (!["available", "restricted", "unregistered"].includes(backgroundScheduling)) throw new TypeError("Invalid scheduling status");
     const installationId = context.installationId;
     let startMono = options.monotonicNow();
+    let deadline = request.deadlineMs;
     let failure: string | null = null;
     let callerError: TypeError | null = null;
     const stopped = () => failure !== null || callerError !== null;
@@ -277,7 +280,7 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
 
     function canStart(state: TypeRun, owedCompletion = false): boolean {
       if (stopped()) return false;
-      if (!owedCompletion && request.budgetMs !== undefined && options.monotonicNow() >= startMono + request.budgetMs) {
+      if (!owedCompletion && deadline !== undefined && options.monotonicNow() >= deadline) {
         state.reason = "time-budget-reached";
         state.stopped = true;
         return false;
@@ -511,6 +514,8 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
       startedAtMs = options.now();
       checkInstant(startedAtMs);
       startMono = options.monotonicNow();
+      // Budgets start at opening; the absolute deadline also counts all earlier waits.
+      if (request.budgetMs !== undefined) deadline = Math.min(deadline ?? Infinity, startMono + request.budgetMs);
       runSequence = await lane(() => database.transaction(async (tx) => {
         const [lastRun] = await tx.query("SELECT MAX(run_sequence) AS last FROM sync_runs WHERE installation_id = ?", [installationId]);
         const sequence = (lastRun.last as number | null ?? 0) + 1;
@@ -593,6 +598,7 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
     checkTrigger(request, managed);
     checkInstant(options.now());
     const copy: TriggerRequest = { kind: request.kind, ...(request.budgetMs === undefined ? {} : { budgetMs: request.budgetMs }),
+      ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
       ...(request.priority === undefined ? {} : { priority: [...new Set(request.priority)] }) };
     if (!active) { active = true; return drain(copy); }
     if (!followUp) {
@@ -603,8 +609,13 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
     } else {
       const previous = followUp.request;
       const rank = { background: 0, foreground: 1, manual: 2 };
+      const unbounded = (previous.budgetMs === undefined && previous.deadlineMs === undefined) ||
+        (copy.budgetMs === undefined && copy.deadlineMs === undefined);
+      const budgetMs = copy.budgetMs ?? previous.budgetMs;
+      const deadlineMs = Math.min(previous.deadlineMs ?? Infinity, copy.deadlineMs ?? Infinity);
       followUp.request = { kind: rank[copy.kind] > rank[previous.kind] ? copy.kind : previous.kind,
-        ...(previous.budgetMs === undefined || copy.budgetMs === undefined ? {} : { budgetMs: copy.budgetMs }),
+        ...(unbounded || budgetMs === undefined ? {} : { budgetMs }),
+        ...(unbounded || deadlineMs === Infinity ? {} : { deadlineMs }),
         priority: [...new Set([...(previous.priority ?? []), ...(copy.priority ?? [])])] };
     }
     return followUp.promise;
