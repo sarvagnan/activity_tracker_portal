@@ -28,6 +28,8 @@ import type { SenderDatabase } from "../src/storage/database.ts";
 import { openNodeDatabase } from "./support/node-database.ts";
 import { NodeInstallationCipher } from "./support/node-installation-cipher.ts";
 import { SyntheticClock, SyntheticSources } from "./support/synthetic-sync-sources.ts";
+import * as syncUnit from "../src/sync/coordinate-sender-sync.ts";
+import type { TriggerRequest } from "../src/sync/coordinate-sender-sync.ts";
 
 function test(name: string, options: TestFn | TestOptions, body?: TestFn): void {
   if (typeof options === "function") void nodeTest(name, { timeout: 5_000 }, options);
@@ -2768,18 +2770,11 @@ test("NOC R5 item 4: a late finite status read teaches the next observation a su
     })]);
   } finally { clearInterval(arrivals); clearTimeout(timer); }
 });
-test("NOC R5 item 5: native notification shares the outer identity-read deadline", { timeout: 5_000 }, async (t) => {
+test("NOC R5 item 5: late notification permission cannot post after observation timeout", { timeout: 5_000 }, async (t) => {
   const f = await observerFixture(t);
-  let reads = 0, posts = 0;
+  let posts = 0;
   const permission = signal(), release = signal();
   const observer = createShellConditionObserver({ ...f.observerOptions,
-    async status() {
-      if (++reads === 3) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 700));
-        f.clock.advance(700);
-      }
-      return f.state.status;
-    },
     notifier: conditionNotifier({
       async notificationsEnabled() { permission.resolve(); await release.promise; return true; },
       async postOperatorNotification() { posts++; },
@@ -3150,3 +3145,256 @@ for (const firstObservation of ["startup", "phase transition"] as const) {
     });
   }
 }
+
+// 2rv.11 exercises the shell against the published @2 coordinator. Decode its
+// sealed checkpoints as well as checking callback results: expiry is a run.
+async function deadlineCheckpoints(f: Awaited<ReturnType<typeof fixture>>) {
+  const checkpoints = [];
+  for (const message of await outboxMessages(f.database())) {
+    const opened = await f.cipher.open(KEY, message.sealed, outboxAad(INSTALLATION, message.sequence));
+    assert.equal(opened.status, "ok");
+    if (opened.status !== "ok") throw new Error("Expected readable synthetic message");
+    const decoded = decodeMessage(opened.value);
+    if (decoded.kind === "sync-checkpoint") checkpoints.push(decoded);
+  }
+  return checkpoints;
+}
+function deadlineOutcomes(message: Awaited<ReturnType<typeof deadlineCheckpoints>>[number]) {
+  return (message.record_types as Record<string, unknown>[]).map((type) =>
+    [type.record_type, type.outcome, type.reason, type.source_data_staged]);
+}
+const BACKGROUND_RUN_WINDOW_MS = BACKGROUND_BUDGET_MS - DELIVERY_TIMEOUT_MS -
+  DELIVERY_FINISH_RESERVE_MS - CONDITION_OBSERVATION_BUDGET_MS;
+
+test("2rv.11: polling requests carry the callback deadline minus reserves; foreground and manual stay unbounded", { timeout: 45_000 }, async (t) => {
+  // Module mocking needs an explicit Node flag. The child runs the real shell
+  // and coordinator, wrapping only trigger to inspect the boundary request.
+  if (!process.execArgv.includes("--experimental-test-module-mocks")) {
+    const child = spawnSync(process.execPath, ["--experimental-test-module-mocks",
+      "--test", "--test-name-pattern=2rv.11: polling requests", import.meta.filename],
+    { encoding: "utf8", timeout: 30_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
+    assert.equal(child.status, 0, `signal=${child.signal}; error=${child.error}\n${child.stdout}${child.stderr}`);
+    return;
+  }
+  const requests: TriggerRequest[] = [];
+  t.mock.module("../src/sync/coordinate-sender-sync.ts", { namedExports: { ...syncUnit,
+    createSenderSync(options: syncUnit.SenderSyncOptions) {
+      const coordinator = syncUnit.createSenderSync(options);
+      return { ...coordinator, trigger(request: TriggerRequest) {
+        requests.push({ ...request }); return coordinator.trigger(request);
+      } };
+    },
+  } });
+  const { composeSender: composeTraced } = await import(new URL("../src/shell/compose-sender.ts?deadline-trace", import.meta.url).href);
+  const f = await fixture(t);
+  const shell = await composeTraced({ ...f.options, async projectionSchemaVersions() {
+    f.clock.advance(5_000); return f.state.versions;
+  } });
+  const began = f.clock.monotonicNow();
+  assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "success");
+  checkpoint(await shell.foreground());
+  checkpoint(await shell.manualSync());
+  assert.deepEqual(requests, [
+    { kind: "background", budgetMs: BACKGROUND_BUDGET_MS, deadlineMs: began + BACKGROUND_RUN_WINDOW_MS },
+    { kind: "foreground" }, { kind: "manual" },
+  ]);
+});
+
+test("2rv.11: an expired background callback queued behind foreground checkpoints without fresh source reads", async (t) => {
+  const f = await fixture(t);
+  const submissions = submissionClock(f.clock.now);
+  const shell = await composeSender({ ...f.options, onRunSubmitted: submissions.admitted });
+  const held = f.sources.hold("snapshot", "steps");
+  f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "synthetic-permission-gap" });
+  try {
+    const active = shell.foreground();
+    await held.arrived;
+    const calls = f.sources.calls.length;
+    const polling = (await shell.backgroundPollingProvider())!;
+    const background = await submissions.submit(() => polling.runTask());
+    assert.equal((await runs(f.database())).length, 1);
+    // The reserved run deadline expires even while the callback itself retains
+    // enough time for delivery and observation. Queueing consumes the window.
+    f.clock.advance(BACKGROUND_RUN_WINDOW_MS);
+    held.release();
+    checkpoint(await active);
+    assert.equal(await background.result, "success");
+    assert.equal(f.sources.calls.length, calls);
+    assert.deepEqual((await runs(f.database())).map((run) => run.trigger), ["foreground", "background"]);
+    const messages = await deadlineCheckpoints(f);
+    assert.equal(messages.length, 2);
+    assert.deepEqual(deadlineOutcomes(messages[1]), [["steps", "deferred", "time-budget-reached", false]]);
+  } finally { held.release(); }
+});
+
+for (const remaining of [20, -1]) {
+  test(`2rv.11: queued background callbacks share the earliest deadline and checkpoint with ${remaining}ms left`, async (t) => {
+    const f = await fixture(t);
+    f.sources.seed("steps", 4);
+    const submissions = submissionClock(f.clock.now);
+    const shell = await composeSender({ ...f.options, onRunSubmitted: submissions.admitted });
+    const held = f.sources.hold("snapshot", "steps");
+    f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "synthetic-permission-gap" });
+    try {
+      const active = shell.manualSync();
+      await held.arrived;
+      const polling = (await shell.backgroundPollingProvider())!;
+      const first = await submissions.submit(() => polling.runTask());
+      f.clock.advance(100);
+      const second = await submissions.submit(() => polling.runTask());
+      const before = f.sources.calls.length;
+      f.clock.advance(BACKGROUND_RUN_WINDOW_MS - 100 - remaining);
+      // The active snapshot has already entered onCall. Charge only fresh
+      // follow-up work, which must use the earlier caller's remaining window.
+      f.sources.onCall = () => { f.clock.advance(20); };
+      held.release();
+      checkpoint(await active);
+      assert.deepEqual(await Promise.all([first.result, second.result]), ["success", "success"]);
+      assert.equal(f.sources.calls.length, before + (remaining > 0 ? 1 : 0));
+      assert.equal((await runs(f.database())).length, 2);
+      const messages = await deadlineCheckpoints(f);
+      assert.equal(messages.length, 2);
+      assert.deepEqual(deadlineOutcomes(messages[1]), [["steps", remaining > 0 ? "progressed" : "deferred",
+        "time-budget-reached", remaining > 0]]);
+    } finally { held.release(); }
+  });
+}
+
+test("2rv.11: background scheduling setup past the callback deadline checkpoints deferred without sources", async (t) => {
+  const f = await fixture(t);
+  const shell = await composeSender({ ...f.options, platform: { ...f.options.platform,
+    async restriction() { f.clock.advance(BACKGROUND_BUDGET_MS); return "available"; },
+  } });
+  assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "success");
+  assert.deepEqual(f.sources.calls, []);
+  assert.equal((await runs(f.database())).length, 1);
+  const messages = await deadlineCheckpoints(f);
+  assert.equal(messages.length, 1);
+  assert.deepEqual(deadlineOutcomes(messages[0]), [["steps", "deferred", "time-budget-reached", false]]);
+});
+
+test("2rv.11: background preparation exhausting the window still admits a deferred checkpoint", async (t) => {
+  const f = await fixture(t);
+  let submitted = 0;
+  const shell = await composeSender({ ...f.options, onRunSubmitted() { submitted++; }, async projectionSchemaVersions() {
+    f.clock.advance(BACKGROUND_BUDGET_MS); return f.state.versions;
+  } });
+  assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "success");
+  assert.equal(submitted, 1, "late preparation still submits the polling unit's positive budget");
+  assert.deepEqual(f.sources.calls, []);
+  assert.equal((await runs(f.database())).length, 1);
+  const messages = await deadlineCheckpoints(f);
+  assert.equal(messages.length, 1);
+  assert.deepEqual(deadlineOutcomes(messages[0]), [["steps", "deferred", "time-budget-reached", false]]);
+});
+
+for (const kind of ["foreground", "manual"] as const) {
+  test(`2rv.11: ${kind} lifts an expired background follow-up's limits and keeps the strongest kind`, async (t) => {
+    const f = await fixture(t);
+    const submissions = submissionClock(f.clock.now);
+    const shell = await composeSender({ ...f.options, onRunSubmitted: submissions.admitted, async projectionSchemaVersions() {
+      f.clock.advance(BACKGROUND_BUDGET_MS); return f.state.versions;
+    } });
+    const polling = (await shell.backgroundPollingProvider())!;
+    // Establish the bounded control before adding an unbounded caller. This
+    // distinguishes @2 deadline handoff from the old budget-only shell.
+    assert.equal(await polling.runTask(), "success");
+    assert.deepEqual(f.sources.calls, []);
+    assert.deepEqual(deadlineOutcomes((await deadlineCheckpoints(f))[0]), [["steps", "deferred", "time-budget-reached", false]]);
+    const held = f.sources.hold("snapshot", "steps");
+    f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "synthetic-permission-gap" });
+    try {
+      const active = shell.manualSync();
+      await held.arrived;
+      const background = await submissions.submit(() => polling.runTask());
+      const unbounded = await submissions.submit(() => kind === "foreground" ? shell.foreground() : shell.manualSync());
+      f.clock.advance(BACKGROUND_BUDGET_MS + 1);
+      held.release();
+      checkpoint(await active);
+      const followUp = checkpoint(await unbounded.result);
+      assert.equal(await background.result, "success");
+      assert.equal(followUp.runSequence, 3);
+      assert.equal(followUp.summary.trigger, kind);
+      assert.ok(followUp.summary.recordTypes.every((type) => type.outcome === "completed" && type.reason === undefined));
+      assert.equal(f.sources.calls.length, 4, "unbounded follow-up issues, reads and catches up after the callback expired");
+      assert.deepEqual((await runs(f.database())).map((run) => run.trigger), ["background", "manual", kind]);
+      assert.equal((await deadlineCheckpoints(f)).length, 3);
+    } finally { held.release(); }
+  });
+}
+
+test("2rv.11: an in-deadline background run delivers then observes and notifies its permission summary in the same callback", async (t) => {
+  const f = await fixture(t);
+  const p = portal(f);
+  const notifications: string[] = [];
+  const began = f.clock.monotonicNow();
+  const deliveryStarts: number[] = [];
+  p.state.answer = async (_url, init) => {
+    deliveryStarts.push(f.clock.monotonicNow());
+    f.clock.advance(DELIVERY_TIMEOUT_MS);
+    return receipt(init.body!);
+  };
+  const shell = await composeSender({ ...p.options, conditionNotifier: { async notify(condition) {
+    notifications.push(condition);
+    assert.ok(f.clock.monotonicNow() + CONDITION_OBSERVATION_BUDGET_MS <= began + BACKGROUND_BUDGET_MS);
+    f.clock.advance(CONDITION_NOTIFICATION_TIMEOUT_MS);
+  } } });
+  await acknowledgements(f, 2);
+  f.sources.next("snapshot", "steps", () => {
+    // Both activities fit after the run. After one exchange, a second exchange
+    // would leave one millisecond too little for observing this summary.
+    f.clock.advance(BACKGROUND_RUN_WINDOW_MS - DELIVERY_TIMEOUT_MS + 1);
+    return { outcome: "not-permitted", failure: "read-permission-missing" };
+  });
+  assert.equal(await (await shell.backgroundPollingProvider())!.runTask(), "success");
+  assert.equal(p.requests.length, 1, "another full exchange would consume the observation allowance");
+  assert.ok(deliveryStarts.every((start) => start + DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS +
+    CONDITION_OBSERVATION_BUDGET_MS <= began + BACKGROUND_BUDGET_MS));
+  assert.equal((await outboxMessages(f.database())).length, 2, "remaining acknowledgement and checkpoint wait for a later trigger");
+  assert.deepEqual(notifications, ["permission-missing"]);
+  assert.deepEqual(conditionNames(await shell.conditions()), ["permission-missing"]);
+  assert.ok(f.clock.monotonicNow() <= began + BACKGROUND_BUDGET_MS);
+  assert.deepEqual(deadlineOutcomes((await deadlineCheckpoints(f))[0]), [["steps", "progressed", "permission-missing", false]]);
+});
+
+test("2rv.11: fractional monotonic clock floors the background deadline and still checkpoints and observes", { timeout: 45_000 }, async (t) => {
+  if (!process.execArgv.includes("--experimental-test-module-mocks")) {
+    const child = spawnSync(process.execPath, ["--experimental-test-module-mocks",
+      "--test", "--test-name-pattern=2rv.11: fractional monotonic clock", import.meta.filename],
+    { encoding: "utf8", timeout: 30_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
+    assert.equal(child.status, 0, `signal=${child.signal}; error=${child.error}\n${child.stdout}${child.stderr}`);
+    return;
+  }
+  const requests: TriggerRequest[] = [];
+  t.mock.module("../src/sync/coordinate-sender-sync.ts", { namedExports: { ...syncUnit,
+    createSenderSync(options: syncUnit.SenderSyncOptions) {
+      const coordinator = syncUnit.createSenderSync(options);
+      return { ...coordinator, trigger(request: TriggerRequest) {
+        requests.push({ ...request }); return coordinator.trigger(request);
+      } };
+    },
+  } });
+  const { composeSender: composeTraced } = await import(new URL("../src/shell/compose-sender.ts?fractional-deadline-trace", import.meta.url).href);
+  const f = await fixture(t);
+  const monotonicNow = () => f.clock.monotonicNow() + 0.25;
+  const notifications: string[] = [];
+  f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "read-permission-missing" });
+  const shell = await composeTraced({ ...f.options, monotonicNow,
+    async projectionSchemaVersions() { f.clock.advance(5_000); return f.state.versions; },
+    conditionNotifier: { async notify(condition: ConditionRecord["condition"]) { notifications.push(condition); } },
+  });
+  const began = monotonicNow();
+  const result = await backgroundTaskBody(shell.backgroundPollingProvider)();
+  assert.deepEqual(requests, [{ kind: "background", budgetMs: BACKGROUND_BUDGET_MS,
+    deadlineMs: Math.floor(began + BACKGROUND_RUN_WINDOW_MS) }]);
+  assert.ok(Number.isSafeInteger(requests[0].deadlineMs));
+  assert.equal(result, 1);
+  const messages = await deadlineCheckpoints(f);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].trigger, "background");
+  assert.deepEqual(deadlineOutcomes(messages[0]), [["steps", "progressed", "permission-missing", false]]);
+  assert.deepEqual(notifications, ["permission-missing"]);
+  const conditions = await shell.conditions();
+  assert.deepEqual(conditionNames(conditions), ["permission-missing"]);
+  assert.ok(Array.isArray(conditions) && conditions[0].notified);
+});
