@@ -1,3 +1,4 @@
+import { createFailureObservation, type ShellFailure } from "./failure-observation.ts";
 import { completeWithin, CONDITION_OBSERVATION_BUDGET_MS, createShellConditionObserver, installationIdentity, type ShellConditionNotifier } from "./operator-condition-observer.ts";
 import type { OperatorConditions } from "../notifications/notify-operator-conditions.ts";
 import type { InstallationCipher } from "../installation-cipher.ts";
@@ -22,10 +23,10 @@ export const STORAGE_PRESSURE_FREE_BYTES = 536_870_912;
 
 type Status = Awaited<ReturnType<SenderEnrollment["status"]>>;
 type DeliveryPass = "drained" | "stopped" | "terminal";
-type ShellEnrollment = Pick<SenderEnrollment, "status" | "confirm" | "refreshCapabilities" | "unlink" | "reset">;
+type ShellEnrollment = Pick<SenderEnrollment, "status" | "enroll" | "confirm" | "beginDrain" | "refreshCapabilities" | "unlink" | "reset">;
 // Older shell fixtures supply only the read/confirmation surface. Production
-// supplies the full enrollment; destruction is checked when explicitly invoked.
-type EnrollmentBoundary = Omit<ShellEnrollment, "unlink" | "reset"> & Partial<Pick<ShellEnrollment, "unlink" | "reset">>;
+// supplies the full enrollment; optional actions are checked when explicitly invoked.
+type EnrollmentBoundary = Omit<ShellEnrollment, "enroll" | "beginDrain" | "unlink" | "reset"> & Partial<Pick<ShellEnrollment, "enroll" | "beginDrain" | "unlink" | "reset">>;
 
 export const MAX_DELIVERY_ATTEMPTS = 64;
 // Leave time for receipt bookkeeping after the unit's full network timeout.
@@ -57,7 +58,13 @@ export interface SenderShell {
   foreground(): Promise<ShellRunResult>;
   manualSync(): Promise<ShellRunResult>;
   readonly backgroundPollingProvider: BackgroundPollingProvider;
-  /** 2rv.8 screens call these methods for reset/unlink, never enrollment directly. */
+  status: SenderEnrollment["status"];
+  enroll: SenderEnrollment["enroll"];
+  confirm: SenderEnrollment["confirm"];
+  beginDrain: SenderEnrollment["beginDrain"];
+  latestFailure(): ShellFailure | null;
+  latestSyncResult(): ShellRunResult | null;
+  /** Screens use this serialized destruction boundary. */
   unlink: SenderEnrollment["unlink"];
   reset: SenderEnrollment["reset"];
   /** Call after other screen enrollment actions to observe their current lifecycle. */
@@ -107,14 +114,30 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     throw error;
   }
 
+  const failures = createFailureObservation(options.now);
+  let latestSync: ShellRunResult | null = null;
+  async function enrollmentAction<T>(action: () => Promise<T>): Promise<T> {
+    try {
+      const result = await action();
+      failures.record("enrollment", result);
+      return result;
+    } catch (error) {
+      failures.record("enrollment", { outcome: "operation-failed" });
+      throw error;
+    } finally {
+      await operator.observe().catch(() => undefined);
+    }
+  }
+
   let installationHint: string | null | undefined;
   async function readStatus(): Promise<Status> {
     try {
       const current = await enrollment.status();
+      failures.record("enrollment", current);
       if (!(current && "outcome" in current)) installationHint = installationIdentity(current);
       return current;
     }
-    catch { return { outcome: "storage-failed" }; }
+    catch { failures.record("enrollment", { outcome: "storage-failed" }); return { outcome: "storage-failed" }; }
   }
 
   // expoSender owns this migrated handle and this observer for the process. App
@@ -217,13 +240,17 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       for (let attempt = 0; attempt < MAX_DELIVERY_ATTEMPTS; attempt++) {
         if (!hasTime(deliveryDeadline, DELIVERY_TIMEOUT_MS)) return "stopped";
         const result = await outbox.sendNext();
+        failures.record("delivery", result);
         if (result.outcome === "empty") return "drained";
         // Delivery pack Decisions 3–4: only receipts advance the head. A
         // retryable or blocked head waits for another trigger, never a spin.
         if (result.outcome !== "delivered") return "terminal";
       }
       return "stopped";
-    }).catch((): DeliveryPass => "terminal").finally(async () => {
+    }).catch((): DeliveryPass => {
+      failures.record("delivery", { outcome: "operation-failed" });
+      return "terminal";
+    }).finally(async () => {
       await afterDelivery(observation, () => deliveryDeadline).catch(() => undefined);
       delivery = null;
       const next = pendingDelivery;
@@ -270,6 +297,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     inFlight.add(run);
     void run.then(() => inFlight.delete(run), () => inFlight.delete(run));
     return run.then(async (result) => {
+      latestSync = result;
       // Hand off before any delivery wait. This request records only; delivery
       // keeps its full exchange window before an eligible lifecycle wake.
       if (result.outcome === "checkpointed") {
@@ -323,12 +351,12 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
           if (isStatus(current) && hasTime(deadline, ENROLLMENT_TIMEOUT_MS)) {
             if (current.phase === "confirming") {
               confirmationAttempted = true;
-              await enrollment.confirm();
+              failures.record("enrollment", await enrollment.confirm());
               if (kind === "background") phaseChanged = true;
               else await observeLifecycle(observation);
             }
           }
-        } catch { /* An unavailable Portal does not disable the adopted generation. */ }
+        } catch { failures.record("enrollment", { outcome: "operation-failed" }); }
         current = await status();
       }
       if (isStatus(current) && collectionEnabled(current) &&
@@ -348,10 +376,10 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
           isStatus(current) && current.phase === "enrolled") {
         try {
           if (hasTime(deadline, ENROLLMENT_TIMEOUT_MS)) {
-            await enrollment.refreshCapabilities();
+            failures.record("enrollment", await enrollment.refreshCapabilities());
             await observeLifecycle(observation, deadline);
           }
-        } catch { /* An unavailable Portal does not disable the adopted generation. */ }
+        } catch { failures.record("enrollment", { outcome: "operation-failed" }); }
         current = await status();
       }
       if (kind !== "background") await observePhase(observation);
@@ -430,10 +458,12 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
               let adopted = false;
               if (isStatus(current) && current.phase === "enrolled") {
                 try {
-                  adopted = (await enrollment.refreshCapabilities()).outcome === "adopted";
+                  const refreshed = await enrollment.refreshCapabilities();
+                  failures.record("enrollment", refreshed);
+                  adopted = refreshed.outcome === "adopted";
                   await observeLifecycle(observation);
                 }
-                catch { /* Keep the adopted generation. */ }
+                catch { failures.record("enrollment", { outcome: "operation-failed" }); }
               }
               // A drained pass may pick up a new acknowledgement. Adoption can
               // also resume a capped pass, but never retries its terminal head.
@@ -448,6 +478,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
         }
       }
       await deliver(Infinity, observation);
+      latestSync = ready;
       return ready;
     } catch (error) {
       // Health Connect/coordinator setup cannot strand an already staged queue.
@@ -498,14 +529,26 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   await operator.observe(); // App/headless process start, without inventing a run summary.
 
   return {
-    unlink: () => operator.destroy(() => {
+    status: () => enrollmentAction(status),
+    enroll: (offer) => enrollmentAction(() => {
+      if (!enrollment.enroll) throw new TypeError("Sender enrollment enroll is unavailable");
+      return enrollment.enroll(offer);
+    }),
+    confirm: () => enrollmentAction(() => enrollment.confirm()),
+    beginDrain: () => enrollmentAction(() => {
+      if (!enrollment.beginDrain) throw new TypeError("Sender enrollment beginDrain is unavailable");
+      return enrollment.beginDrain();
+    }),
+    latestFailure: failures.latest,
+    latestSyncResult: () => latestSync,
+    unlink: () => enrollmentAction(() => operator.destroy(() => {
       if (!enrollment.unlink) throw new TypeError("Sender enrollment unlink is unavailable");
       return enrollment.unlink();
-    }),
-    reset: (acknowledgement) => operator.destroy(() => {
+    })),
+    reset: (acknowledgement) => enrollmentAction(() => operator.destroy(() => {
       if (!enrollment.reset) throw new TypeError("Sender enrollment reset is unavailable");
       return enrollment.reset(acknowledgement);
-    }),
+    })),
     observeConditions: () => operator.observe(),
     conditions: operator.conditions,
     foreground: () => trigger("foreground"),

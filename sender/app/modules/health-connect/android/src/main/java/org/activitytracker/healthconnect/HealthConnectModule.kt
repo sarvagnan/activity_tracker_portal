@@ -3,6 +3,11 @@ package org.activitytracker.healthconnect
 import android.os.Build
 import android.os.ext.SdkExtensions
 import androidx.health.connect.client.HealthConnectClient
+import expo.modules.kotlin.activityresult.AppContextActivityResultLauncher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -11,8 +16,34 @@ import org.activitytracker.healthconnect.bridge.HealthConnectBridge
 
 /** Expo boundary for the published snapshot reader, change reader and changes-token issuer. */
 class HealthConnectModule : Module() {
+    private lateinit var permissionLauncher: AppContextActivityResultLauncher<ArrayList<String>, Set<String>>
+    private val permissionRequests = Mutex()
+
     override fun definition() = ModuleDefinition {
         Name("ActivityTrackerHealthConnect")
+
+        RegisterActivityContracts {
+            permissionLauncher = registerForActivityResult(HealthPermissionContract())
+        }
+
+        AsyncFunction("sdkStatus") {
+            HealthConnectClient.getSdkStatus(checkNotNull(appContext.reactContext))
+        }
+        AsyncFunction("grantedPermissions") Coroutine { ->
+            val context = checkNotNull(appContext.reactContext)
+            HealthPermissionRequests.filter(
+                HealthConnectClient.getOrCreate(context).permissionController.getGrantedPermissions(),
+            ).toList()
+        }
+        AsyncFunction("requestPermissions") Coroutine { permissions: List<String> ->
+            permissionRequests.withLock {
+                val requested = HealthPermissionRequests.filter(permissions)
+                if (requested.isEmpty()) emptyList<String>()
+                else withContext(Dispatchers.Main) {
+                    permissionLauncher.launch(ArrayList(requested)).toList()
+                }
+            }
+        }
 
         AsyncFunction("projectionSchemaVersions") { projectionSchemaVersions() }
 
