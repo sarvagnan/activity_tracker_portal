@@ -1,0 +1,1 @@
+{"command_line":"fnm exec --using=26.11.1 -- tests/acceptance/run_coordinate_sender_sync_2.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"960cdc13acf8785fbf419f59137eca6d0285bda483ecb1f5bfe44446b08dc0a5","parent":"GENESIS","recorded_at":"2026-10-17T05:58:23+00:00","sequence":1,"unit":{"name":"coordinate-sender-sync","version":"2"}}
