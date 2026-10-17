@@ -61,5 +61,29 @@ internal fun operatorNotification(condition: String): OperatorNotification = whe
     "head-invalid" -> OperatorNotification(
         1003, "Delivery blocked", "Delivery blocked: head-invalid. Open the Sender.",
     )
+    "permission-missing" -> OperatorNotification(
+        1010, "Permission required", "Sender condition: permission-missing. Open the Sender.",
+    )
+    "screen-lock-removed" -> OperatorNotification(
+        1011, "Screen lock required", "Sender condition: screen-lock-removed. Open the Sender.",
+    )
+    "storage-pressure" -> OperatorNotification(
+        1012, "Storage space required", "Sender condition: storage-pressure. Open the Sender.",
+    )
+    "record-too-large" -> OperatorNotification(
+        1013, "Sender action required", "Sender condition: record-too-large. Open the Sender.",
+    )
+    "projection-refused" -> OperatorNotification(
+        1014, "Sender action required", "Sender condition: projection-refused. Open the Sender.",
+    )
+    "installation-key-unusable" -> OperatorNotification(
+        1015, "Installation key unusable", "Sender condition: installation-key-unusable. Open the Sender.",
+    )
+    "enrollment-refused" -> OperatorNotification(
+        1016, "Enrollment refused", "Sender condition: enrollment-refused. Open the Sender.",
+    )
+    "drain-complete" -> OperatorNotification(
+        1017, "Drain complete", "Sender condition: drain-complete. Open the Sender.",
+    )
     else -> throw IllegalArgumentException("Unsupported scheduling notification condition")
 }

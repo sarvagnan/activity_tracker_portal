@@ -2,6 +2,7 @@
 import * as BackgroundTask from "expo-background-task";
 import * as TaskManager from "expo-task-manager";
 import { requireNativeModule } from "expo-modules-core";
+import { conditionNotifier, type ShellConditionNotifier } from "../shell/operator-condition-observer.ts";
 import type { DeliveryNotifier } from "../delivery/send-outbox-message.ts";
 import { schedulingPlatform } from "./scheduling-platform.ts";
 import { schedulingNotifier, type NotifierDependencies } from "./scheduling-notifier.ts";
@@ -46,4 +47,12 @@ export function expoDeliveryNotifier(): DeliveryNotifier {
       await nativeScheduling().postOperatorNotification(failure);
     },
   };
+}
+
+/** NOC R5: disabled notifications and a timed-out native call remain retryable. */
+export function expoConditionNotifier(): ShellConditionNotifier {
+  return conditionNotifier({
+    async notificationsEnabled() { return nativeScheduling().notificationsEnabled(); },
+    async postOperatorNotification(condition) { await nativeScheduling().postOperatorNotification(condition); },
+  });
 }
