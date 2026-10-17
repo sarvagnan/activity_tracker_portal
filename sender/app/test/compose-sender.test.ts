@@ -3166,13 +3166,13 @@ function deadlineOutcomes(message: Awaited<ReturnType<typeof deadlineCheckpoints
 const BACKGROUND_RUN_WINDOW_MS = BACKGROUND_BUDGET_MS - DELIVERY_TIMEOUT_MS -
   DELIVERY_FINISH_RESERVE_MS - CONDITION_OBSERVATION_BUDGET_MS;
 
-test("2rv.11: polling requests carry the callback deadline minus reserves; foreground and manual stay unbounded", async (t) => {
+test("2rv.11: polling requests carry the callback deadline minus reserves; foreground and manual stay unbounded", { timeout: 45_000 }, async (t) => {
   // Module mocking needs an explicit Node flag. The child runs the real shell
   // and coordinator, wrapping only trigger to inspect the boundary request.
   if (!process.execArgv.includes("--experimental-test-module-mocks")) {
-    const child = spawnSync("fnm", ["exec", "--using=26.11.1", "--", "node", "--experimental-test-module-mocks",
+    const child = spawnSync(process.execPath, ["--experimental-test-module-mocks",
       "--test", "--test-name-pattern=2rv.11: polling requests", import.meta.filename],
-    { encoding: "utf8", timeout: 5_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
+    { encoding: "utf8", timeout: 30_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
     assert.equal(child.status, 0, `signal=${child.signal}; error=${child.error}\n${child.stdout}${child.stderr}`);
     return;
   }
@@ -3355,4 +3355,46 @@ test("2rv.11: an in-deadline background run delivers then observes and notifies 
   assert.deepEqual(conditionNames(await shell.conditions()), ["permission-missing"]);
   assert.ok(f.clock.monotonicNow() <= began + BACKGROUND_BUDGET_MS);
   assert.deepEqual(deadlineOutcomes((await deadlineCheckpoints(f))[0]), [["steps", "progressed", "permission-missing", false]]);
+});
+
+test("2rv.11: fractional monotonic clock floors the background deadline and still checkpoints and observes", { timeout: 45_000 }, async (t) => {
+  if (!process.execArgv.includes("--experimental-test-module-mocks")) {
+    const child = spawnSync(process.execPath, ["--experimental-test-module-mocks",
+      "--test", "--test-name-pattern=2rv.11: fractional monotonic clock", import.meta.filename],
+    { encoding: "utf8", timeout: 30_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
+    assert.equal(child.status, 0, `signal=${child.signal}; error=${child.error}\n${child.stdout}${child.stderr}`);
+    return;
+  }
+  const requests: TriggerRequest[] = [];
+  t.mock.module("../src/sync/coordinate-sender-sync.ts", { namedExports: { ...syncUnit,
+    createSenderSync(options: syncUnit.SenderSyncOptions) {
+      const coordinator = syncUnit.createSenderSync(options);
+      return { ...coordinator, trigger(request: TriggerRequest) {
+        requests.push({ ...request }); return coordinator.trigger(request);
+      } };
+    },
+  } });
+  const { composeSender: composeTraced } = await import(new URL("../src/shell/compose-sender.ts?fractional-deadline-trace", import.meta.url).href);
+  const f = await fixture(t);
+  const monotonicNow = () => f.clock.monotonicNow() + 0.25;
+  const notifications: string[] = [];
+  f.sources.next("snapshot", "steps", { outcome: "not-permitted", failure: "read-permission-missing" });
+  const shell = await composeTraced({ ...f.options, monotonicNow,
+    async projectionSchemaVersions() { f.clock.advance(5_000); return f.state.versions; },
+    conditionNotifier: { async notify(condition: ConditionRecord["condition"]) { notifications.push(condition); } },
+  });
+  const began = monotonicNow();
+  const result = await backgroundTaskBody(shell.backgroundPollingProvider)();
+  assert.deepEqual(requests, [{ kind: "background", budgetMs: BACKGROUND_BUDGET_MS,
+    deadlineMs: Math.floor(began + BACKGROUND_RUN_WINDOW_MS) }]);
+  assert.ok(Number.isSafeInteger(requests[0].deadlineMs));
+  assert.equal(result, 1);
+  const messages = await deadlineCheckpoints(f);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].trigger, "background");
+  assert.deepEqual(deadlineOutcomes(messages[0]), [["steps", "progressed", "permission-missing", false]]);
+  assert.deepEqual(notifications, ["permission-missing"]);
+  const conditions = await shell.conditions();
+  assert.deepEqual(conditionNames(conditions), ["permission-missing"]);
+  assert.ok(Array.isArray(conditions) && conditions[0].notified);
 });

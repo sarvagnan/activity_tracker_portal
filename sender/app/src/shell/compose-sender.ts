@@ -265,7 +265,9 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     const completion = request.kind === "background" ? backgroundCompletion : null;
     const run = coordinator.trigger(completion ? {
       ...request,
-      deadlineMs: completion.deadline - DELIVERY_TIMEOUT_MS - DELIVERY_FINISH_RESERVE_MS - CONDITION_OBSERVATION_BUDGET_MS,
+      // performance.now() can be fractional; the published trigger requires
+      // integer milliseconds. Round down to preserve this callback's reserves.
+      deadlineMs: Math.floor(completion.deadline - DELIVERY_TIMEOUT_MS - DELIVERY_FINISH_RESERVE_MS - CONDITION_OBSERVATION_BUDGET_MS),
     } : request);
     try { options.onRunSubmitted?.(request.kind); } catch { /* Diagnostics are isolated. */ }
     // Adoption and refresh wait only for Polling Runs, including coalesced
