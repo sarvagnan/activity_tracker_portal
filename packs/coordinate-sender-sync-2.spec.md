@@ -93,7 +93,7 @@ Tests:
 
 ### R28 — Deadlines stay in memory
 
-Deadlines are not persisted. The run marker, the coordinator's tables, and the checkpoint carry nothing new: a run bounded by a deadline leaves exactly the database that a run bounded by the same budget leaves, with sealed messages compared after opening them. A recovered run (R4) is checkpointed as interrupted whatever its trigger's deadline was.
+Deadlines are not persisted. The run marker, the coordinator's tables, and the checkpoint carry nothing new. Given the same initial state, clocks, identities, and source responses, a run that its deadline stops where a budget would stop it leaves exactly the database that the budget-bounded run leaves, with sealed messages compared after opening them. A recovered run (R4) is checkpointed as interrupted whatever its trigger's deadline was.
 
 Tests: `deadlines_write_no_new_state`.
 
@@ -122,12 +122,12 @@ Deadline tests drive the monotonic clock explicitly, and never depend on real ti
 After Gate A, the executable pack adds:
 - the TypeScript suite `coordinate-sender-sync-2.test.ts`, with 12 tests;
 - the Python contract suite `tests/acceptance/test_coordinate_sender_sync_2.py`;
-- the runner `tests/acceptance/run_coordinate_sender_sync_2.sh`, which runs the version 2 contract check, `@1`'s bound runner unchanged, and then the `@2` suite under a per-test timeout and an external deadline;
+- the runner `tests/acceptance/run_coordinate_sender_sync_2.sh`, which runs the version 2 contract check, `@1`'s bound runner unchanged, and then the `@2` suite under a per-test timeout, with an external deadline that ends each TypeScript part and every process it started;
 - the Interface stub: the optional `deadlineMs` field on `TriggerRequest`, a type with no behaviour.
 
 The published `@1` module, with that stub, is the RED baseline. It ignores `deadlineMs`, so all 12 new tests fail against it, while `@1`'s 76 TypeScript tests and both Python suites pass. A throwaway reference passes all 12 tests, `@1`'s suite, and the whole Sender suite. The new suite kills all 30 of the reference's non-equivalent mutants.
 
-One more mutant was dropped as equivalent: it checks the deadline before each conditions read but not after it. A deadline check still precedes every read and issuance, so no source call starts late. It differs only in whether a completion left pending by an earlier run is staged after the deadline. R10 leaves that open, as it does for a budget.
+One more mutant was dropped as equivalent. It removes the deadline check that follows each conditions read inside the shared condition guard, but keeps the separate check immediately before each read and issuance, which also follows that call's conditions read. No source call therefore starts late, and R25 still holds. The mutant differs only in whether a completion left pending by an earlier run is staged after the deadline. R10 leaves that open, as it does for a budget.
 
 The binding is:
 - spec files: the contract and this pack;

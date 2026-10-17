@@ -6,25 +6,44 @@
 # suite passes only when a fresh report lists exactly its bound tests, none failed,
 # errored, or skipped, and the @1 runner verifies its own report the same way. A
 # per-test timeout fails a test that waits on timers, and an external deadline ends
-# Node and its test process, so even a microtask-only loop becomes a failure.
+# each TypeScript part with every process it started, so even a microtask-only loop
+# in either suite becomes a failure.
 cd "$(dirname "$0")/../.." || exit 2
 status=0
-uv run --frozen python -m unittest discover -s tests/acceptance -p 'test_coordinate_sender_sync_2.py' || status=1
-tests/acceptance/run_coordinate_sender_sync_1.sh || status=1
-
 reports=$(mktemp -d) || exit 2
 trap 'rm -rf "$reports"' EXIT HUP INT TERM
+
+kill_tree() {
+  for child in $(pgrep -P "$1"); do kill_tree "$child"; done
+  kill -TERM "$1" 2>/dev/null
+}
+
+# supervised LIMIT LABEL COMMAND...: run COMMAND, ending it and its descendants after LIMIT seconds.
+supervised() {
+  limit=$1 label=$2
+  shift 2
+  "$@" &
+  pid=$!
+  ( sleep "$limit"; : >"$reports/expired"; kill_tree "$pid" ) </dev/null >/dev/null 2>&1 &
+  watchdog=$!
+  wait "$pid"
+  result=$?
+  kill_tree "$watchdog"
+  if [ -e "$reports/expired" ]; then
+    echo "coordinate-sender-sync@2: $label exceeded $limit seconds" >&2
+    rm -f "$reports/expired"
+    result=1
+  fi
+  return "$result"
+}
+
+uv run --frozen python -m unittest discover -s tests/acceptance -p 'test_coordinate_sender_sync_2.py' || status=1
+supervised 1200 "coordinate-sender-sync@1's runner" tests/acceptance/run_coordinate_sender_sync_1.sh || status=1
+
 ts_suite=sender/app/test/coordinate-sender-sync-2.test.ts
 ts_report="$reports/coordinate-sender-sync-2.junit.xml"
-node --test --test-timeout=60000 --test-reporter=spec --test-reporter-destination=stdout \
-  --test-reporter=junit --test-reporter-destination="$ts_report" "$ts_suite" &
-node_pid=$!
-( sleep 900; echo "coordinate-sender-sync@2: TypeScript suite exceeded 900 seconds" >&2
-  pkill -TERM -P "$node_pid"; kill -TERM "$node_pid" ) </dev/null >/dev/null 2>&1 &
-watchdog=$!
-wait "$node_pid" || status=1
-kill "$watchdog" 2>/dev/null
-pkill -P "$watchdog" 2>/dev/null
+supervised 900 "the TypeScript suite" node --test --test-timeout=60000 --test-reporter=spec --test-reporter-destination=stdout \
+  --test-reporter=junit --test-reporter-destination="$ts_report" "$ts_suite" || status=1
 
 uv run --frozen python - "$ts_suite" "$ts_report" <<'PY' || status=1
 import re
