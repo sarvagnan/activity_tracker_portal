@@ -283,8 +283,9 @@ test("waiting_and_recovery_count_against_the_deadline", async (t) => {
   const budget = await queue(() => ({ kind: "background", budgetMs: 200_000 }));
   assert.deepEqual(budget.started, ["change", "change", "change", "change", "change"]);
 
-  // 2. Recovery and the opening reads. Reading the context takes 20 seconds and sealing the interrupted run's
-  // checkpoint 50, so the run opens 70 seconds after the trigger with 30 seconds of its deadline left.
+  // 2. Recovery and the opening reads. Reading the context takes 20 seconds, reading the Background Scheduling
+  // Status 20, and sealing the interrupted run's checkpoint 30, so the run opens 70 seconds after the trigger with
+  // 30 seconds of its deadline left.
   const recover = async (request: (m1: number) => TriggerRequest) => {
     const f = await fixture(t, { types: ["steps"] });
     f.sources.seed("steps", 20);
@@ -294,8 +295,9 @@ test("waiting_and_recovery_count_against_the_deadline", async (t) => {
     await f.reopen();
     f.sources.callCostMs = 60_000;
     const calls = f.sources.calls.length;
-    const slow = new SpyCipher(f.cipher, { 1: () => f.clock.advance(50_000) });
-    const sync = f.make({ cipher: slow, context: () => { f.clock.advance(20_000); return f.context; } });
+    const slow = new SpyCipher(f.cipher, { 1: () => f.clock.advance(30_000) });
+    const sync = f.make({ cipher: slow, context: () => { f.clock.advance(20_000); return f.context; },
+      backgroundScheduling: () => { f.clock.advance(20_000); return f.scheduling; } });
     const m1 = f.clock.mono;
     const seen = starts(f, m1);
     const result = await ran(sync.trigger(request(m1)));

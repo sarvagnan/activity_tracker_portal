@@ -122,10 +122,12 @@ Deadline tests drive the monotonic clock explicitly, and never depend on real ti
 After Gate A, the executable pack adds:
 - the TypeScript suite `coordinate-sender-sync-2.test.ts`, with 12 tests;
 - the Python contract suite `tests/acceptance/test_coordinate_sender_sync_2.py`;
-- the runner `tests/acceptance/run_coordinate_sender_sync_2.sh`, which runs the version 2 contract check, `@1`'s bound runner unchanged, and then the `@2` suite under a per-test timeout, with an external deadline that ends each TypeScript part and every process it started;
+- the runner `tests/acceptance/run_coordinate_sender_sync_2.sh`, which runs the version 2 contract check, `@1`'s bound runner unchanged, and then the `@2` suite under a per-test timeout;
 - the Interface stub: the optional `deadlineMs` field on `TriggerRequest`, a type with no behaviour.
 
-The published `@1` module, with that stub, is the RED baseline. It ignores `deadlineMs`, so all 12 new tests fail against it, while `@1`'s 76 TypeScript tests and both Python suites pass. A throwaway reference passes all 12 tests, `@1`'s suite, and the whole Sender suite. The new suite kills all 30 of the reference's non-equivalent mutants.
+The runner runs each TypeScript part, `@1`'s runner and the `@2` suite, under a supervisor with an external deadline. The supervisor starts the part in its own process group. On the deadline, or when the runner is interrupted, it sends the whole group TERM, then KILL after a 10-second grace, and confirms the group is gone. The part fails if it runs past its deadline, cannot start, is ended by a signal, or leaves processes running in its group. Probes confirmed each case, including a process that ignores TERM, a tree of descendants, and an interrupted runner. A process that starts its own session leaves the group and is out of reach; neither Node's test runner nor uv does so.
+
+The published `@1` module, with that stub, is the RED baseline. It ignores `deadlineMs`, so all 12 new tests fail against it, while `@1`'s 76 TypeScript tests and both Python suites pass. A throwaway reference passes all 12 tests, `@1`'s suite, and the whole Sender suite. The new suite kills all 31 of the reference's non-equivalent mutants.
 
 One more mutant was dropped as equivalent. It removes the deadline check that follows each conditions read inside the shared condition guard, but keeps the separate check immediately before each read and issuance, which also follows that call's conditions read. No source call therefore starts late, and R25 still holds. The mutant differs only in whether a completion left pending by an earlier run is staged after the deadline. R10 leaves that open, as it does for a budget.
 
