@@ -2962,3 +2962,90 @@ for (const action of ["reset", "unlink"] as const) {
     assert.deepEqual(conditionNames(await shell.conditions()), []);
   });
 }
+
+
+// Round 6 regressions exercise the shell guard without changing the published unit.
+test("NOC R6: consistently slow status reads notify storage pressure once after adaptation", { timeout: 15_000 }, async (t) => {
+  const f = await observerFixture(t);
+  const firstSettled = signal();
+  let reads = 0;
+  const observer = createShellConditionObserver({ ...f.observerOptions, async status() {
+    const first = ++reads === 1;
+    await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+    f.clock.advance(1_100);
+    if (first) firstSettled.resolve();
+    return f.state.status;
+  } });
+  await observer.observe(f.run(1, "storage-pressure"));
+  assert.deepEqual(f.notifications, [], "the initial read exceeds the base bound");
+  await firstSettled.promise;
+  await observer.observe();
+  await observer.observe();
+  assert.deepEqual(f.notifications, ["storage-pressure"]);
+  const records = await observer.conditions();
+  assert.deepEqual(conditionNames(records), ["storage-pressure"]);
+  assert.ok(Array.isArray(records) && records[0].notified, "the onset's notification success is durable");
+});
+
+test("NOC R6: destruction requested during application bars notification until a surviving installation retries", async (t) => {
+  const f = await observerFixture(t);
+  const applying = signal(), releaseApplication = signal(), destroying = signal(), releaseDestruction = signal();
+  const transaction = f.database().transaction.bind(f.database());
+  let hold = true, destructionStarted = false;
+  f.database().transaction = async (body) => {
+    if (hold) { hold = false; applying.resolve(); await releaseApplication.promise; }
+    return transaction(body);
+  };
+  const observer = createShellConditionObserver(f.observerOptions);
+  const observation = observer.observe(f.run(1, "storage-pressure"));
+  await applying.promise;
+  const destruction = observer.destroy(async () => {
+    destructionStarted = true;
+    destroying.resolve();
+    await releaseDestruction.promise;
+    return { outcome: "refused", failure: "not-drained" };
+  });
+  try {
+    assert.equal(destructionStarted, false, "destruction must join the application queue");
+    releaseApplication.resolve();
+    await Promise.all([observation, destroying.promise]);
+    assert.deepEqual(f.notifications, [], "a destruction request invalidates the in-flight pass");
+    const records = await observer.conditions();
+    assert.deepEqual(conditionNames(records), ["storage-pressure"]);
+    assert.ok(Array.isArray(records) && !records[0].notified, "the onset stays pending while destruction is unresolved");
+  } finally {
+    releaseApplication.resolve();
+    releaseDestruction.resolve();
+    await Promise.all([observation, destruction]);
+  }
+  assert.deepEqual(await destruction, { outcome: "refused", failure: "not-drained" });
+  assert.deepEqual(f.notifications, ["storage-pressure"], "a surviving installation retries after destruction settles");
+  const records = await observer.conditions();
+  assert.ok(Array.isArray(records) && records[0].notified);
+});
+
+test("NOC R6: an identity-hint change before notification bars the post", async (t) => {
+  const f = await observerFixture(t);
+  const applying = signal(), release = signal();
+  const transaction = f.database().transaction.bind(f.database());
+  let hold = true;
+  let hint = installationIdentity(enrolled());
+  f.database().transaction = async (body) => {
+    if (hold) { hold = false; applying.resolve(); await release.promise; }
+    return transaction(body);
+  };
+  const observer = createShellConditionObserver({ ...f.observerOptions, identityHint: () => hint });
+  const observation = observer.observe(f.run(1, "storage-pressure"));
+  await applying.promise;
+  // Another shell read has observed replacement; this pass's status stays stale.
+  hint = installationIdentity(enrolled({ installationId: "00000000-0000-4000-8000-000000000002" }));
+  release.resolve();
+  await observation;
+  assert.deepEqual(f.notifications, []);
+  const records = await observer.conditions();
+  assert.deepEqual(conditionNames(records), ["storage-pressure"]);
+  assert.ok(Array.isArray(records) && !records[0].notified);
+  hint = installationIdentity(enrolled());
+  await observer.observe();
+  assert.deepEqual(f.notifications, ["storage-pressure"]);
+});

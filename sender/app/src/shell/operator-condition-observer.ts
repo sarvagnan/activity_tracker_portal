@@ -79,7 +79,7 @@ export function createShellConditionObserver(options: {
   notifier: ShellConditionNotifier;
   cipher: Pick<InstallationCipher, "keyStatus">;
   status: () => Promise<Status>;
-  /** Most recent successful shell enrollment observation; admission only. */
+  /** Most recent successful shell enrollment observation; admits runs or rejects stale posts. */
   identityHint: () => string | null | undefined;
   now: () => number;
   monotonicNow: () => number;
@@ -122,6 +122,8 @@ export function createShellConditionObserver(options: {
   }
 
   let submittingIdentity: string | null = null;
+  let destructionEpoch = 0;
+  let submittingDestructionEpoch = 0;
   const conditions = createOperatorConditions({ database: options.database, now: options.now, notifier: {
     notify(condition) {
       requireExecution();
@@ -132,9 +134,13 @@ export function createShellConditionObserver(options: {
           remainingMs: () => Math.max(0, Math.min(deadline, executionDeadline - CONDITION_FINISH_RESERVE_MS) - options.monotonicNow()),
           expired: () => expired() || remainingExecution() <= 0 || options.monotonicNow() >= deadline,
         };
-        const current = await measuredStatus();
-        if (allowance.expired() || current && "outcome" in current) throw new Error("Sender condition observation unavailable");
-        if (installationIdentity(current) !== submittingIdentity) throw new Error("Sender installation changed before notification");
+        // Destruction is serialized with this application; the epoch also bars
+        // a request made mid-application. The hint rejects any other identity
+        // change observed by the shell; only the final status read authorizes.
+        if (submittingDestructionEpoch !== destructionEpoch || options.identityHint() !== submittingIdentity) {
+          throw new Error("Sender installation changed before notification");
+        }
+        if (allowance.expired() || allowance.remainingMs() <= 0) throw new Error("Sender condition notification expired");
         await options.notifier.notify(condition, allowance);
       }, Math.min(CONDITION_NOTIFICATION_TIMEOUT_MS, remainingExecution()));
     },
@@ -191,6 +197,7 @@ export function createShellConditionObserver(options: {
       if (currency !== revision) { dirty = true; return "superseded"; }
       return await application(async () => {
         const latest = await read(measuredStatus, statusBound());
+        const latestDestructionEpoch = destructionEpoch;
         if (currency !== revision) { dirty = true; return "superseded"; }
         if (latest && "outcome" in latest) throw new Error("Sender enrollment unavailable");
         const latestIdentity = installationIdentity(latest);
@@ -200,6 +207,7 @@ export function createShellConditionObserver(options: {
         if (identity !== latestIdentity) throw new Error("Sender installation changed");
         requireExecution();
         submittingIdentity = identity;
+        submittingDestructionEpoch = latestDestructionEpoch;
         const submittedIdentity = retained?.identity;
         const submittedSequence = retained?.runSequence;
         // A superseded read never detaches its completion. Once submitted,
@@ -295,6 +303,7 @@ export function createShellConditionObserver(options: {
   }
 
   async function destroy<T>(operation: () => Promise<T>): Promise<T> {
+    destructionEpoch++;
     revision++;
     dirty = true;
     try { return await application(operation); }
