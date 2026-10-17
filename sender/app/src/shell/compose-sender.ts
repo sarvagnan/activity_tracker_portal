@@ -257,13 +257,18 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
   let preparation: Promise<unknown> = Promise.resolve();
   const inFlight = new Set<Promise<RunResult>>();
   let coordinatorInstallation: string | null = null;
-  type BackgroundCompletion = { deadline: number; attempt: ObservationAttempt; observe?: () => Promise<void> };
+  type BackgroundCompletion = { deadline: number; attempt: ObservationAttempt; summaryPending?: boolean; observe?: () => Promise<void> };
   let backgroundCompletion: BackgroundCompletion | null = null;
   function startRun(request: TriggerRequest, observation: ObservationAttempt, onDelivery?: (pass: DeliveryPass) => void): Promise<RunResult> {
     if (!coordinator) throw new Error("Sender coordinator is unavailable");
     const runIdentity = coordinatorInstallation!;
     const completion = request.kind === "background" ? backgroundCompletion : null;
-    const run = coordinator.trigger(request);
+    const run = coordinator.trigger(completion ? {
+      ...request,
+      // performance.now() can be fractional; the published trigger requires
+      // integer milliseconds. Round down to preserve this callback's reserves.
+      deadlineMs: Math.floor(completion.deadline - DELIVERY_TIMEOUT_MS - DELIVERY_FINISH_RESERVE_MS - CONDITION_OBSERVATION_BUDGET_MS),
+    } : request);
     try { options.onRunSubmitted?.(request.kind); } catch { /* Diagnostics are isolated. */ }
     // Adoption and refresh wait only for Polling Runs, including coalesced
     // follow-ups. A slow network drain must not extend the active-run set.
@@ -274,6 +279,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       // keeps its full exchange window before an eligible lifecycle wake.
       if (result.outcome === "checkpointed") {
         void operator.observe({ summary: result.summary, identity: runIdentity }, options.monotonicNow());
+        if (completion) completion.summaryPending = true;
       }
       const observe = () => observeLifecycle(observation, completion?.deadline);
       if (completion) {
@@ -470,8 +476,8 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       const deadline = options.monotonicNow() + BACKGROUND_BUDGET_MS;
       const completion: BackgroundCompletion = { deadline, attempt: {} };
       try {
-        // Polling Runs follow coordinate-sender-sync@1's relative budget and R8
-        // merging; this callback retains the task-start deadline for shell effects.
+        // The coordinator's absolute deadline includes preparation and queueing;
+        // the polling unit retains its unchanged relative budget and coalescing.
         const ready = await prepareAndStart("background", () => {
           // schedule-background-polling calls sync.trigger synchronously, so
           // startRun captures this callback's context before another admission.
@@ -483,7 +489,12 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
         return result;
       } catch { return "failed"; }
       finally {
-        await deliver(deadline, completion.attempt);
+        // Keep the summary's observation allowance when both it and a full
+        // exchange fit. If only delivery fits, it retains the last exchange.
+        const deliveryDeadline = completion.summaryPending &&
+          hasTime(deadline, DELIVERY_TIMEOUT_MS + CONDITION_OBSERVATION_BUDGET_MS)
+          ? deadline - CONDITION_OBSERVATION_BUDGET_MS : deadline;
+        await deliver(deliveryDeadline, completion.attempt);
         if (completion.observe) await completion.observe();
         // Skipped collection still retries unnotified lifecycle onsets. Delivery
         // may already have started this callback's observation for a new phase.
