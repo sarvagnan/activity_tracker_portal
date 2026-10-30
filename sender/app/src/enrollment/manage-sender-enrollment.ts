@@ -1,5 +1,5 @@
 import { decodeMessage, encodeMessage, installationFingerprint } from "@activity-tracker-portal/ingest-protocol";
-import { appendOutboxMessages, lastOutboxSequence, outboxMessages, outboxAad } from "../outbox/stage-outbox-batch.ts";
+import { appendOutboxMessages, lastOutboxSequence, outboxBacklog, outboxHolds, outboxAad } from "../outbox/stage-outbox-batch.ts";
 import { storageLane } from "../storage/storage-lane.ts";
 import type { DeliveryContext } from "../delivery/send-outbox-message.ts";
 import type { CipherFailure, InstallationCipher } from "../installation-cipher.ts";
@@ -322,10 +322,11 @@ export function createSenderEnrollment(options: SenderEnrollmentOptions): Sender
         projectionSchemas: Object.fromEntries(advertisement.projection_schemas.map((schema) => [schema.record_type, schema.versions])),
       } };
       const lastSequence = await lastOutboxSequence(handle, installationId);
-      const messages = (await outboxMessages(handle)).filter((message) => message.installationId === installationId);
       confirmed = lastSequence >= (row.acknowledgement_sequence as number) &&
-        !messages.some((message) => message.sequence === row.acknowledgement_sequence);
-      if (row.phase === "draining" && messages.length === 0) finalSequence = lastSequence;
+        !await outboxHolds(handle, installationId, row.acknowledgement_sequence as number);
+      if (row.phase === "draining" && (await outboxBacklog(handle, installationId)).messageCount === 0) {
+        finalSequence = lastSequence;
+      }
     }
     return {
       installationId, fingerprint: row.fingerprint as string, keyAlias, portalUrl, phase: row.phase as EnrollmentPhase,
