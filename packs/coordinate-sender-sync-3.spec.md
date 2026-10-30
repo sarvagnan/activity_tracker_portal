@@ -54,7 +54,7 @@ With `quietChangeReads` true, the coordinator offers a quiet read to `stage-outb
 - **`catch-up-unstaged`:** the read is the type's catch-up cycle, and is staged with `stageOutboxBatch` exactly as in `@2`, followed by its Change Completion.
 - **Any other refusal, or `storage-failed`:** handled exactly as `@2` handles the same refusal or failure from `stageOutboxBatch`.
 
-Reads that are not quiet are staged exactly as in `@2`. That covers a read with items, a read with a further page, and any later page of an open cycle. A type's next new Change Cycle reads from the advanced origin.
+Reads that are not quiet are staged exactly as in `@2`. That covers a read with items, an empty read with a further page, and any later page of an open cycle, even an empty final one. A type's next new Change Cycle reads from the advanced origin. As `@1`'s R5 begins a new Change Cycle each run, every run's change read uses a fresh identity: an advanced identity is never reused.
 
 Tests:
 - `a_quiet_read_stages_nothing`
@@ -64,7 +64,9 @@ Tests:
 - `a_quiet_read_clears_a_retried_block`
 - `the_next_cycle_reads_from_the_advanced_origin`
 - `reads_with_items_or_more_pages_are_staged`
-- `advance_refusals_are_handled_like_staging_refusals`
+- `empty_pages_that_are_not_quiet_are_staged`
+- `each_quiet_run_uses_a_fresh_cycle_identity`
+- `advance_refusals_are_handled_like_staging_refusals`, for a storage failure and for a refusal after the attempt is replaced mid-read
 
 ### R32 — An idle run stages only its checkpoint
 
@@ -107,7 +109,7 @@ Fixtures migrate with an explicit list of migrations, including `stage-outbox-ba
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the TypeScript suite `coordinate-sender-sync-3.test.ts`, 15 tests;
+- the TypeScript suite `coordinate-sender-sync-3.test.ts`, 18 tests;
 - the Python contract suite `tests/acceptance/test_coordinate_sender_sync_3.py`, 2 tests;
 - the runner `tests/acceptance/run_coordinate_sender_sync_3.sh`. It runs the version 3 contract check, then `@2`'s bound runner unchanged, which runs `@1`'s, then the `@3` suite under the same process-group supervisor and a 60-second per-test timeout;
 - the Interface stub: the optional `quietChangeReads` field on `SenderSyncOptions`, a type with no behaviour.
@@ -116,11 +118,13 @@ The suite migrates with an explicit list of all ten Sender migrations to version
 
 The published `@2` module, with the stub, is the RED baseline. It ignores the option, so:
 - 8 new tests fail: the caller error, staging nothing, clearing a retried block, the advanced origin, refusals handled like staging refusals, an idle run's single checkpoint, the in-flight deadline and condition, and recovery;
-- 7 pass by design, because they pin behaviour the quiet path must keep:
+- 10 pass by design, because they pin behaviour the quiet path must keep:
   - the catch-up cycle;
   - `no-change` reporting;
   - ring rotation;
   - staging of reads with items;
+  - staging of empty pages that are not quiet;
+  - a fresh cycle identity each run;
   - token freshness;
   - rereading after a crash before the advance;
   - the option off being `@2`;
@@ -131,15 +135,19 @@ The published `@2` module, with the stub, is the RED baseline. It ignores the op
 - it falls back to staging on `catch-up-unstaged`;
 - it maps every other non-advance like a staging result;
 - it moves the type to the tail and clears its block;
+- it retires the read's cycle identity, so the next run begins a fresh one;
 - it marks the type caught up.
 
-The reference passes all 15 new tests, `@2`'s runner with `@1`'s 76 and `@2`'s 12, and the whole Sender suite (771 and 398).
+The reference passes all 18 new tests, `@2`'s runner with `@1`'s 76 and `@2`'s 12, and the whole Sender suite (771 and 398).
 
-Four mutants each fail at least one test:
+Seven mutants each fail at least one test:
 - a catch-up refusal failing the run;
 - the quiet path ignoring the option;
 - a quiet read keeping its ring place;
-- a quiet read keeping the block.
+- a quiet read keeping the block;
+- non-catch-up refusals counted as success, Sol's first;
+- the quiet read's identity retained, Sol's second;
+- no first-page restriction, Sol's third.
 
 The binding is:
 - **spec files:** this contract and pack, and `@2`'s and `@1`'s contracts and packs;
@@ -148,4 +156,9 @@ The binding is:
   - every file `coordinate-sender-sync-pack/2` binds: `coordinate-sender-sync-2.test.ts`, `test_coordinate_sender_sync_2.py`, `run_coordinate_sender_sync_2.sh`, and every file `coordinate-sender-sync-pack/1` binds;
   - the new suite also uses `support/synthetic-sync-sources.ts` and the 3ug substitutes, which `@1`'s binding already covers.
 
-Implementation waits until `stage-outbox-batch@2` and `stage-sync-checkpoint@2` publish. GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation adds the runner to the project CI `test` job.
+**Implementability review.** GPT 6.1 Sol's read-only review found nothing blocking: Sol's scratch implementation passed the runner and the whole Sender suite. A mutant survived each of its three coverage gaps, which are now tests:
+- a real advance refusal, after the attempt is replaced mid-read, handled as `sync-state-mismatch` exactly as staging handles it, with recovery afterwards;
+- a fresh cycle identity for each run's quiet read, which R31 now states;
+- empty pages that are not quiet, an empty first page with more to come and an empty final later page, staged normally.
+
+Implementation waits until `stage-outbox-batch@2` and `stage-sync-checkpoint@2` publish. The implementation adds the runner to the project CI `test` job.

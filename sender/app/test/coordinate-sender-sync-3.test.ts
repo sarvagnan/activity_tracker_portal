@@ -21,7 +21,7 @@ import { checkpointMigration } from "../src/outbox/stage-sync-checkpoint.ts";
 import type { BackgroundScheduling } from "../src/outbox/stage-sync-checkpoint.ts";
 import { completionMigration } from "../src/outbox/stage-sync-completion.ts";
 import { schedulingMigration } from "../src/scheduling/schedule-background-polling.ts";
-import { snapshotAttemptsMigration } from "../src/snapshot/begin-initial-snapshot.ts";
+import { beginInitialSnapshot, currentSnapshotAttempt, snapshotAttemptsMigration } from "../src/snapshot/begin-initial-snapshot.ts";
 import type { DatabaseValue, SenderDatabase } from "../src/storage/database.ts";
 import { migrate } from "../src/storage/migrations.ts";
 import { createSenderSync, syncMigration, typeBlock } from "../src/sync/coordinate-sender-sync.ts";
@@ -291,6 +291,70 @@ test("advance_refusals_are_handled_like_staging_refusals", async (t) => {
   }
   assert.deepEqual(results[0], results[1]);
   assert.deepEqual(results[0], { outcome: "failed", failure: "storage-failed" });
+  // A refusal: the type's attempt is replaced while its read is in flight, so the read no longer continues it.
+  const refusals: unknown[] = [];
+  for (const quiet of [true, false]) {
+    const f = await fixture(t, { quiet });
+    await foreground(f);
+    const held = f.sources.hold("change", "steps");
+    const pending = f.sync.trigger({ kind: "background" });
+    await held.arrived;
+    const current = (await currentSnapshotAttempt(f.database, "steps"))!;
+    const begun = await beginInitialSnapshot(f.database,
+      { issue: async () => ({ outcome: "issued" as const, changesToken: f.sources.token("steps", 0), unreadSinceMs: f.clock.wall }) },
+      { recordType: "steps", installationId: INSTALLATION, abandoning: current.snapshotId },
+      { randomUUID: () => "bbbbbbbb-0000-4000-8000-000000000001", now: f.clock.now });
+    assert.equal(begun.outcome, "begun");
+    held.release();
+    refusals.push(await pending);
+    assert.deepEqual(await advances(f.database), [], `quiet ${quiet}: nothing advanced`);
+    // The failed run stays open, and the next run recovers it as interrupted before reading.
+    const before = (await decoded(f)).length;
+    await foreground(f);
+    const recovered = (await decoded(f)).slice(before).find((entry) => entry.kind === "sync-checkpoint")!;
+    assert.deepEqual((recovered.message.record_types as Message[]).map((entry) => entry.outcome), ["interrupted"]);
+  }
+  assert.deepEqual(refusals[0], refusals[1]);
+  assert.deepEqual(refusals[0], { outcome: "failed", failure: "sync-state-mismatch" });
+});
+
+test("each_quiet_run_uses_a_fresh_cycle_identity", async (t) => {
+  const f = await fixture(t);
+  await foreground(f);
+  for (let run = 0; run < 3; run++) await background(f);
+  const quietIdentities = f.sources.callsOf("change").slice(1).map((call) => (call.request as ChangeReadRequest).cycleId);
+  assert.equal(quietIdentities.length, 3);
+  assert.equal(new Set(quietIdentities).size, 3, "each run began a new Change Cycle");
+  f.sources.seed("steps", 1);
+  await background(f);
+  const staged = (await decoded(f)).filter((entry) => entry.kind === "ingest-batch" && entry.message.cycle_kind === "change-cycle").at(-1)!;
+  assert.ok(!quietIdentities.includes(staged.message.cycle_id as string), "the next staged cycle has a fresh identity too");
+});
+
+test("empty_pages_that_are_not_quiet_are_staged", async (t) => {
+  // An empty first page with more to come.
+  const f = await fixture(t);
+  await foreground(f);
+  f.sources.put("steps", "c1");
+  f.sources.next("change", "steps", {
+    outcome: "page", projectionSchemaVersion: 1, items: [], nextChangesToken: f.sources.token("steps", 0), nextUnreadSinceMs: f.clock.wall, hasMore: true,
+  });
+  let before = (await decoded(f)).length;
+  assert.deepEqual(outcomes(await background(f)).steps, ["completed", null, true]);
+  assert.deepEqual(kinds((await decoded(f)).slice(before)), ["ingest-batch", "ingest-batch", "change-completion", "sync-checkpoint"]);
+  assert.deepEqual(await advances(f.database), []);
+  // An empty final page after a page with items.
+  const g = await fixture(t);
+  await foreground(g);
+  g.sources.pageSize = 1;
+  g.sources.put("steps", "c1", "c2");
+  g.sources.next("change", "steps", {
+    outcome: "page", projectionSchemaVersion: 1, items: [], nextChangesToken: g.sources.token("steps", 2), nextUnreadSinceMs: g.clock.wall, hasMore: false,
+  }, 1);
+  before = (await decoded(g)).length;
+  assert.deepEqual(outcomes(await background(g)).steps, ["completed", null, true]);
+  assert.deepEqual(kinds((await decoded(g)).slice(before)), ["ingest-batch", "ingest-batch", "change-completion", "sync-checkpoint"]);
+  assert.deepEqual(await advances(g.database), []);
 });
 
 // R32 — An idle run stages only its checkpoint
