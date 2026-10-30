@@ -416,7 +416,7 @@ The **native retry** check spans every case, and the dropped-connection and redi
 | The development launcher shows no app, or cannot connect | Metro is not running, the URL is not `http://<portal-name>:8081`, Tailscale is off on the phone, or the macOS firewall is blocking `node`. Check `http://<portal-name>:8081/status` in the phone's browser. |
 | `adb devices` lists nothing, or `adb connect` fails | Wireless debugging restarted with a new port, or the phone left the Mac's Wi-Fi. Read the current **IP address & Port** and run `adb connect` again. |
 | `The Portal is running: stop portal serve, then retry.` | Stop the Portal in terminal B, then rerun the helper command. |
-| `adb install` fails with `INSTALL_PARSE_FAILED_NO_CERTIFICATES` | The APK is unsigned. Run `npm run sign:android` and install `app-debug.apk`, not `app-debug-unsigned.apk`. |
+| `adb install` fails with `INSTALL_PARSE_FAILED_NO_CERTIFICATES` | The APK is unsigned. Run `fnm exec --using=26.11.1 -- npm run sign:android --prefix sender`, then install `app-debug.apk`, not `app-debug-unsigned.apk`. |
 | `adb install` fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | The installed Sender was signed with another key. Run `adb uninstall org.activitytracker.sender` first. |
 
 ## Using USB instead
