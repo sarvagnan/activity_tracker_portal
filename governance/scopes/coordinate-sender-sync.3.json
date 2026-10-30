@@ -1,0 +1,215 @@
+{
+  "contract_schema": 1,
+  "scope": "coordinate-sender-sync",
+  "version": "3",
+  "kind": "integration",
+  "purpose": "Run the Sender's Polling Runs: coalesce background, foreground, and manual triggers into durable identified runs; recover and checkpoint an interrupted run before reading again; fairly schedule per-type traversal of snapshots and Change Cycles, bounded by a relative budget, an absolute deadline, or both, through the published readers, staging units, and begin units; pause, block, defer, retry, or escalate each record type by its exact condition; and close every run with one health-data-free Sync Checkpoint. Version 3 adds opt-in quiet change reads: after a type's catch-up cycle, a new Change Cycle's first read that finds nothing advances the change origin through stage-outbox-batch@2 and stages no message, and the type reports no-change.",
+  "inputs": [
+    {
+      "name": "trigger",
+      "mode": "pure",
+      "description": "One background, foreground, or manual trigger, with an optional execution budget in milliseconds, an optional absolute deadline on the coordinator's monotonic clock, and, for a manual trigger, optional record types to move forward once."
+    },
+    {
+      "name": "retry_intent",
+      "mode": "pure",
+      "description": "The Operator's Sender-side request to retry one record type blocked by a Projection Refusal; never accepted from the Portal."
+    },
+    {
+      "name": "managed_record_types",
+      "mode": "pure",
+      "description": "The record types the Sender collects under its capability generation, each supported by that generation at the Sender's projection schema version."
+    },
+    {
+      "name": "projection_versions",
+      "mode": "pure",
+      "description": "The Sender build's projection-implementation version and each managed type's projection schema version, as the Kotlin readers project with."
+    },
+    {
+      "name": "concurrency",
+      "mode": "pure",
+      "description": "The cross-type traversal pool size, a positive integer defaulting to two."
+    },
+    {
+      "name": "staging_context",
+      "mode": "volatile",
+      "description": "The active Sender Installation, its installation key alias, and its capability generation, read once when a run opens, as the staging units use them."
+    },
+    {
+      "name": "sync_conditions",
+      "mode": "volatile",
+      "description": "Whether collection is enabled, whether the Device keeps a secure screen lock, whether a Delivery Block holds the Outbox, and whether storage pressure stops polling, read before every step."
+    },
+    {
+      "name": "background_scheduling_status",
+      "mode": "volatile",
+      "description": "The Background Scheduling Status observed when a run opens: available, restricted, or unregistered."
+    },
+    {
+      "name": "source_readers",
+      "mode": "effectful",
+      "description": "The TypeScript seams over read-snapshot-page@1, read-change-page@1, and the begin units' changes-token issuer, whose results the coordinator validates as bridge payloads. With quiet change reads enabled, an empty, final first read of a new Change Cycle is advanced rather than staged once the type's catch-up cycle has finished."
+    },
+    {
+      "name": "installation_cipher",
+      "mode": "effectful",
+      "description": "The 3ug InstallationCipher seam, used only through the staging units."
+    },
+    {
+      "name": "sender_storage",
+      "mode": "effectful",
+      "description": "The Sender's SQLite database: this unit's run, ring, cycle, and block records, and the published units' state read only through their exported functions."
+    },
+    {
+      "name": "clocks_and_identity",
+      "mode": "volatile",
+      "description": "The Sender wall clock for run times and attempt dates, a monotonic clock for elapsed duration, budgets, and absolute deadlines, and the version 4 UUID source for snapshot and Change Cycle identities."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "run_checkpointed",
+      "description": "A Polling Run opened durably before any read and closed with exactly one Sync Checkpoint through stage-sync-checkpoint@1, reporting every managed type's lifecycle outcome, allowlisted reason, and source-data-staged flag. A run whose deadline has passed when it opens still checkpoints, with every type deferred with time-budget-reached."
+    },
+    {
+      "name": "recovered_run",
+      "description": "A run left open by an earlier process or failure, closed as interrupted and checkpointed before any new run reads."
+    },
+    {
+      "name": "staged_progress",
+      "description": "Snapshot and Change Cycle pages, Snapshot and Change Completions, and Initial and Reconciliation Snapshot attempts, each committed by its owning unit; positions advance only through that staging. With quiet change reads enabled, an empty, final first change read after the catch-up cycle instead advances the change origin through stage-outbox-batch@2, with no Ingest Batch and no Change Completion."
+    },
+    {
+      "name": "type_block",
+      "description": "A health-data-free Projection Refusal or oversized-record block on one record type, keyed by its identity, that later runs skip until the identity changes or the Operator requests one retry."
+    },
+    {
+      "name": "run_failure",
+      "description": "A cipher, storage, conflict, or state-mismatch failure that stops the run before its checkpoint and leaves it open for recovery."
+    },
+    {
+      "name": "retry_refusal",
+      "description": "A retry intent for a type that no Projection Refusal blocks, with nothing written."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "retry-not-blocked",
+      "outcome": "refusal"
+    },
+    {
+      "name": "staging-conflict",
+      "outcome": "conflict"
+    },
+    {
+      "name": "sync-state-mismatch",
+      "outcome": "state-mismatch"
+    },
+    {
+      "name": "installation-key-missing",
+      "outcome": "cipher-failure"
+    },
+    {
+      "name": "installation-key-unusable",
+      "outcome": "cipher-failure"
+    },
+    {
+      "name": "keystore-unavailable",
+      "outcome": "cipher-failure"
+    },
+    {
+      "name": "unexpected-cipher-failure",
+      "outcome": "cipher-failure"
+    },
+    {
+      "name": "storage-failed",
+      "outcome": "storage-failure"
+    }
+  ],
+  "observable_effects": [
+    {
+      "name": "health-connect-read",
+      "description": "Through the reader and issuer seams, reads snapshot and change pages and issues pre-read changes tokens; never writes to Health Connect or requests permissions."
+    },
+    {
+      "name": "installation-key-seal",
+      "description": "Seals only through stage-outbox-batch@1, stage-sync-completion@1, and stage-sync-checkpoint@1; never calls the cipher itself."
+    },
+    {
+      "name": "sender-storage-write",
+      "description": "Applies this unit's Sender schema migration and writes its own run, ring, cycle, and block records; every other write is a published unit's own transaction."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "opening, recovering, and closing Polling Runs, their run sequences, and their per-type outcomes, reasons, and source-data-staged flags",
+      "trigger coalescing into at most one follow-up run, and one-time manual priority",
+      "the per-type traversal order, the cross-type pool, and the durable round-robin ring",
+      "deciding each type's next step: begin, read, stage, complete, skip, pause, or escalate",
+      "Projection Refusal and oversized-record block identities, their automatic retry rule, and the Operator's one retry",
+      "soft-deadline enforcement from a relative budget, an absolute deadline, or both, including how coalesced triggers combine them, and the collection-disabled, permission-gap, and condition pauses",
+      "choosing a new Initial Snapshot or a Reconciliation Snapshot after lost continuity",
+      "validating reader and issuer results as bridge payloads",
+      "this unit's Sender schema migration"
+    ],
+    "does_not_own": [
+      "reading Health Connect, projecting records, positions, token age, and permission checks, which belong to read-snapshot-page, read-change-page, and project-source-record",
+      "snapshot attempts and their pre-read tokens, which belong to begin-initial-snapshot and begin-reconciliation-snapshot",
+      "partitioning, sealing, the Outbox, and cycle progress, which belong to stage-outbox-batch",
+      "completion and checkpoint messages and their exactly-once records, which belong to stage-sync-completion and stage-sync-checkpoint",
+      "the Wire Protocol message formats and closed value lists, which belong to ingest-protocol",
+      "background registration, the eight-minute window, and Background Scheduling Status, which belong to schedule-background-polling; the Sender shell turns that window into a background trigger's absolute deadline",
+      "enrollment, capability adoption, drain mode, the secure-lock requirement, and the installation key, which belong to manage-sender-enrollment",
+      "delivery, Delivery Blocks, and receipt-bound removal, which belong to send-outbox-message",
+      "detecting storage pressure and secure-lock removal, which the Sender shell supplies as conditions",
+      "the Expo bridge between the Kotlin readers and TypeScript",
+      "local notifications and Sender screens"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "begin-initial-snapshot",
+      "version": "2"
+    },
+    {
+      "scope": "begin-reconciliation-snapshot",
+      "version": "1"
+    },
+    {
+      "scope": "ingest-protocol",
+      "version": "1"
+    },
+    {
+      "scope": "read-change-page",
+      "version": "1"
+    },
+    {
+      "scope": "read-snapshot-page",
+      "version": "1"
+    },
+    {
+      "scope": "stage-outbox-batch",
+      "version": "2"
+    },
+    {
+      "scope": "stage-sync-checkpoint",
+      "version": "2"
+    },
+    {
+      "scope": "stage-sync-completion",
+      "version": "1"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/coordinate-sender-sync-3.spec.md",
+    "executable_tests": {
+      "typescript": "sender/app/test/coordinate-sender-sync-3.test.ts",
+      "python": "tests/acceptance/test_coordinate_sender_sync_3.py"
+    },
+    "runner": "tests/acceptance/run_coordinate_sender_sync_3.sh",
+    "languages": [
+      "python",
+      "typescript"
+    ]
+  }
+}
