@@ -70,10 +70,12 @@ jobs:
           state = json.loads(Path(".vouch/state.json").read_text())
           for head in state["evidence_heads"]:
               if not head["anchor_run_id"]:
-                  print(head["unit_name"])
+                  print(f"{head['unit_name']}@{head['unit_version']}")
           PY
-          while IFS= read -r unit_name; do
-            python vouch.lock advance-anchor --root .vouch --unit-name "$unit_name"
+          while IFS= read -r label; do
+            unit_name="${label%@*}"
+            unit_version="${label##*@}"
+            python vouch.lock advance-anchor --root .vouch --unit-name="$unit_name" --unit-version="$unit_version"
           done < "$RUNNER_TEMP/vouch-evidence-heads"
           python vouch.lock generate --root .vouch
           python vouch.lock check --ci --root .vouch --project .
