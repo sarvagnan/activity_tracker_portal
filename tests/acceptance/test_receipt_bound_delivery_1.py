@@ -116,10 +116,15 @@ class Proxy:
         with client:
             client.settimeout(30)
             request = read_http(client)
+            # Every Sender route is under /v1/. Another local process probing this port, with an
+            # empty connection or `GET /`, must neither take the attempt's fault nor count as an exchange.
+            line = request.partition(b"\r\n")[0].split(b" ")
+            if len(line) != 3 or not line[1].startswith(b"/v1/"):
+                return
             fault = self.faults.popleft() if self.faults else "pass"
             exchange: dict[str, Any] = {"fault": fault, "request": http_body(request), "response": None}
             self.exchanges.append(exchange)
-            if fault == "drop-request" or not request:
+            if fault == "drop-request":
                 return
             with socket.create_connection(("127.0.0.1", self.upstream_port), timeout=30) as upstream:
                 upstream.sendall(request)
@@ -281,10 +286,21 @@ class Case(unittest.TestCase):
             store, status["installationId"], status["fingerprint"], self.portal.now,
         ))
 
+    def probe(self) -> None:
+        """Reach the proxy as another local process would, and wait until it has closed each connection."""
+        for payload in (b"", b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"):
+            with socket.create_connection(("127.0.0.1", self.proxy.port), timeout=30) as connection:
+                connection.sendall(payload)
+                connection.shutdown(socket.SHUT_WR)
+                while connection.recv(65_536):
+                    pass
+
     def send(self, fault: str = "pass") -> dict[str, Any]:
         # The fault applies to this attempt's request only; an attempt on an empty Outbox makes none.
         self.proxy.faults.clear()
         self.proxy.faults.append(fault)
+        if fault != "pass":
+            self.probe()
         before = self.archived()
         try:
             output = self.sender("send")
