@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"UnitSpecified","pack_digest":"","payload":{"depends_on":["ingest-protocol","stage-outbox-batch"],"name":"stage-sync-checkpoint","version":"2"},"prev":"a6cca97817514b8133426fd91ba8b1b389470a179d8ab3454a8ea088bef9e374","recorded_at":"2026-10-30T09:08:30+00:00","revision":373,"run_id":""}

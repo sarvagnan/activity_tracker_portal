@@ -101,6 +101,8 @@ jobs:
         run: tests/acceptance/run_notify_operator_conditions_1.sh
       - name: Run stage-outbox-batch@2 acceptance
         run: tests/acceptance/run_stage_outbox_batch_2.sh
+      - name: Run stage-sync-checkpoint@2 acceptance
+        run: tests/acceptance/run_stage_sync_checkpoint_2.sh
 
   vouch:
     needs: [test, sender]
