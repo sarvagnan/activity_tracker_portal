@@ -36,7 +36,7 @@ Tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_m
 
 ### R16 — No sealed message is loaded
 
-`status()`, `beginDrain()`, and `unlink()` load no sealed Outbox message, in every phase:
+`status()`, `beginDrain()`, including a repeated call while draining, and `unlink()` load no sealed Outbox message, in every phase:
 - `confirming`;
 - `refused`;
 - `enrolled`, before and after confirmation;
@@ -62,7 +62,7 @@ The tests build those states with a scripted mix of steps:
 
 `beginDrain()` and `unlink()` reach the same outcomes and refusals as in `@1` for each of them.
 
-Tests: `status_matches_the_outbox_oracle`, `drain_and_unlink_match_the_outbox_oracle`.
+Tests: `status_matches_the_outbox_oracle`, `drain_and_unlink_match_the_outbox_oracle`, `confirmation_follows_the_recorded_acknowledgement_sequence`, which uses an acknowledgement adopted at sequence 4 after earlier rows.
 
 ### R18 — A large Outbox
 
@@ -94,7 +94,7 @@ Tests: `a_large_outbox_drains_and_unlinks`.
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the TypeScript suite `manage-sender-enrollment-2.test.ts`, 7 tests;
+- the TypeScript suite `manage-sender-enrollment-2.test.ts`, 8 tests;
 - the Python contract suite `tests/acceptance/test_manage_sender_enrollment_2.py`, 2 tests;
 - the runner `tests/acceptance/run_manage_sender_enrollment_2.sh`. It runs the version 2 contract check, then `@1`'s bound runner unchanged, then the `@2` suite under a 60-second per-test timeout. It passes the suite only when a fresh JUnit report lists exactly its tests, none failed, errored, or skipped.
 
@@ -102,17 +102,19 @@ The suite migrates with `@1`'s explicit list to version 8. It drives the publish
 
 There is no new Interface stub. The published `@1` module is the RED baseline, against which:
 - R16's 4 tests fail: `@1` loads 26 sealed rows for one status read, and 1,500 across status, drain, and unlink with 500 queued;
-- R17's 2 tests and R18's test pass by design, because they pin that `@2` keeps `@1`'s answers;
+- R17's 3 tests and R18's test pass by design, because they pin that `@2` keeps `@1`'s answers;
 - `@1`'s 39 tests pass with the rebound allowlist;
 - both Python suites pass.
 
-**The reference run.** A throwaway reference answers `confirmed` and `finalSequence` through `stage-outbox-batch@2`'s `outboxHolds` and `outboxBacklog`, taken from that unit's throwaway reference. It passes all 7 new tests and `@1`'s 39.
+**The reference run.** A throwaway reference answers `confirmed` and `finalSequence` through `stage-outbox-batch@2`'s `outboxHolds` and `outboxBacklog`, taken from that unit's throwaway reference. It passes all 8 new tests and `@1`'s 39.
 
-The first reference run found the allowlist conflict that Decision 5 resolves. Four mutants each fail at least one test:
+The first reference run found the allowlist conflict that Decision 5 resolves. Six mutants each fail at least one test:
 - confirmation ignoring whether the acknowledgement is queued;
 - the final sequence ignoring the backlog;
 - asking about the wrong sequence;
 - loading the sealed rows as well.
+- always asking about sequence 1, Sol's first;
+- reading the Outbox on a repeated drain, Sol's second.
 
 The binding is:
 - **spec files:** this contract and pack, and `@1`'s contract and pack;
@@ -120,4 +122,8 @@ The binding is:
   - `manage-sender-enrollment-2.test.ts`, `test_manage_sender_enrollment_2.py`, and the `@2` runner;
   - every file `manage-sender-enrollment-pack/1` binds, as rebound: `manage-sender-enrollment-1.test.ts`, its 3ug substitutes `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`, `test_manage_sender_enrollment_1.py`, and `run_manage_sender_enrollment_1.sh`.
 
-Implementation waits until `stage-outbox-batch@2` publishes, and this branch then merges `main`. GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation adds the runner to the project CI `test` job.
+**Implementability review.** GPT 6.1 Sol's read-only review found nothing blocking. Sol's scratch implementation on `outboxHolds` and `outboxBacklog` passes the whole runner, including `@1`'s rebound boundary test. Its two coverage gaps are added; a mutant survived each:
+- a recorded acknowledgement other than sequence 1, against a mutant that always asks about sequence 1;
+- a repeated `beginDrain()` while draining, observed for sealed rows, against a mutant that reads the Outbox there.
+
+This branch has merged `stage-outbox-batch@2` from `main`. The implementation adds the runner to the project CI `test` job.

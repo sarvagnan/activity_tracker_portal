@@ -215,6 +215,10 @@ test("begin_drain_loads_no_sealed_message", async (t) => {
     const view = watched(f);
     assert.deepEqual(await view.sender.beginDrain(), { outcome: "draining" });
     assert.equal(sealedRows(view.rows), 0, `${queued} queued`);
+    // A repeated tap while already draining loads none either.
+    const again = watched(f);
+    assert.deepEqual(await again.sender.beginDrain(), { outcome: "draining" });
+    assert.equal(sealedRows(again.rows), 0, `${queued} queued, repeated`);
   }
   // A refused drain, before confirmation is learned, loads none either.
   const f = await fixture(t);
@@ -314,6 +318,21 @@ test("drain_and_unlink_match_the_outbox_oracle", async (t) => {
   assert.equal((await oracle(f)).finalSequence, 4);
   assert.deepEqual(await f.sender.unlink(), { outcome: "destroyed" });
   assert.equal(await f.sender.status(), null);
+});
+
+test("confirmation_follows_the_recorded_acknowledgement_sequence", async (t) => {
+  // An identity that already has rows adopts its generation under the next sequence (@1's R5), here 4.
+  const f = await fixture(t);
+  await queue(f.database, IDENTITY, 3);
+  assert.deepEqual(await f.sender.enroll(OFFER), { outcome: "enrolled", generation: 1 });
+  const [row] = await f.database.query("SELECT acknowledgement_sequence FROM sender_enrollment");
+  assert.equal(row.acknowledgement_sequence, 4);
+  for (const sequence of [1, 2, 3]) await remove(f.database, IDENTITY, sequence);
+  assert.deepEqual(await oracle(f), { confirmed: false, finalSequence: null });
+  assert.equal((await statusOf(f.sender)).confirmed, false, "acknowledgement 4 is still queued");
+  assert.deepEqual(await deliverNext(f), { outcome: "delivered", sequence: 4, kind: "capability-acknowledgement" });
+  assert.deepEqual(await oracle(f), { confirmed: true, finalSequence: null });
+  assert.equal((await statusOf(f.sender)).confirmed, true, "its receipt confirms");
 });
 
 // R18 — A large Outbox
