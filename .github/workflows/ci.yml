@@ -89,6 +89,8 @@ jobs:
         run: tests/acceptance/run_coordinate_sender_sync_1.sh
       - name: Run coordinate-sender-sync@2 acceptance
         run: tests/acceptance/run_coordinate_sender_sync_2.sh
+      - name: Run coordinate-sender-sync@3 acceptance
+        run: tests/acceptance/run_coordinate_sender_sync_3.sh
       - name: Run schedule-background-polling@1 acceptance
         run: tests/acceptance/run_schedule_background_polling_1.sh
       - name: Run send-outbox-message@1 acceptance

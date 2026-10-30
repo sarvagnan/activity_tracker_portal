@@ -29,6 +29,7 @@ export function checkOptions(options: SenderSyncOptions): void {
       typeof options.projection.implementationVersion !== "string" || options.projection.implementationVersion.length === 0 ||
       !object(options.projection.schemaVersions) ||
       (options.concurrency !== undefined && !positive(options.concurrency)) ||
+      (options.quietChangeReads !== undefined && typeof options.quietChangeReads !== "boolean") ||
       [options.context, options.conditions, options.backgroundScheduling, options.now, options.monotonicNow, options.randomUUID]
         .some((fn) => typeof fn !== "function")) throw new TypeError("Invalid Sender sync options");
   const seen = new Set<string>();

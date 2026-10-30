@@ -7,7 +7,7 @@ import { messageSha256 } from "@activity-tracker-portal/ingest-protocol";
 import { beginInitialSnapshot, currentSnapshotAttempt } from "../snapshot/begin-initial-snapshot.ts";
 import type { SnapshotAttempt } from "../snapshot/begin-initial-snapshot.ts";
 import { beginReconciliationSnapshot } from "../snapshot/begin-reconciliation-snapshot.ts";
-import { stageOutboxBatch, cycleProgress, changeOrigin } from "../outbox/stage-outbox-batch.ts";
+import { stageOutboxBatch, cycleProgress, changeOrigin, advanceChangeOrigin } from "../outbox/stage-outbox-batch.ts";
 import type { CycleProgress, ObservedPage } from "../outbox/stage-outbox-batch.ts";
 import { stageSyncCompletion, cycleCompletion } from "../outbox/stage-sync-completion.ts";
 import { stageSyncCheckpoint, runCheckpoint } from "../outbox/stage-sync-checkpoint.ts";
@@ -93,6 +93,11 @@ export interface SenderSyncOptions {
   readonly now: () => number;
   readonly monotonicNow: () => number;
   readonly randomUUID: () => string;
+  /**
+   * coordinate-sender-sync@3: advance quiet change reads through stage-outbox-batch@2 instead of staging them.
+   * Defaults to false, which keeps @2's behaviour. Interface stub: not yet implemented.
+   */
+  readonly quietChangeReads?: boolean;
 }
 
 export interface TriggerRequest {
@@ -463,15 +468,35 @@ export function createSenderSync(options: SenderSyncOptions): SenderSync {
             nextUnreadSinceMs: result.nextUnreadSinceMs, hasMore: result.hasMore };
         // Reading and staging are one step: an in-flight page still commits if
         // conditions, deadline, or another turn's failure change while it reads.
-        const stagedPage = await stageInRun(() => stageOutboxBatch(database, cipher, context, page), async (result) => {
-          if (result.outcome !== "staged") return;
-          // Keep staging and the durable tail move in the same storage lane.
+        async function afterPage(retireCycle = false): Promise<void> {
+          // Keep the page commit and durable tail move in the same storage lane.
           // Other turns cannot sample an obsolete ring between these commits.
           await database.transaction(async (tx) => {
             const [tail] = await tx.query("SELECT MAX(ring_order) AS last FROM sync_types");
             await tx.execute("UPDATE sync_types SET ring_order = ? WHERE record_type = ?", [(tail.last as number) + 1, recordType]);
             await tx.execute("DELETE FROM sync_blocks WHERE record_type = ?", [recordType]);
+            if (retireCycle) {
+              await tx.execute("UPDATE sync_types SET change_cycle_id = NULL, change_snapshot_id = NULL WHERE record_type = ?", [recordType]);
+            }
           });
+        }
+        if (options.quietChangeReads && page.source === "change" && step.progress === null &&
+            page.pageIndex === 1 && page.items.length === 0 && !page.hasMore) {
+          const advanced = await staged(() => advanceChangeOrigin(database, context, page), async (result) => {
+            // Catch-up still owes a staged cycle. Publish every other failure
+            // before releasing the lane, just as stageInRun does for staging.
+            if (result.outcome === "refused" && result.failure === "catch-up-unstaged") return;
+            failure ??= dependencyFailure(result);
+            if (result.outcome === "advanced") await afterPage(true);
+          });
+          if (advanced.outcome === "advanced") {
+            state.caughtUp = true;
+            return;
+          }
+          if (advanced.outcome !== "refused" || advanced.failure !== "catch-up-unstaged") return;
+        }
+        const stagedPage = await stageInRun(() => stageOutboxBatch(database, cipher, context, page), async (result) => {
+          if (result.outcome === "staged") await afterPage();
         });
         failure ??= dependencyFailure(stagedPage);
         if (stagedPage.outcome === "blocked") {
