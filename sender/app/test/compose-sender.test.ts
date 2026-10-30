@@ -645,18 +645,20 @@ for (const action of ["unlink", "reset"] as const) {
         return { ...f.options.enrollment(database, transport), unlink: destroy, reset: destroy };
       },
     });
+    // Destroy at the second boundary, so the call must first chain past one cap.
+    const boundary = 2 * MAX_DELIVERY_ATTEMPTS;
     p.state.answer = async (_url, init) => {
       assert.notEqual(f.state.status, null, "no send after destruction");
-      if (p.requests.length === MAX_DELIVERY_ATTEMPTS) {
+      if (p.requests.length === boundary) {
         const result = action === "unlink" ? await shell.unlink()
           : await shell.reset({ acknowledgePossibleLoss: true });
         assert.deepEqual(result, { outcome: "destroyed" });
       }
       return receipt(init.body!);
     };
-    await acknowledgements(f, MAX_DELIVERY_ATTEMPTS + 2);
+    await acknowledgements(f, boundary + 2);
     await shell.manualSync();
-    assert.equal(p.requests.length, MAX_DELIVERY_ATTEMPTS);
+    assert.equal(p.requests.length, boundary);
     assert.equal((await outboxMessages(f.database())).length, 2);
   });
 }
