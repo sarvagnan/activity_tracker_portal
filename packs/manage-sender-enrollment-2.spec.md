@@ -81,6 +81,7 @@ Tests: `a_large_outbox_drains_and_unlinks`.
 1. **Same answers, cheaper reads.** Nothing a caller sees changes. `@2` exists to pin that no sealed message is loaded (R16), which `@1` never promised, and to depend on the reads that make that possible. *Alternative:* changing `@1`'s implementation without a new version. That leaves the guarantee unpinned, and `mfv` asked for the governed lifecycle.
 2. **The guarantee is tested by what the database returns, not by timing.** The emulator crash came from live byte buffers, so the tests count what the reads receive. No test measures speed.
 3. **Supersession.** Vouch supersedes `@1` when `@2` is specified. Its published dependents keep their packs, because `@2`'s interface is unchanged: `notify-operator-conditions@1` and `receipt-bound-delivery@1`. If Vouch requires it at publication, their packs are rebound with `rebind-pack`, with no change in behaviour. Implementation waits until `stage-outbox-batch@2` publishes.
+5. **`@1`'s pack is rebound (Operator decision, 2026-10-30, during the executable pack).** `@1`'s boundary test allowed only four imports from `stage-outbox-batch`, so `@2`'s use of `outboxBacklog` and `outboxHolds` could not pass the `@1` suite this pack re-runs. The allowlist gains those two names, and `@1`'s pack records the rebind. The approver records `rebind-pack` for `manage-sender-enrollment@1` before `@2` is specified, and then a fresh GREEN through `@1`'s bound runner against its unchanged published implementation. The test still forbids other units' tables and limits imports to the Outbox's own functions.
 4. **The shell's status reads stay as they are.** `mfv` also notes the shell calls `status()` 20–26 times a trigger. Once each read is cheap, that count stops mattering for memory. Reducing it is a shell change outside this unit, and is left for the shell task (Beads `2rv.18`) if review asks for it.
 
 ## Ground rules
@@ -92,18 +93,31 @@ Tests: `a_large_outbox_drains_and_unlinks`.
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the TypeScript suite `manage-sender-enrollment-2.test.ts`;
-- the Python contract suite `tests/acceptance/test_manage_sender_enrollment_2.py`;
-- the runner `tests/acceptance/run_manage_sender_enrollment_2.sh`, which runs the version 2 contract check, `@1`'s bound runner unchanged, and then the `@2` suite under a per-test timeout.
+The Operator approved the draft. The executable pack adds:
+- the TypeScript suite `manage-sender-enrollment-2.test.ts`, 7 tests;
+- the Python contract suite `tests/acceptance/test_manage_sender_enrollment_2.py`, 2 tests;
+- the runner `tests/acceptance/run_manage_sender_enrollment_2.sh`. It runs the version 2 contract check, then `@1`'s bound runner unchanged, then the `@2` suite under a 60-second per-test timeout. It passes the suite only when a fresh JUnit report lists exactly its tests, none failed, errored, or skipped.
+
+The suite migrates with `@1`'s explicit list to version 8. It drives the published `@1` enrollment through a synthetic Portal, delivers through `send-outbox-message@1`, and uses `@1`'s `outboxMessages` as the oracle.
 
 There is no new Interface stub. The published `@1` module is the RED baseline, against which:
-- R16's tests fail, because `@1` reads `outboxMessages`;
-- R17's and R18's tests pass by design, because they pin that `@2` keeps `@1`'s answers;
-- `@1`'s whole suite passes.
+- R16's 4 tests fail: `@1` loads 26 sealed rows for one status read, and 1,500 across status, drain, and unlink with 500 queued;
+- R17's 2 tests and R18's test pass by design, because they pin that `@2` keeps `@1`'s answers;
+- `@1`'s 39 tests pass with the rebound allowlist;
+- both Python suites pass.
+
+**The reference run.** A throwaway reference answers `confirmed` and `finalSequence` through `stage-outbox-batch@2`'s `outboxHolds` and `outboxBacklog`, taken from that unit's throwaway reference. It passes all 7 new tests and `@1`'s 39.
+
+The first reference run found the allowlist conflict that Decision 5 resolves. Four mutants each fail at least one test:
+- confirmation ignoring whether the acknowledgement is queued;
+- the final sequence ignoring the backlog;
+- asking about the wrong sequence;
+- loading the sealed rows as well.
 
 The binding is:
 - **spec files:** this contract and pack, and `@1`'s contract and pack;
-- **test files:** the new suite, `test_manage_sender_enrollment_2.py`, the `@2` runner, and every file `manage-sender-enrollment-pack/1` binds.
+- **test files:**
+  - `manage-sender-enrollment-2.test.ts`, `test_manage_sender_enrollment_2.py`, and the `@2` runner;
+  - every file `manage-sender-enrollment-pack/1` binds, as rebound: `manage-sender-enrollment-1.test.ts`, its 3ug substitutes `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`, `test_manage_sender_enrollment_1.py`, and `run_manage_sender_enrollment_1.sh`.
 
-GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation adds the runner to the project CI `test` job.
+Implementation waits until `stage-outbox-batch@2` publishes, and this branch then merges `main`. GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation adds the runner to the project CI `test` job.
