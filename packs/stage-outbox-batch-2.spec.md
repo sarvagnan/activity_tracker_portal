@@ -83,7 +83,7 @@ A **quiet** change read is the first page (`pageIndex` 1) of a Change Cycle iden
 - a Change Cycle under the attempt has finished, so the catch-up cycle was staged;
 - `readFrom` equals the change origin.
 
-It then commits, in one SQLite transaction, the page's `nextChangesToken` and `nextUnreadSinceMs` as the record type's change origin under that attempt, and returns `advanced` with the new origin. It writes:
+It then commits, in one SQLite transaction, the page's `nextChangesToken` and `nextUnreadSinceMs` as the record type's change origin under that attempt, and returns `advanced` with the new origin. Its checks read the state inside that same transaction, so no staging or other advance can land between the checks and the write. It writes:
 - no Outbox Message;
 - no change to any high-water mark;
 - no cycle progress, for the page's identity or any other.
@@ -95,6 +95,7 @@ After an advance:
 - **The recheck.** `@1`'s R10 recheck for a new Change Cycle also covers the origin. An advance committed while a first change page is being sealed makes that staging `staging-conflict`, with nothing written.
 - **A new attempt.** Once the attempt stops being current, its advance no longer counts. A new attempt's first Change Cycle starts from that attempt's pre-read token.
 - **Persistence.** The advance survives reopening the database.
+- **Below version 10.** A database that has not reached Sender schema version 10 has no advances table. There, `changeOrigin` and `stageOutboxBatch` behave exactly as in `@1`, because `@1`'s suite, and every published suite that stages through this module, migrate below version 10. `advanceChangeOrigin` returns `storage-failed` and writes nothing.
 
 Tests:
 - `a_quiet_read_advances_the_origin`
@@ -106,6 +107,7 @@ Tests:
 - `an_advance_during_sealing_makes_staging_conflict`
 - `a_new_attempt_ignores_the_old_advance`
 - `an_advance_survives_reopening`
+- `a_database_below_version_ten_behaves_as_at_one`
 
 ### R17 — Refusals and failures of an advance
 
@@ -193,15 +195,47 @@ In addition:
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the TypeScript suite `stage-outbox-batch-2.test.ts`;
-- the Python contract suite `tests/acceptance/test_stage_outbox_batch_2.py`;
-- the runner `tests/acceptance/run_stage_outbox_batch_2.sh`, which runs the version 2 contract check, `@1`'s bound runner unchanged, and then the `@2` suite under a per-test timeout;
-- the Interface stub: the three new functions and the migration, which throw.
+The Operator approved the draft. The executable pack adds:
+- the TypeScript suite `stage-outbox-batch-2.test.ts`, 28 tests;
+- the Python contract suite `tests/acceptance/test_stage_outbox_batch_2.py`, 2 tests;
+- the runner `tests/acceptance/run_stage_outbox_batch_2.sh`. It runs the version 2 contract check, then `@1`'s bound runner unchanged, then the `@2` suite under a 60-second per-test timeout. It passes the suite only when a fresh JUnit report lists exactly its tests, none failed, errored, or skipped;
+- the Interface stub, appended to `sender/app/src/outbox/stage-outbox-batch.ts`: `OutboxBacklog`, `AdvanceResult`, the three functions, which throw, and `changeOriginMigration`, whose migration throws.
+
+The suite migrates with the explicit list of all ten Sender migrations to version 10, because migrations must be contiguous from version 1. R16's below-version-10 test migrates to version 2 only.
+
+**The reference run.** A throwaway reference implementation was written before freeze. Its first run found a gap, now closed in R16. `@1`'s suite, and every published suite that stages through this module, migrate below version 10, so `changeOrigin` and `stageOutboxBatch` must behave as `@1` on a database without the advances table. After that, the reference passes:
+- all 28 new tests and `@1`'s 44 tests;
+- both Python suites;
+- the whole Sender suite;
+- the typecheck.
+
+Twelve mutants of the reference each fail at least one test:
+- skipping the catch-up check;
+- `changeOrigin` ignoring advances;
+- staging's origin check ignoring advances;
+- the recheck ignoring advances;
+- advances never superseded by a later finished cycle;
+- the backlog loading sealed rows;
+- `outboxHolds` ignoring the installation;
+- the advance's checks running outside its transaction;
+- the catch-up checked before the snapshot;
+- the quiet check ignoring `hasMore`;
+- the advance ignoring the installation;
+- the migration without its lineage check.
+
+**RED against the stub:**
+- all 28 new TypeScript tests fail:
+  - 26 because the stub migration fails and the fixture expects version 10;
+  - `new_caller_errors_touch_no_storage`, because the stub throws a plain `Error` rather than `TypeError`;
+  - `a_database_below_version_ten_behaves_as_at_one`, because the stub advance throws;
+- `@1`'s 44 TypeScript tests pass;
+- both Python suites pass, because they check the contracts.
 
 The binding is:
 - **spec files:** this contract and pack, and `@1`'s contract and pack;
-- **test files:** the new suite, `test_stage_outbox_batch_2.py`, the `@2` runner, and every file `stage-outbox-batch-pack/2` binds.
+- **test files:**
+  - `stage-outbox-batch-2.test.ts`, `test_stage_outbox_batch_2.py`, and the `@2` runner;
+  - every file `stage-outbox-batch-pack/2` binds: `stage-outbox-batch-1.test.ts`, its 3ug substitutes `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`, `test_stage_outbox_batch_1.py`, and `run_stage_outbox_batch_1.sh`.
 
 GPT 6.1 Sol's read-only implementability review runs before Gate B. The approver confirms in implementation review that:
 - `changeOriginMigration` is registered tenth in `senderMigrations`, the only permitted change to `sender/app/src/storage/migrations.ts`;

@@ -493,3 +493,44 @@ function base64(bytes: Uint8Array): string {
   }
   return encoded;
 }
+
+// stage-outbox-batch@2 Interface stubs (packs/stage-outbox-batch-2.spec.md). They declare the
+// additive interface only; the implementation replaces them after freeze.
+
+/** One installation's queued Outbox Messages, counted without loading any sealed message. */
+export interface OutboxBacklog {
+  readonly messageCount: number;
+  /** The sum of the queued messages' plaintext byte lengths. */
+  readonly byteCount: number;
+}
+
+export type AdvanceResult =
+  | { readonly outcome: "advanced"; readonly origin: ChangeOrigin }
+  | { readonly outcome: "refused" | "storage-failed"; readonly failure: string };
+
+/** The installation's queued message count and byte total, without loading sealed bytes (R14). */
+export async function outboxBacklog(_database: SenderDatabase, _installationId: string): Promise<OutboxBacklog> {
+  throw new Error("stage-outbox-batch@2 is not implemented");
+}
+
+/** Whether the installation's message with this sequence is still queued, without loading sealed bytes (R15). */
+export async function outboxHolds(_database: SenderDatabase, _installationId: string, _sequence: number): Promise<boolean> {
+  throw new Error("stage-outbox-batch@2 is not implemented");
+}
+
+/** Advance the record type's change origin past a quiet change read, staging nothing (R16, R17). */
+export async function advanceChangeOrigin(
+  _database: SenderDatabase,
+  _context: StagingContext,
+  _page: ChangePage,
+): Promise<AdvanceResult> {
+  throw new Error("stage-outbox-batch@2 is not implemented");
+}
+
+/** Sender schema version 10: quiet change-origin advances (R18). */
+export const changeOriginMigration: Migration = Object.freeze({
+  version: 10,
+  async apply(_transaction: SenderDatabase): Promise<void> {
+    throw new Error("stage-outbox-batch@2 is not implemented");
+  },
+});
