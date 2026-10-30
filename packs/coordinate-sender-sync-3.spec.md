@@ -109,7 +109,7 @@ Fixtures migrate with an explicit list of migrations, including `stage-outbox-ba
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the TypeScript suite `coordinate-sender-sync-3.test.ts`, 18 tests;
+- the TypeScript suite `coordinate-sender-sync-3.test.ts`, 17 tests;
 - the Python contract suite `tests/acceptance/test_coordinate_sender_sync_3.py`, 2 tests;
 - the runner `tests/acceptance/run_coordinate_sender_sync_3.sh`. It runs the version 3 contract check, then `@2`'s bound runner unchanged, which runs `@1`'s, then the `@3` suite under the same process-group supervisor and a 60-second per-test timeout;
 - the Interface stub: the optional `quietChangeReads` field on `SenderSyncOptions`, a type with no behaviour.
@@ -118,7 +118,7 @@ The suite migrates with an explicit list of all ten Sender migrations to version
 
 The published `@2` module, with the stub, is the RED baseline. It ignores the option, so:
 - 8 new tests fail: the caller error, staging nothing, clearing a retried block, the advanced origin, refusals handled like staging refusals, an idle run's single checkpoint, the in-flight deadline and condition, and recovery;
-- 10 pass by design, because they pin behaviour the quiet path must keep:
+- 9 pass by design, because they pin behaviour the quiet path must keep:
   - the catch-up cycle;
   - `no-change` reporting;
   - ring rotation;
@@ -138,7 +138,7 @@ The published `@2` module, with the stub, is the RED baseline. It ignores the op
 - it retires the read's cycle identity, so the next run begins a fresh one;
 - it marks the type caught up.
 
-The reference passes all 18 new tests, `@2`'s runner with `@1`'s 76 and `@2`'s 12, and the whole Sender suite (771 and 398).
+The reference passes all 17 new tests, `@2`'s runner with `@1`'s 76 and `@2`'s 12, and the whole Sender suite (771 and 398).
 
 Seven mutants each fail at least one test:
 - a catch-up refusal failing the run;
@@ -155,6 +155,8 @@ The binding is:
   - `coordinate-sender-sync-3.test.ts`, `test_coordinate_sender_sync_3.py`, and the `@3` runner;
   - every file `coordinate-sender-sync-pack/2` binds: `coordinate-sender-sync-2.test.ts`, `test_coordinate_sender_sync_2.py`, `run_coordinate_sender_sync_2.sh`, and every file `coordinate-sender-sync-pack/1` binds;
   - the new suite also uses `support/synthetic-sync-sources.ts` and the 3ug substitutes, which `@1`'s binding already covers.
+
+**Gate B amendment.** GPT 6 Astra approved the freeze with one documentation amendment, made: the counts above were corrected to 17 tests, 8 failing and 9 passing at RED. One of the review's gaps extended an existing test rather than adding one.
 
 **Implementability review.** GPT 6.1 Sol's read-only review found nothing blocking: Sol's scratch implementation passed the runner and the whole Sender suite. A mutant survived each of its three coverage gaps, which are now tests:
 - a real advance refusal, after the attempt is replaced mid-read, handled as `sync-state-mismatch` exactly as staging handles it, with recovery afterwards;
