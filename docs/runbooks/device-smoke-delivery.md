@@ -16,7 +16,7 @@ Plan for about two hours. The background step can add an hour of waiting.
 **On the Mac**
 - A checkout of this repository at `origin/main`.
 - `fnm` with Node 26.11.1, and `uv`.
-- Android SDK platform-tools (`adb`) under `~/Library/Android/sdk`.
+- The Android SDK under `~/Library/Android/sdk`, with platform-tools (`adb`) and build-tools (`apksigner`).
 - The Tailscale app, signed in, with MagicDNS on.
 
 **On the phone**
@@ -83,14 +83,15 @@ The phone reaches the Mac at this name for two things:
 
 ## 3. Build, install, and connect the Sender
 
-Still in terminal D, build the development app:
+Still in terminal D, build and sign the development app:
 
 ```sh
 fnm exec --using=26.11.1 -- npm run prebuild --prefix sender
 fnm exec --using=26.11.1 -- npm run build:android --prefix sender
+fnm exec --using=26.11.1 -- npm run sign:android --prefix sender
 ```
 
-The first build downloads the pinned JDK and Android packages, and takes several minutes. It produces `sender/app/android/app/build/outputs/apk/debug/app-debug.apk`.
+The first build downloads the pinned JDK and Android packages, and takes several minutes. It produces an unsigned `app-debug-unsigned.apk`, which Android refuses to install. `sign:android` signs it into `sender/app/android/app/build/outputs/apk/debug/app-debug.apk`. It uses a development key in `~/.config/activity-tracker/android-debug.keystore`, outside the repository. It creates the key on first use and reuses it for every later build, so later builds install as updates. Set `ACTIVITY_TRACKER_DEBUG_KEYSTORE` to keep the key elsewhere.
 
 **Pair `adb` with the phone over Wi-Fi.** You do this once; the pairing survives reboots.
 1. On the phone, open *Developer options → Wireless debugging*. On Pixels, Developer options are under *Settings → System*. Turn Wireless debugging on, and allow the current network.
@@ -198,8 +199,9 @@ The proxy can keep running throughout. While the Portal is stopped, the phone se
 4. On the phone, open **Activity Tracker Sender**.
    - The development launcher appears the first time. Under **DEVELOPMENT SERVERS**, type `http://<portal-name>:8081` in the URL field and tap **Connect**.
    - If the launcher already lists a server it found on the network, expand **New development server** to reach the URL field.
-   - The launcher lists the app under recently opened apps afterwards.
+   - The launcher lists the app under recently opened apps afterwards. Whenever Android has stopped the app, opening it shows the launcher again: tap the app under **Recently opened**.
    - Allow notifications when asked.
+   - The first time, the development menu introduces itself in a sheet. Tap **Continue**, then close the menu.
 5. The screen reads **Enroll Sender**. Type the Portal URL exactly as `offer` printed it, then the enrollment code, and tap **Enroll**.
 6. **Expected:**
    - The title reads **Enrolled; awaiting confirmation**, and a 64-character fingerprint appears.
@@ -226,9 +228,11 @@ The proxy can keep running throughout. While the Portal is stopped, the phone se
    - If the phone's Health Connect lacks the history or background feature, the text instead says a Health Connect update is needed. Record which message you saw.
 3. Leave the access granted. Removing it is exercised later, in step 12.
 
+Returning from the Health Connect sheet starts the initial snapshot by itself, because every return to the foreground starts a Sync. Note the time you returned, and go straight on to step 7.
+
 ## 7. Initial snapshot
 
-1. Note the time, then tap **Sync now**.
+1. Watch terminal C for the snapshot that started when you returned from the Health Connect sheet. If no outbox line appears within a minute, tap **Sync now**.
 2. Watch terminal C. Each delivered message logs one `method=POST route=outbox … status=200 … ended=complete` line, and each line's `body=<k>#1` shows a first attempt.
 3. **Interrupt once.** While messages are still arriving, kill the app from terminal D:
    ```sh
@@ -236,7 +240,7 @@ The proxy can keep running throughout. While the Portal is stopped, the phone se
    ```
    Without `adb`, use *Settings → Apps → Activity Tracker Sender → Force stop* instead.
 
-   Reopen the app and tap **Sync now**.
+   Reopen the app, through **Recently opened** if the launcher appears. Reopening starts a Sync by itself.
    - **Expected:** delivery resumes where it stopped. Any `#2` attempt is a message the Portal may already hold, and the Portal treats it as a safe repeat.
    - If the snapshot finishes too quickly to interrupt, skip this and use the stall case in step 9 instead.
 4. Repeat **Sync now** until the Sync result reads **Sync finished.** and a tap delivers only one new outbox message. That message is the run's own Sync Checkpoint: every completed run stages one, so a caught-up Sync still delivers a single message. A large history takes several runs.
@@ -309,6 +313,8 @@ The **native retry** check spans every case, and the dropped-connection and redi
    adb shell cmd jobscheduler run -f org.activitytracker.sender <job-id>
    ```
    Find the line for the Sender's `androidx.work.impl.background.systemjob.SystemJobService` job. It looks like `JOB #u0a172/4: … org.activitytracker.sender/androidx.work…`, and `<job-id>` is the number **after the slash**, `4` in that example.
+
+   WorkManager schedules the next run under a new job id after every run, so run the `dumpsys` command again before each forced run. `Could not find job` means the id is stale.
 
    If forcing does not run anything, wait for Android instead. On battery, Android may defer the run well past 60 minutes. That is the realistic case: record how long it took.
 3. **Expected:**
@@ -410,6 +416,8 @@ The **native retry** check spans every case, and the dropped-connection and redi
 | The development launcher shows no app, or cannot connect | Metro is not running, the URL is not `http://<portal-name>:8081`, Tailscale is off on the phone, or the macOS firewall is blocking `node`. Check `http://<portal-name>:8081/status` in the phone's browser. |
 | `adb devices` lists nothing, or `adb connect` fails | Wireless debugging restarted with a new port, or the phone left the Mac's Wi-Fi. Read the current **IP address & Port** and run `adb connect` again. |
 | `The Portal is running: stop portal serve, then retry.` | Stop the Portal in terminal B, then rerun the helper command. |
+| `adb install` fails with `INSTALL_PARSE_FAILED_NO_CERTIFICATES` | The APK is unsigned. Run `npm run sign:android` and install `app-debug.apk`, not `app-debug-unsigned.apk`. |
+| `adb install` fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | The installed Sender was signed with another key. Run `adb uninstall org.activitytracker.sender` first. |
 
 ## Using USB instead
 
@@ -424,3 +432,26 @@ The cable replaces only the `adb` connection. Metro, the Portal, and the fault p
    It must list the phone as `device`.
 
 Unplug the cable before step 10, so the background run happens on battery. To force the job over USB, plug in only for the `cmd jobscheduler run` command, then unplug. Or wait for a natural run.
+
+## Rehearsing on the Android emulator
+
+You can rehearse the run on an Android Studio emulator before using the phone. Use Android 14 or later, with a Google APIs image that allows `adb root`. The steps stay the same, with these differences:
+
+- **Reaching the Mac.** The emulator has no Tailscale and cannot reach the Mac's Tailscale address. It reaches the Mac's loopback at `10.0.2.2` instead. The Sender accepts plain `http` only for `ts.net` names, so map `<portal-name>` to `10.0.2.2` in the emulator's hosts file. The mapping lasts until the emulator restarts:
+  ```sh
+  adb root
+  adb shell 'cp /system/etc/hosts /data/local/tmp/hosts && echo "10.0.2.2 <portal-name>" >> /data/local/tmp/hosts && chcon u:object_r:system_file:s0 /data/local/tmp/hosts && mount -o bind /data/local/tmp/hosts /system/etc/hosts'
+  ```
+- **The proxy address.** In step 4, start the fault proxy with `--listen 127.0.0.1:8765` instead of the Tailscale address.
+- **Screen lock.** Set one with `adb shell locksettings set-pin <pin>`.
+- **Health data.** The emulator's Health Connect starts empty. Without an app that writes synthetic records, every type reports no data, and step 8 cannot run.
+- **Battery.** For step 10, simulate battery power with `adb shell dumpsys battery unplug`.
+
+Afterwards, undo the changes:
+
+```sh
+adb shell umount /system/etc/hosts
+adb shell locksettings clear --old <pin>
+adb shell dumpsys battery reset
+adb unroot
+```
