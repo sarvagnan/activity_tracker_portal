@@ -106,19 +106,46 @@ Fixtures migrate with an explicit list of migrations, including `stage-outbox-ba
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the TypeScript suite `coordinate-sender-sync-3.test.ts`;
-- the Python contract suite `tests/acceptance/test_coordinate_sender_sync_3.py`;
-- the runner `tests/acceptance/run_coordinate_sender_sync_3.sh`, which runs the version 3 contract check, `@2`'s bound runner unchanged, and then the `@3` suite under the same supervisor and per-test timeout;
-- the Interface stub: the optional `quietChangeReads` option, a type with no behaviour.
+The Operator approved the draft. The executable pack adds:
+- the TypeScript suite `coordinate-sender-sync-3.test.ts`, 15 tests;
+- the Python contract suite `tests/acceptance/test_coordinate_sender_sync_3.py`, 2 tests;
+- the runner `tests/acceptance/run_coordinate_sender_sync_3.sh`. It runs the version 3 contract check, then `@2`'s bound runner unchanged, which runs `@1`'s, then the `@3` suite under the same process-group supervisor and a 60-second per-test timeout;
+- the Interface stub: the optional `quietChangeReads` field on `SenderSyncOptions`, a type with no behaviour.
 
-The published `@2` module, with that stub, is the RED baseline. It ignores the option. So:
-- every new test that enables it fails;
-- `without_the_option_quiet_reads_are_staged_as_in_r6` passes by design;
-- `@2`'s and `@1`'s suites pass.
+The suite migrates with an explicit list of all ten Sender migrations to version 10. It drives the published `stage-outbox-batch@2` through the coordinator, and the branch has merged it from `main`.
+
+The published `@2` module, with the stub, is the RED baseline. It ignores the option, so:
+- 8 new tests fail: the caller error, staging nothing, clearing a retried block, the advanced origin, refusals handled like staging refusals, an idle run's single checkpoint, the in-flight deadline and condition, and recovery;
+- 7 pass by design, because they pin behaviour the quiet path must keep:
+  - the catch-up cycle;
+  - `no-change` reporting;
+  - ring rotation;
+  - staging of reads with items;
+  - token freshness;
+  - rereading after a crash before the advance;
+  - the option off being `@2`;
+- `@2`'s 12 and `@1`'s 76 TypeScript tests pass;
+- all three Python contract suites pass.
+
+**The reference run.** A throwaway reference offers a quiet read to `advanceChangeOrigin`:
+- it falls back to staging on `catch-up-unstaged`;
+- it maps every other non-advance like a staging result;
+- it moves the type to the tail and clears its block;
+- it marks the type caught up.
+
+The reference passes all 15 new tests, `@2`'s runner with `@1`'s 76 and `@2`'s 12, and the whole Sender suite (771 and 398).
+
+Four mutants each fail at least one test:
+- a catch-up refusal failing the run;
+- the quiet path ignoring the option;
+- a quiet read keeping its ring place;
+- a quiet read keeping the block.
 
 The binding is:
 - **spec files:** this contract and pack, and `@2`'s and `@1`'s contracts and packs;
-- **test files:** the new suite, `test_coordinate_sender_sync_3.py`, the `@3` runner, and every file `coordinate-sender-sync-pack/2` binds.
+- **test files:**
+  - `coordinate-sender-sync-3.test.ts`, `test_coordinate_sender_sync_3.py`, and the `@3` runner;
+  - every file `coordinate-sender-sync-pack/2` binds: `coordinate-sender-sync-2.test.ts`, `test_coordinate_sender_sync_2.py`, `run_coordinate_sender_sync_2.sh`, and every file `coordinate-sender-sync-pack/1` binds;
+  - the new suite also uses `support/synthetic-sync-sources.ts` and the 3ug substitutes, which `@1`'s binding already covers.
 
-GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation adds the runner to the project CI `test` job.
+Implementation waits until `stage-outbox-batch@2` and `stage-sync-checkpoint@2` publish. GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation adds the runner to the project CI `test` job.

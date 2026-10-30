@@ -93,6 +93,11 @@ export interface SenderSyncOptions {
   readonly now: () => number;
   readonly monotonicNow: () => number;
   readonly randomUUID: () => string;
+  /**
+   * coordinate-sender-sync@3: advance quiet change reads through stage-outbox-batch@2 instead of staging them.
+   * Defaults to false, which keeps @2's behaviour. Interface stub: not yet implemented.
+   */
+  readonly quietChangeReads?: boolean;
 }
 
 export interface TriggerRequest {
