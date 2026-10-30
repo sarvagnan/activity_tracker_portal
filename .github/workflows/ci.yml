@@ -99,6 +99,8 @@ jobs:
         run: tests/acceptance/run_receipt_bound_delivery_1.sh
       - name: Run notify-operator-conditions@1 acceptance
         run: tests/acceptance/run_notify_operator_conditions_1.sh
+      - name: Run stage-outbox-batch@2 acceptance
+        run: tests/acceptance/run_stage_outbox_batch_2.sh
 
   vouch:
     needs: [test, sender]
