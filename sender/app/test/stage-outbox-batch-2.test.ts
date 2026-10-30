@@ -253,6 +253,20 @@ function failing(database: SenderDatabase, rule: { mutation?: number; queries?: 
   return wrap(database, false);
 }
 
+/** Runs `hook` on the inner database just before the first transaction opens, then delegates everything. */
+function beforeTransaction(inner: SenderDatabase, hook: () => Promise<void>): SenderDatabase {
+  let ran = false;
+  return {
+    execute: (sql: string, parameters?: readonly DatabaseValue[]) => inner.execute(sql, parameters),
+    query: (sql: string, parameters?: readonly DatabaseValue[]) => inner.query(sql, parameters),
+    async transaction<T>(fn: (transaction: SenderDatabase) => T | Promise<T>): Promise<T> {
+      if (!ran) { ran = true; await hook(); }
+      return inner.transaction(fn);
+    },
+    close: () => inner.close(),
+  };
+}
+
 /** A database whose every use throws and is counted, to prove a check comes before storage. */
 function untouchable(): { database: SenderDatabase; calls: () => number } {
   let calls = 0;
@@ -472,6 +486,22 @@ test("an_advance_during_sealing_makes_staging_conflict", async (t) => {
   assert.deepEqual((await outboxMessages(f.database)).map((row) => row.sequence), [1, 2], "only the snapshot and catch-up fragments");
 });
 
+test("an_unread_since_only_advance_during_sealing_makes_staging_conflict", async (t) => {
+  const f = await fixture(t);
+  const { origin } = await established(f);
+  const first = advanced(await advanceChangeOrigin(f.database, context(), quietPage(uuid(0xc2), origin.changesToken, "a")));
+  // A quiet read may return the token it was read from with a later unread-since instant, so only the
+  // advance's unread-since changes while the next page is being sealed.
+  const same = quietPage(uuid(0xc2), first.changesToken, "b", { nextChangesToken: first.changesToken, nextUnreadSinceMs: first.unreadSinceMs + 4000 });
+  let advance: AdvanceResult | undefined;
+  const spy = new SpyCipher(f.cipher, { 1: async () => { advance = await advanceChangeOrigin(f.database, context(), same); } });
+  assert.deepEqual(await stage(f, changePage(uuid(0xc3), first.changesToken), { cipher: spy }), { outcome: "conflict", failure: "staging-conflict" });
+  assert.ok(advance);
+  assert.deepEqual(advanced(advance), { snapshotId: origin.snapshotId, changesToken: first.changesToken, unreadSinceMs: first.unreadSinceMs + 4000 });
+  assert.equal(await cycleProgress(f.database, uuid(0xc3)), null);
+  assert.deepEqual((await outboxMessages(f.database)).map((row) => row.sequence), [1, 2], "only the snapshot and catch-up fragments");
+});
+
 test("a_new_attempt_ignores_the_old_advance", async (t) => {
   const f = await fixture(t);
   const { origin } = await established(f);
@@ -579,6 +609,31 @@ test("advance_refusals_write_nothing", async (t) => {
   assert.deepEqual(await contents(f.database), before);
 });
 
+test("the_advance_rechecks_currency_and_open_cycles_in_its_transaction", async (t) => {
+  const f = await fixture(t);
+  const { origin } = await established(f);
+  // A Change Cycle opens just before the advance's transaction does.
+  const opened = beforeTransaction(f.database, async () => {
+    staged(await stage(f, changePage(uuid(0xc3), origin.changesToken, { hasMore: true, nextChangesToken: token("c3-1") })));
+  });
+  assert.deepEqual(await advanceChangeOrigin(opened, context(), quietPage(uuid(0xc2), origin.changesToken, "a")),
+    { outcome: "refused", failure: "change-cycle-open" });
+  assert.deepEqual(await f.database.query("SELECT * FROM change_origin_advances"), []);
+  // A new attempt replaces the current one just before the advance's transaction opens.
+  const g = await fixture(t);
+  const second = await established(g);
+  let replacement: SnapshotAttempt | undefined;
+  const replaced = beforeTransaction(g.database, async () => {
+    replacement = await begin(g.database, "steps", uuid(0x52), { abandoning: uuid(0x51) });
+  });
+  const result = await advanceChangeOrigin(replaced, context(), quietPage(uuid(0xc2), second.origin.changesToken, "a"));
+  assert.equal(result.outcome, "refused", JSON.stringify(result));
+  assert.deepEqual(await g.database.query("SELECT * FROM change_origin_advances"), []);
+  assert.ok(replacement);
+  assert.deepEqual(await changeOrigin(g.database, "steps"),
+    { snapshotId: replacement.snapshotId, changesToken: replacement.changesToken, unreadSinceMs: replacement.unreadSinceMs });
+});
+
 test("advance_storage_errors_roll_back", async (t) => {
   const f = await fixture(t);
   const { origin } = await established(f);
@@ -613,6 +668,31 @@ test("a_database_below_version_ten_behaves_as_at_one", async (t) => {
   assert.deepEqual(await advanceChangeOrigin(database, context(), quietPage(uuid(0xc3), token("c2-next"), "a")),
     { outcome: "storage-failed", failure: "storage-failed" });
   assert.deepEqual(await contents(database), before);
+});
+
+test("a_failed_chained_advance_keeps_the_previous_origin", async (t) => {
+  const f = await fixture(t);
+  const { origin } = await established(f);
+  const first = advanced(await advanceChangeOrigin(f.database, context(), quietPage(uuid(0xc2), origin.changesToken, "a")));
+  const page = quietPage(uuid(0xc2), first.changesToken, "b");
+  const rules: Parameters<typeof failing>[1][] = [{ queries: true }, { transactionQueries: true }, { commit: true }];
+  // Fail each mutating statement in turn until the advance needs no more of them.
+  for (let mutation = 1; mutation <= 8; mutation++) rules.push({ mutation });
+  let succeeded = false;
+  for (const rule of rules) {
+    const before = await contents(f.database);
+    const result = await advanceChangeOrigin(failing(f.database, rule), context(), page);
+    if (result.outcome === "advanced") {
+      assert.ok(rule.mutation !== undefined && rule.mutation > 1, `only a mutation beyond the advance's last may let it succeed: ${JSON.stringify(rule)}`);
+      succeeded = true;
+      break;
+    }
+    assert.deepEqual(result, { outcome: "storage-failed", failure: "storage-failed" }, JSON.stringify(rule));
+    assert.deepEqual(await contents(f.database), before, JSON.stringify(rule));
+    assert.deepEqual(await changeOrigin(f.database, "steps"), first, JSON.stringify(rule));
+  }
+  assert.ok(succeeded, "the advance writes at most seven statements");
+  assert.equal((await changeOrigin(f.database, "steps"))?.changesToken, token("quiet-b"));
 });
 
 // R18 — The Sender schema migration, version 10

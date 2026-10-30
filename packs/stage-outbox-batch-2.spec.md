@@ -105,6 +105,7 @@ Tests:
 - `advances_chain_from_the_latest_origin`
 - `a_finished_later_cycle_supersedes_the_advance`
 - `an_advance_during_sealing_makes_staging_conflict`
+- `an_unread_since_only_advance_during_sealing_makes_staging_conflict`
 - `a_new_attempt_ignores_the_old_advance`
 - `an_advance_survives_reopening`
 - `a_database_below_version_ten_behaves_as_at_one`
@@ -122,13 +123,15 @@ An advance that cannot apply returns `refused` with a named failure, and writes 
 - `catch-up-unstaged`: no Change Cycle under the attempt has finished. The catch-up cycle after a snapshot is always staged, even when it is empty (ADR 0047), so the caller stages this read with `stageOutboxBatch`.
 - `page-position-mismatch`: `readFrom` is not the change origin.
 
-A database error at any point, including the commit, is `storage-failed`, and rolls back. Every refusal and failure leaves the whole database unchanged.
+A database error at any point, including the commit, is `storage-failed`, and rolls back. Every refusal and failure leaves the whole database unchanged, including an earlier advance that a failed later advance would have replaced.
 
 Tests:
 - `the_catch_up_cycle_is_never_skipped`
 - `a_page_that_is_not_quiet_is_refused`
 - `advance_refusals_write_nothing`, one case for each refusal
+- `the_advance_rechecks_currency_and_open_cycles_in_its_transaction`
 - `advance_storage_errors_roll_back`
+- `a_failed_chained_advance_keeps_the_previous_origin`
 
 ### R18 — The Sender schema migration, version 10
 
@@ -196,7 +199,7 @@ In addition:
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the TypeScript suite `stage-outbox-batch-2.test.ts`, 28 tests;
+- the TypeScript suite `stage-outbox-batch-2.test.ts`, 31 tests;
 - the Python contract suite `tests/acceptance/test_stage_outbox_batch_2.py`, 2 tests;
 - the runner `tests/acceptance/run_stage_outbox_batch_2.sh`. It runs the version 2 contract check, then `@1`'s bound runner unchanged, then the `@2` suite under a 60-second per-test timeout. It passes the suite only when a fresh JUnit report lists exactly its tests, none failed, errored, or skipped;
 - the Interface stub, appended to `sender/app/src/outbox/stage-outbox-batch.ts`: `OutboxBacklog`, `AdvanceResult`, the three functions, which throw, and `changeOriginMigration`, whose migration throws.
@@ -204,12 +207,12 @@ The Operator approved the draft. The executable pack adds:
 The suite migrates with the explicit list of all ten Sender migrations to version 10, because migrations must be contiguous from version 1. R16's below-version-10 test migrates to version 2 only.
 
 **The reference run.** A throwaway reference implementation was written before freeze. Its first run found a gap, now closed in R16. `@1`'s suite, and every published suite that stages through this module, migrate below version 10, so `changeOrigin` and `stageOutboxBatch` must behave as `@1` on a database without the advances table. After that, the reference passes:
-- all 28 new tests and `@1`'s 44 tests;
+- all 31 new tests and `@1`'s 44 tests;
 - both Python suites;
 - the whole Sender suite;
 - the typecheck.
 
-Twelve mutants of the reference each fail at least one test:
+Fourteen mutants of the reference each fail at least one test:
 - skipping the catch-up check;
 - `changeOrigin` ignoring advances;
 - staging's origin check ignoring advances;
@@ -222,10 +225,12 @@ Twelve mutants of the reference each fail at least one test:
 - the quiet check ignoring `hasMore`;
 - the advance ignoring the installation;
 - the migration without its lineage check.
+- the recheck comparing only the advance's token;
+- the advance checking currency and open cycles before its transaction, and only the origin inside it.
 
 **RED against the stub:**
-- all 28 new TypeScript tests fail:
-  - 26 because the stub migration fails and the fixture expects version 10;
+- all 31 new TypeScript tests fail:
+  - 29 because the stub migration fails and the fixture expects version 10;
   - `new_caller_errors_touch_no_storage`, because the stub throws a plain `Error` rather than `TypeError`;
   - `a_database_below_version_ten_behaves_as_at_one`, because the stub advance throws;
 - `@1`'s 44 TypeScript tests pass;
@@ -237,7 +242,12 @@ The binding is:
   - `stage-outbox-batch-2.test.ts`, `test_stage_outbox_batch_2.py`, and the `@2` runner;
   - every file `stage-outbox-batch-pack/2` binds: `stage-outbox-batch-1.test.ts`, its 3ug substitutes `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`, `test_stage_outbox_batch_1.py`, and `run_stage_outbox_batch_1.sh`.
 
-GPT 6.1 Sol's read-only implementability review runs before Gate B. The approver confirms in implementation review that:
+**Implementability review.** GPT 6.1 Sol's read-only review found nothing blocking: Sol could implement against the pack as written. Its three coverage gaps are added as tests:
+- the advance's currency and open-cycle checks must read inside its transaction, so a cycle opened, or an attempt replaced, just before that transaction opens is refused;
+- a failed advance that would replace an earlier one leaves the earlier one and the reported origin unchanged, for every injected read, write, and commit failure;
+- an advance during sealing that keeps the token but changes the unread-since instant still makes staging `staging-conflict`.
+
+The approver confirms in implementation review that:
 - `changeOriginMigration` is registered tenth in `senderMigrations`, the only permitted change to `sender/app/src/storage/migrations.ts`;
 - the 3ug storage test's production-migration expectation is updated to version 10 and the new table.
 
