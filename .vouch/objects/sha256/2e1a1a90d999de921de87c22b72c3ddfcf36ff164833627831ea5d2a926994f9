@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"OpenInCiMarked","pack_digest":"","payload":{"name":"stage-sync-checkpoint@2","reason":"stage-sync-checkpoint@2 is frozen and awaits implementation on stage-outbox-batch@2's backlog read"},"prev":"f05ba543778102d4b6a2969baf1c34e2a5597137d4aa3d3de9b77e50d79844ae","recorded_at":"2026-10-30T09:08:42+00:00","revision":375,"run_id":""}

@@ -1,0 +1,1 @@
+{"actor":"claude","event":"OpenInCiMarked","pack_digest":"","payload":{"name":"manage-sender-enrollment@2","reason":"manage-sender-enrollment@2 is frozen and awaits implementation on stage-outbox-batch@2's backlog reads"},"prev":"dc6482341007d6723371c4d9aff7939273b4afee99eb84d9305eb25cc5b344c4","recorded_at":"2026-10-30T09:41:03+00:00","revision":391,"run_id":""}
