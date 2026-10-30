@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
-import { decodeMessage, encodeMessage, messageSha256 } from "@activity-tracker-portal/ingest-protocol";
+import { decodeMessage, encodeMessage, installationFingerprint, messageSha256 } from "@activity-tracker-portal/ingest-protocol";
 import { createOutboxSender, deliveryMigration } from "../src/delivery/send-outbox-message.ts";
 import type { SendResult } from "../src/delivery/send-outbox-message.ts";
 import { createSenderEnrollment, enrollmentMigration } from "../src/enrollment/manage-sender-enrollment.ts";
@@ -271,10 +271,18 @@ test("reads_do_not_grow_with_the_outbox", async (t) => {
 
 test("status_matches_the_outbox_oracle", async (t) => {
   const f = await fixture(t);
+  let phase: "enrolled" | "draining" = "enrolled";
   const check = async (label: string) => {
-    const status = await statusOf(f.sender);
-    const expected = await oracle(f);
-    assert.deepEqual({ confirmed: status.confirmed, finalSequence: status.finalSequence }, expected, label);
+    // The whole status: the Outbox-derived answers from the oracle, and every other field as @1's R7 and R8 fix them.
+    assert.deepEqual(await statusOf(f.sender), {
+      installationId: IDENTITY, fingerprint: installationFingerprint(IDENTITY), keyAlias: ALIAS, portalUrl: PORTAL_URL,
+      phase, refusal: null, ...(await oracle(f)),
+      stagingContext: {
+        installationId: IDENTITY, keyAlias: ALIAS,
+        generation: { generation: 1, maxRecordCount: 4, maxMessageBytes: 65_536, projectionSchemas: { steps: [1] } },
+      },
+      deliveryContext: { installationId: IDENTITY, keyAlias: ALIAS, portalUrl: PORTAL_URL },
+    }, label);
   };
   await toPhase(f, "enrolled");
   await check("enrolled, acknowledgement queued");
@@ -289,6 +297,7 @@ test("status_matches_the_outbox_oracle", async (t) => {
   await remove(f.database, IDENTITY, 2);
   await check("a removal at the head");
   assert.deepEqual(await f.sender.beginDrain(), { outcome: "draining" });
+  phase = "draining";
   await check("draining with queued messages");
   for (const sequence of [3, 5, 6]) {
     await remove(f.database, IDENTITY, sequence);

@@ -42,7 +42,7 @@ Tests (Python): `test_governed_scope_contract_has_required_shape`, `test_scope_m
 - `enrolled`, before and after confirmation;
 - `draining`, with and without queued messages.
 
-That holds for an installation that has queued messages, and alongside another installation's rows. An observing database wrapper records every row any query returns. No recorded row may have a `sealed` key. Also, the number of byte-array values the operation receives must be the same with an empty Outbox as with 500 queued messages. The enrollment row's own stored bytes are allowed.
+That holds for an installation that has queued messages, and alongside another installation's rows. An observing database wrapper records every row any query returns. No recorded row may have a `sealed` key. Also, the number of byte-array values `status()` and `beginDrain()` receive must be the same with an empty Outbox as with 500 queued messages. `unlink()`'s may be fewer with 500 queued, never more, because it then refuses instead of destroying, and reads less. The enrollment row's own stored bytes are allowed.
 
 Tests:
 - `status_loads_no_sealed_message`
@@ -52,7 +52,7 @@ Tests:
 
 ### R17 — The same answers
 
-For every state the tests build, `status()` returns exactly what `@1`'s derivation gives, which the tests compute from `outboxMessages` as the oracle. That covers `confirmed`, `finalSequence`, `phase`, and both contexts.
+For every state the tests build, `status()` returns exactly what `@1`'s derivation gives, which the tests compute from `outboxMessages` as the oracle. The tests compare the whole status at every step: `confirmed` and `finalSequence` from the oracle, and `phase`, both contexts, and every other field as `@1` fixes them.
 
 The tests build those states with a scripted mix of steps:
 - staging;
@@ -121,6 +121,10 @@ The binding is:
 - **test files:**
   - `manage-sender-enrollment-2.test.ts`, `test_manage_sender_enrollment_2.py`, and the `@2` runner;
   - every file `manage-sender-enrollment-pack/1` binds, as rebound: `manage-sender-enrollment-1.test.ts`, its 3ug substitutes `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`, `test_manage_sender_enrollment_1.py`, and `run_manage_sender_enrollment_1.sh`.
+
+**Gate B amendments.** GPT 6 Astra approved the freeze, and the rebind, with two pre-freeze amendments, both made:
+- R17's test compares the whole status, including phase and both contexts, at every step;
+- R16 states that unlink's byte-array count may fall but never rise, while status and drain keep exact equality.
 
 **Implementability review.** GPT 6.1 Sol's read-only review found nothing blocking. Sol's scratch implementation on `outboxHolds` and `outboxBacklog` passes the whole runner, including `@1`'s rebound boundary test. Its two coverage gaps are added; a mutant survived each:
 - a recorded acknowledgement other than sequence 1, against a mutant that always asks about sequence 1;
