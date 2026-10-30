@@ -322,3 +322,9 @@ The binding is:
   - its 3ug substitutes, `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`;
   - `test_manage_sender_enrollment_1.py`;
   - the runner.
+
+## Rebind after publication
+
+On the Operator's decision of 2026-10-30, this pack was rebound after publication. Its boundary test, `the_module_stays_inside_its_boundary`, allowed the module to import only four functions from `stage-outbox-batch`: `appendOutboxMessages`, `lastOutboxSequence`, `outboxMessages`, and `outboxAad`. Its successor `manage-sender-enrollment@2` answers status, drain, and unlink through `stage-outbox-batch@2`'s backlog reads, `outboxBacklog` and `outboxHolds`, so that no read loads a sealed Outbox message (Beads `mfv`, `636`). The `@2` pack re-runs this suite unchanged.
+
+The rebind changes only that allowlist, which gains those two names. The test still forbids the module to name any other unit's table, and still limits its imports to the Outbox's own functions. Every requirement, decision, test name, and assertion about this unit's behavior is unchanged.

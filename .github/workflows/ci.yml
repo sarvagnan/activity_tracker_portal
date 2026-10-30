@@ -97,6 +97,8 @@ jobs:
         run: tests/acceptance/run_send_outbox_message_1.sh
       - name: Run manage-sender-enrollment@1 acceptance
         run: tests/acceptance/run_manage_sender_enrollment_1.sh
+      - name: Run manage-sender-enrollment@2 acceptance
+        run: tests/acceptance/run_manage_sender_enrollment_2.sh
       - name: Run receipt-bound-delivery@1 acceptance
         run: tests/acceptance/run_receipt_bound_delivery_1.sh
       - name: Run notify-operator-conditions@1 acceptance
