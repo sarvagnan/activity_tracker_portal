@@ -47,7 +47,7 @@ For every Outbox state the tests build, the staged checkpoint opens to exactly t
 - removals at the head and in the middle;
 - a previous checkpoint.
 
-R6's recheck still detects every competing change it detects in `@1`, now through the backlog read: a change to the counts, the byte total, the high-water mark, or the checkpoint record.
+R6's recheck still detects every competing change it detects in `@1`, now through the backlog read: a change to the counts, the byte total, the high-water mark alone, or the checkpoint record. A message appended and removed while sealing leaves the counts unchanged and moves only the high-water mark, and still conflicts.
 
 Tests: `checkpoint_counts_match_the_outbox_oracle`, `the_recheck_still_detects_every_change`.
 
@@ -78,6 +78,10 @@ There is no new Interface stub. The published `@1` module is the RED baseline, a
 - R12's 2 tests pass by design, because they pin that `@2` keeps `@1`'s checkpoint;
 - `@1`'s 24 tests pass;
 - both Python suites pass.
+
+**Implementability review.** GPT 6.1 Sol's read-only review found nothing blocking. Sol's scratch implementation on `outboxBacklog` passes the whole runner. Its two coverage gaps are added:
+- R12 now compares each staged checkpoint's exact plaintext bytes with an independently encoded expectation;
+- the recheck test isolates a change to the high-water mark alone.
 
 **The reference run.** A throwaway reference calls `stage-outbox-batch@2`'s `outboxBacklog`, taken from that unit's own throwaway reference, in place of `outboxMessages`. It passes all 5 new tests and `@1`'s 24.
 

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
-import { decodeMessage } from "@activity-tracker-portal/ingest-protocol";
+import { decodeMessage, encodeMessage } from "@activity-tracker-portal/ingest-protocol";
 import type { CipherResult, InstallationCipher, InstallationKeyStatus } from "../src/installation-cipher.ts";
 import { appendOutboxMessages, lastOutboxSequence, outboxAad, outboxMessages, outboxMigration } from "../src/outbox/stage-outbox-batch.ts";
 import type { OutboxKind, StagingContext } from "../src/outbox/stage-outbox-batch.ts";
@@ -77,14 +77,28 @@ async function oracle(database: SenderDatabase, installationId: string) {
   return { messages: rows.length, bytes: rows.reduce((sum, row) => sum + row.messageBytes, 0) };
 }
 
-/** The decoded checkpoint the installation staged for a run. */
-async function decodedCheckpoint(f: Fixture, sequence: number, installationId = INSTALLATION) {
+/** The plaintext bytes of the checkpoint the installation staged at `sequence`. */
+async function checkpointBytes(f: Fixture, sequence: number, installationId = INSTALLATION): Promise<Uint8Array> {
   const [row] = (await outboxMessages(f.database)).filter((entry) => entry.installationId === installationId && entry.sequence === sequence);
   assert.ok(row, `checkpoint at ${sequence}`);
   assert.equal(row.kind, "sync-checkpoint");
   const plain = await f.cipher.open(KEY_ALIAS, row.sealed, outboxAad(installationId, sequence));
   assert.equal(plain.status, "ok");
-  return decodeMessage((plain as { value: Uint8Array }).value) as unknown as Record<string, unknown>;
+  return (plain as { value: Uint8Array }).value;
+}
+
+/** The exact checkpoint @1 stages for `summary(runSequence)` with the given pre-checkpoint counts (@1's R2). */
+function expectedCheckpoint(installationId: string, sequence: number, runSequence: number, counts: { messages: number; bytes: number }): Uint8Array {
+  return encodeMessage({
+    wire_version: 1, kind: "sync-checkpoint", sender_installation: installationId, sequence, capability_generation: 6,
+    run_sequence: runSequence, trigger: "background", started_at: new Date(STARTED).toISOString(), ended_at: new Date(ENDED).toISOString(),
+    elapsed_ms: 269_884, background_scheduling: "available",
+    record_types: [
+      { record_type: "steps", outcome: "progressed", reason: "time-budget-reached", source_data_staged: true },
+      { record_type: "weight", outcome: "no-change", source_data_staged: false },
+    ],
+    outbox_messages_before_checkpoint: counts.messages, outbox_bytes_before_checkpoint: counts.bytes,
+  });
 }
 
 /** The whole database: the schema version, every schema object, and every row of every table, sealed bytes included. */
@@ -239,22 +253,26 @@ test("checkpoint_counts_match_the_outbox_oracle", async (t) => {
     const result = await stage(f, summary(run));
     assert.equal(result.outcome, "staged", JSON.stringify(result));
     const sequence = await lastOutboxSequence(f.database, INSTALLATION);
-    const message = await decodedCheckpoint(f, sequence);
-    assert.equal(message.outbox_messages_before_checkpoint, expected.messages, `run ${run}`);
-    assert.equal(message.outbox_bytes_before_checkpoint, expected.bytes, `run ${run}`);
+    const bytes = await checkpointBytes(f, sequence);
+    assert.deepEqual(bytes, expectedCheckpoint(INSTALLATION, sequence, run, expected), `run ${run}: the exact checkpoint bytes`);
+    const message = decodeMessage(bytes) as unknown as Record<string, unknown>;
+    assert.deepEqual([message.outbox_messages_before_checkpoint, message.outbox_bytes_before_checkpoint], [expected.messages, expected.bytes], `run ${run}`);
     run++;
   }
   // The other installation's checkpoint counts only its own rows, including none of this one's.
   const expected = await oracle(f.database, OTHER_INSTALLATION);
   assert.equal((await stage(f, summary(1), { installationId: OTHER_INSTALLATION })).outcome, "staged");
-  const message = await decodedCheckpoint(f, await lastOutboxSequence(f.database, OTHER_INSTALLATION), OTHER_INSTALLATION);
-  assert.equal(message.outbox_messages_before_checkpoint, expected.messages);
-  assert.equal(message.outbox_bytes_before_checkpoint, expected.bytes);
+  const otherSequence = await lastOutboxSequence(f.database, OTHER_INSTALLATION);
+  assert.deepEqual(await checkpointBytes(f, otherSequence, OTHER_INSTALLATION), expectedCheckpoint(OTHER_INSTALLATION, otherSequence, 1, expected));
 });
 
 test("the_recheck_still_detects_every_change", async (t) => {
   const changes: [string, (database: SenderDatabase) => Promise<void>][] = [
     ["a new message raises the count and the high-water mark", (database) => queue(database, INSTALLATION, ["ingest-batch", 50])],
+    ["a message appended and removed moves only the high-water mark", async (database) => {
+      await queue(database, INSTALLATION, ["ingest-batch", 50]);
+      await remove(database, INSTALLATION, await lastOutboxSequence(database, INSTALLATION));
+    }],
     ["a removed message lowers the count only", (database) => remove(database, INSTALLATION, 2)],
     ["a changed byte length moves only the byte total", (database) => database.execute(
       "UPDATE outbox_messages SET message_bytes = message_bytes + 1 WHERE installation_id = ? AND sequence = 1", [INSTALLATION])],
