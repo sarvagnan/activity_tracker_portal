@@ -204,6 +204,7 @@ export interface ChangeOrigin {
 /**
  * The final token of the latest finished Change Cycle under the record type's current snapshot
  * attempt, or else that attempt's pre-read token, each with its unread-since instant.
+ * A quiet advance overrides that origin while its finished-cycle lineage still matches.
  */
 export async function changeOrigin(database: SenderDatabase, recordType: string): Promise<ChangeOrigin | null> {
   const attempt = await currentSnapshotAttempt(database, recordType);
@@ -212,10 +213,25 @@ export async function changeOrigin(database: SenderDatabase, recordType: string)
     "SELECT * FROM cycle_progress WHERE snapshot_id = ? AND lineage > 0 AND finished = 1 ORDER BY lineage DESC LIMIT 1",
     [attempt.snapshotId],
   );
+  return originFromState(attempt, latest ?? null, await advanceRow(database, attempt.snapshotId));
+}
+
+/** Probe the schema rather than swallowing a failed read: other storage errors must propagate. */
+async function advanceRow(database: SenderDatabase, snapshotId: string, requireTable = false): Promise<DatabaseRow | null> {
+  if (!requireTable) {
+    const [table] = await database.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'change_origin_advances'");
+    if (!table) return null;
+  }
+  const [row] = await database.query("SELECT * FROM change_origin_advances WHERE snapshot_id = ?", [snapshotId]);
+  return row ?? null;
+}
+
+function originFromState(attempt: SnapshotAttempt, latest: DatabaseRow | null, advance: DatabaseRow | null): ChangeOrigin {
+  const source = advance && advance.after_lineage === latest?.lineage ? advance : latest;
   return {
     snapshotId: attempt.snapshotId,
-    changesToken: latest ? latest.changes_token as string : attempt.changesToken,
-    unreadSinceMs: latest ? latest.unread_since_ms as number : attempt.unreadSinceMs,
+    changesToken: source ? source.changes_token as string : attempt.changesToken,
+    unreadSinceMs: source ? source.unread_since_ms as number : attempt.unreadSinceMs,
   };
 }
 
@@ -331,6 +347,7 @@ interface StagingState {
   readonly cycle: DatabaseRow | null;
   readonly snapshot: DatabaseRow | null;
   readonly latest: DatabaseRow | null;
+  readonly advance: DatabaseRow | null;
   readonly lastSequence: number;
 }
 
@@ -339,20 +356,23 @@ async function progressRow(database: SenderDatabase, cycleId: string): Promise<D
   return row ?? null;
 }
 
-async function readState(database: SenderDatabase, context: StagingContext, page: ObservedPage): Promise<StagingState> {
+async function readState(database: SenderDatabase, context: StagingContext, page: ObservedPage, advancing = false): Promise<StagingState> {
   const attempt = await currentSnapshotAttempt(database, page.recordType);
   const cycle = await progressRow(database, page.cycleId);
   const namedAttempt = page.source === "change" ? await snapshotAttempt(database, page.cycleId) : null;
   let snapshot: DatabaseRow | null = null;
   let latest: DatabaseRow | null = null;
-  if (page.source === "change" && !cycle && attempt) {
+  let advance: DatabaseRow | null = null;
+  if (page.source === "change" && (!cycle || advancing) && attempt) {
     snapshot = await progressRow(database, attempt.snapshotId);
     const [row] = await database.query(
       "SELECT * FROM cycle_progress WHERE snapshot_id = ? AND lineage > 0 ORDER BY lineage DESC LIMIT 1", [attempt.snapshotId],
     );
     latest = row ?? null;
+    advance = await advanceRow(database, attempt.snapshotId, advancing);
   }
-  return { attempt, namedAttempt, cycle, snapshot, latest, lastSequence: await lastOutboxSequence(database, context.installationId) };
+  if (advancing && !attempt) await advanceRow(database, page.cycleId, true);
+  return { attempt, namedAttempt, cycle, snapshot, latest, advance, lastSequence: await lastOutboxSequence(database, context.installationId) };
 }
 
 function cycleRefusal(state: StagingState, context: StagingContext, page: ObservedPage): string | null {
@@ -374,7 +394,7 @@ function cycleRefusal(state: StagingState, context: StagingContext, page: Observ
   if (page.pageIndex !== (cycle ? cycle.pages_staged as number : 0) + 1) return "page-position-mismatch";
   if (page.source === "snapshot") {
     if (!sameBytes(page.readFrom, cycle ? cycle.position as Uint8Array : null)) return "page-position-mismatch";
-  } else if (page.readFrom !== (cycle?.changes_token ?? latest?.changes_token ?? attempt.changesToken)) {
+  } else if (page.readFrom !== (cycle?.changes_token ?? originFromState(attempt, latest, state.advance).changesToken)) {
     return "page-position-mismatch";
   }
   return null;
@@ -398,7 +418,8 @@ function sameFields(left: object | null, right: object | null): boolean {
 function sameState(left: StagingState, right: StagingState): boolean {
   return left.lastSequence === right.lastSequence && sameFields(left.attempt, right.attempt) &&
     sameFields(left.namedAttempt, right.namedAttempt) && sameFields(left.cycle, right.cycle) &&
-    sameFields(left.snapshot, right.snapshot) && sameFields(left.latest, right.latest);
+    sameFields(left.snapshot, right.snapshot) && sameFields(left.latest, right.latest) &&
+    sameFields(left.advance, right.advance);
 }
 
 function progressFromRow(row: DatabaseRow): CycleProgress {
@@ -493,3 +514,99 @@ function base64(bytes: Uint8Array): string {
   }
   return encoded;
 }
+
+/** One installation's queued Outbox Messages, counted without loading any sealed message. */
+export interface OutboxBacklog {
+  readonly messageCount: number;
+  /** The sum of the queued messages' plaintext byte lengths. */
+  readonly byteCount: number;
+}
+
+export type AdvanceResult =
+  | { readonly outcome: "advanced"; readonly origin: ChangeOrigin }
+  | { readonly outcome: "refused" | "storage-failed"; readonly failure: string };
+
+/** The installation's queued message count and byte total, without loading sealed bytes (R14). */
+export async function outboxBacklog(database: SenderDatabase, installationId: string): Promise<OutboxBacklog> {
+  checkUuid(installationId);
+  const [row] = await database.query(
+    "SELECT COUNT(*) AS message_count, COALESCE(SUM(message_bytes), 0) AS byte_count FROM outbox_messages WHERE installation_id = ?",
+    [installationId],
+  );
+  return { messageCount: row.message_count as number, byteCount: row.byte_count as number };
+}
+
+/** Whether the installation's message with this sequence is still queued, without loading sealed bytes (R15). */
+export async function outboxHolds(database: SenderDatabase, installationId: string, sequence: number): Promise<boolean> {
+  checkUuid(installationId);
+  if (!positive(sequence)) throw new TypeError("Invalid Outbox sequence");
+  const [row] = await database.query(
+    "SELECT 1 AS present FROM outbox_messages WHERE installation_id = ? AND sequence = ?", [installationId, sequence],
+  );
+  return row !== undefined;
+}
+
+/** Advance the record type's change origin past a quiet change read, staging nothing (R16, R17). */
+export async function advanceChangeOrigin(
+  database: SenderDatabase,
+  context: StagingContext,
+  page: ChangePage,
+): Promise<AdvanceResult> {
+  validateInputs(context, page);
+  if (page.source !== "change") throw new TypeError("Invalid change page source");
+  if (page.pageIndex !== 1 || page.items.length !== 0 || page.hasMore) {
+    return { outcome: "refused", failure: "change-page-not-quiet" };
+  }
+  const schemas = context.generation.projectionSchemas;
+  if (!Object.prototype.hasOwnProperty.call(schemas, page.recordType) || !schemas[page.recordType].includes(page.projectionSchemaVersion)) {
+    return { outcome: "refused", failure: "projection-schema-unsupported" };
+  }
+  try {
+    return await database.transaction<AdvanceResult>(async (transaction) => {
+      const state = await readState(transaction, context, page, true);
+      const { attempt, cycle, snapshot, latest } = state;
+      let failure: string | null = null;
+      if (!attempt || attempt.abandonedAtMs !== null || state.namedAttempt ||
+          (cycle && (cycle.record_type !== page.recordType || cycle.cycle_kind !== "change-cycle" || cycle.snapshot_id !== attempt.snapshotId))) {
+        failure = "cycle-not-current";
+      } else if (attempt.installationId !== context.installationId || (cycle && cycle.installation_id !== context.installationId)) {
+        failure = "installation-mismatch";
+      } else if (cycle?.finished === 1) {
+        failure = "cycle-finished";
+      } else if (snapshot?.finished !== 1) {
+        failure = "snapshot-unfinished";
+      } else if (cycle || (latest && latest.finished !== 1)) {
+        failure = "change-cycle-open";
+      } else if (!latest) {
+        failure = "catch-up-unstaged";
+      } else if (page.readFrom !== originFromState(attempt, latest, state.advance).changesToken) {
+        failure = "page-position-mismatch";
+      }
+      if (failure) return { outcome: "refused", failure };
+      await transaction.execute(
+        `INSERT INTO change_origin_advances (snapshot_id, record_type, after_lineage, changes_token, unread_since_ms)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (snapshot_id) DO UPDATE SET after_lineage = excluded.after_lineage,
+            changes_token = excluded.changes_token, unread_since_ms = excluded.unread_since_ms`,
+        [attempt!.snapshotId, page.recordType, latest!.lineage, page.nextChangesToken, page.nextUnreadSinceMs],
+      );
+      return { outcome: "advanced", origin: {
+        snapshotId: attempt!.snapshotId, changesToken: page.nextChangesToken, unreadSinceMs: page.nextUnreadSinceMs,
+      } };
+    });
+  } catch {
+    return { outcome: "storage-failed", failure: "storage-failed" };
+  }
+}
+
+/** Sender schema version 10: quiet change-origin advances (R18). */
+export const changeOriginMigration: Migration = Object.freeze({
+  version: 10,
+  async apply(transaction: SenderDatabase): Promise<void> {
+    await transaction.execute(`CREATE TABLE change_origin_advances (
+      snapshot_id TEXT PRIMARY KEY NOT NULL, record_type TEXT NOT NULL,
+      after_lineage INTEGER NOT NULL CHECK (after_lineage > 0),
+      changes_token TEXT NOT NULL, unread_since_ms INTEGER NOT NULL,
+      FOREIGN KEY (snapshot_id, record_type) REFERENCES snapshot_attempts (snapshot_id, record_type)) STRICT;`);
+  },
+});

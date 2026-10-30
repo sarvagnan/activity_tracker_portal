@@ -248,9 +248,9 @@ test("safe integer limits match protocol numbers exactly and reject larger or fr
   await assert.rejects(database.query("SELECT 1.5 AS value"), TypeError);
 });
 
-test("production migrations create only the sixteen version nine tables and automatic indexes", async (t) => {
+test("production migrations create only the seventeen version ten tables and automatic indexes", async (t) => {
   const { snapshotAttemptsMigration } = await import("../src/snapshot/begin-initial-snapshot.ts");
-  const { outboxMigration } = await import("../src/outbox/stage-outbox-batch.ts");
+  const { outboxMigration, changeOriginMigration } = await import("../src/outbox/stage-outbox-batch.ts");
   const { completionMigration } = await import("../src/outbox/stage-sync-completion.ts");
   const { checkpointMigration } = await import("../src/outbox/stage-sync-checkpoint.ts");
   const { syncMigration } = await import("../src/sync/coordinate-sender-sync.ts");
@@ -259,11 +259,19 @@ test("production migrations create only the sixteen version nine tables and auto
   const { enrollmentMigration } = await import("../src/enrollment/manage-sender-enrollment.ts");
   const { operatorConditionsMigration } = await import("../src/notifications/notify-operator-conditions.ts");
   const { database } = await fixture(t);
-  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration, deliveryMigration, enrollmentMigration, operatorConditionsMigration]);
-  assert.deepEqual(await migrate(database), { status: "ready", version: 9 });
+  assert.deepEqual(senderMigrations, [snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration, deliveryMigration, enrollmentMigration, operatorConditionsMigration, changeOriginMigration]);
+  assert.deepEqual(await migrate(database), { status: "ready", version: 10 });
   const schema = await database.query("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name");
   const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
   assert.deepEqual(schema.map((row) => ({ ...row, sql: typeof row.sql === "string" ? normalize(row.sql) : row.sql })), [
+    {
+      type: "table", name: "change_origin_advances", tbl_name: "change_origin_advances",
+      sql: normalize(`CREATE TABLE change_origin_advances (
+        snapshot_id TEXT PRIMARY KEY NOT NULL, record_type TEXT NOT NULL,
+        after_lineage INTEGER NOT NULL CHECK (after_lineage > 0),
+        changes_token TEXT NOT NULL, unread_since_ms INTEGER NOT NULL,
+        FOREIGN KEY (snapshot_id, record_type) REFERENCES snapshot_attempts (snapshot_id, record_type)) STRICT`),
+    },
     {
       type: "table", name: "current_snapshot_attempts", tbl_name: "current_snapshot_attempts",
       sql: normalize(`CREATE TABLE current_snapshot_attempts (
@@ -381,6 +389,7 @@ test("production migrations create only the sixteen version nine tables and auto
         changes_token TEXT NOT NULL, unread_since_ms INTEGER NOT NULL, begun_at_ms INTEGER NOT NULL,
         abandoned_at_ms INTEGER, UNIQUE (snapshot_id, record_type)) STRICT`),
     },
+    { type: "index", name: "sqlite_autoindex_change_origin_advances_1", tbl_name: "change_origin_advances", sql: null },
     { type: "index", name: "sqlite_autoindex_current_snapshot_attempts_1", tbl_name: "current_snapshot_attempts", sql: null },
     { type: "index", name: "sqlite_autoindex_current_snapshot_attempts_2", tbl_name: "current_snapshot_attempts", sql: null },
     { type: "index", name: "sqlite_autoindex_cycle_completions_1", tbl_name: "cycle_completions", sql: null },

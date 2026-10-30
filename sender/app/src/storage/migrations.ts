@@ -3,7 +3,7 @@ import { deliveryMigration } from "../delivery/send-outbox-message.ts";
 import { operatorConditionsMigration } from "../notifications/notify-operator-conditions.ts";
 import { checkpointMigration } from "../outbox/stage-sync-checkpoint.ts";
 import { completionMigration } from "../outbox/stage-sync-completion.ts";
-import { outboxMigration } from "../outbox/stage-outbox-batch.ts";
+import { changeOriginMigration, outboxMigration } from "../outbox/stage-outbox-batch.ts";
 import { schedulingMigration } from "../scheduling/schedule-background-polling.ts";
 import { snapshotAttemptsMigration } from "../snapshot/begin-initial-snapshot.ts";
 import { syncMigration } from "../sync/coordinate-sender-sync.ts";
@@ -17,8 +17,8 @@ export type MigrationResult =
   | { status: "ready"; version: number }
   | { status: "frozen"; version: number; reason: "migration-failed" | "newer-schema" };
 
-/** Governed units append migrations: snapshot attempts, then the Sender Outbox and cycle progress, then cycle completions, then run checkpoints, then synchronization runs, ring, cycles, and blocks, then background scheduling state, then outbox head blocks, then enrollment state, then Operator conditions. */
-export const senderMigrations: readonly Migration[] = Object.freeze([snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration, deliveryMigration, enrollmentMigration, operatorConditionsMigration]);
+/** Governed units append migrations: snapshot attempts, then the Sender Outbox and cycle progress, then cycle completions, then run checkpoints, then synchronization runs, ring, cycles, and blocks, then background scheduling state, then outbox head blocks, then enrollment state, then Operator conditions, then change-origin advances. */
+export const senderMigrations: readonly Migration[] = Object.freeze([snapshotAttemptsMigration, outboxMigration, completionMigration, checkpointMigration, syncMigration, schedulingMigration, deliveryMigration, enrollmentMigration, operatorConditionsMigration, changeOriginMigration]);
 
 export async function migrate(
   database: SenderDatabase,
