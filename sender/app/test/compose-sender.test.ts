@@ -561,18 +561,188 @@ test("retryable delivery stops after one attempt and never changes a successful 
   assert.equal(p.requests.length, 2);
 });
 
-test("each loop is bounded and another trigger drains the remainder", async (t) => {
+test("one manual trigger drains MAX_DELIVERY_ATTEMPTS plus two messages", async (t) => {
   const f = await fixture(t, enrolled({ phase: "draining" }));
   const p = portal(f);
   const shell = await composeSender(p.options);
   await acknowledgements(f, MAX_DELIVERY_ATTEMPTS + 2);
   await shell.manualSync();
-  assert.equal(p.requests.length, MAX_DELIVERY_ATTEMPTS);
-  assert.equal((await outboxMessages(f.database())).length, 2);
-  await shell.foreground();
   assert.equal(p.requests.length, MAX_DELIVERY_ATTEMPTS + 2);
   assert.deepEqual(await outboxMessages(f.database()), []);
   assert.deepEqual(await runs(f.database()), []);
+});
+
+test("one trigger drains three passes and reads the delivery context once per pass", async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  const contextReads: number[] = [];
+  const shell = await composeSender({ ...p.options,
+    enrollment(database, transport) {
+      const enrollment = f.options.enrollment(database, transport);
+      return { ...enrollment, async status() {
+        const current = await enrollment.status();
+        if (!current || "outcome" in current) return current;
+        const readAt = p.requests.length;
+        // Count only context consumption from the fixture's status path;
+        // preparation and lifecycle observations read enrollment independently.
+        return { ...current, get deliveryContext() {
+          contextReads.push(readAt);
+          return current.deliveryContext;
+        } };
+      } };
+    },
+  });
+  const count = 2 * MAX_DELIVERY_ATTEMPTS + 3;
+  await acknowledgements(f, count);
+  await shell.manualSync();
+  assert.equal(p.requests.length, count);
+  assert.deepEqual(contextReads, [0, MAX_DELIVERY_ATTEMPTS, 2 * MAX_DELIVERY_ATTEMPTS]);
+  assert.deepEqual(p.requests.map(({ body }) => decodeMessage(body).sequence),
+    Array.from({ length: count }, (_, index) => index + 1));
+  assert.deepEqual(await outboxMessages(f.database()), []);
+});
+
+for (const outcome of ["retryable", "blocked"] as const) {
+  test(`a ${outcome} head in the second pass stops the drain until a later trigger`, async (t) => {
+    const f = await fixture(t, enrolled({ phase: "draining" }));
+    const p = portal(f);
+    const stopAt = MAX_DELIVERY_ATTEMPTS + 5;
+    const count = 2 * MAX_DELIVERY_ATTEMPTS + 3;
+    p.state.answer = async (_url, init) => {
+      if (p.requests.length !== stopAt) return receipt(init.body!);
+      return outcome === "retryable"
+        ? encodeMessage({ wire_version: 1, kind: "retryable-failure", reason: "temporarily-unavailable" })
+        : encodeMessage({ wire_version: 1, kind: "delivery-block", failure: "sequence-out-of-order",
+          sender_installation: INSTALLATION, sequence: stopAt, message_sha256: messageSha256(init.body!),
+        });
+    };
+    const shell = await composeSender(p.options);
+    await acknowledgements(f, count);
+    await shell.manualSync();
+    assert.equal(p.requests.length, stopAt);
+    assert.deepEqual((await outboxMessages(f.database())).map((message) => message.sequence),
+      Array.from({ length: count - stopAt + 1 }, (_, index) => stopAt + index));
+    assert.deepEqual(f.state.notifications, outcome === "blocked" ? ["sequence-out-of-order"] : []);
+    p.state.answer = async (_url, init) => receipt(init.body!);
+    await shell.manualSync();
+    assert.deepEqual(p.requests[stopAt - 1].body, p.requests[stopAt].body);
+    assert.equal(p.requests.length, count + 1);
+    assert.deepEqual(await outboxMessages(f.database()), []);
+  });
+}
+
+for (const action of ["unlink", "reset"] as const) {
+  test(`${action} at a pass boundary prevents delivery from the next pass`, async (t) => {
+    const f = await fixture(t, enrolled({ phase: "draining" }));
+    const p = portal(f);
+    const shell = await composeSender({ ...p.options,
+      enrollment(database, transport) {
+        async function destroy() {
+          // Retain synthetic rows so empty storage cannot mask a stale status.
+          f.state.status = null;
+          return { outcome: "destroyed" as const };
+        }
+        return { ...f.options.enrollment(database, transport), unlink: destroy, reset: destroy };
+      },
+    });
+    // Destroy at the second boundary, so the call must first chain past one cap.
+    const boundary = 2 * MAX_DELIVERY_ATTEMPTS;
+    p.state.answer = async (_url, init) => {
+      assert.notEqual(f.state.status, null, "no send after destruction");
+      if (p.requests.length === boundary) {
+        const result = action === "unlink" ? await shell.unlink()
+          : await shell.reset({ acknowledgePossibleLoss: true });
+        assert.deepEqual(result, { outcome: "destroyed" });
+      }
+      return receipt(init.body!);
+    };
+    await acknowledgements(f, boundary + 2);
+    await shell.manualSync();
+    assert.equal(p.requests.length, boundary);
+    assert.equal((await outboxMessages(f.database())).length, 2);
+  });
+}
+
+test("a replacement delivery context takes effect at the next pass boundary", async (t) => {
+  const f = await fixture(t, enrolled({ phase: "draining" }));
+  const p = portal(f);
+  const installation = "00000000-0000-4000-8000-000000000002";
+  const key = "replacement-pass-key";
+  const url = "https://replacement.synthetic.invalid";
+  await f.cipher.create(key);
+  p.state.answer = async (_url, init) => {
+    if (p.requests.length === MAX_DELIVERY_ATTEMPTS) {
+      f.state.status = enrolled({ installationId: installation, keyAlias: key, phase: "draining",
+        deliveryContext: { installationId: installation, keyAlias: key, portalUrl: url },
+      });
+    }
+    return receipt(init.body!);
+  };
+  const shell = await composeSender(p.options);
+  await acknowledgements(f, MAX_DELIVERY_ATTEMPTS + 2);
+  await acknowledgements(f, 3, installation, key);
+  await shell.manualSync();
+  assert.equal(p.requests.length, MAX_DELIVERY_ATTEMPTS + 3);
+  assert.ok(p.requests.slice(0, MAX_DELIVERY_ATTEMPTS).every(({ url, body }) =>
+    url === "https://portal.synthetic.invalid/v1/outbox-messages" && decodeMessage(body).sender_installation === INSTALLATION));
+  assert.ok(p.requests.slice(MAX_DELIVERY_ATTEMPTS).every((request) =>
+    request.url === `${url}/v1/outbox-messages` && decodeMessage(request.body).sender_installation === installation));
+  const remaining = await outboxMessages(f.database());
+  assert.equal(remaining.length, 2);
+  assert.ok(remaining.every((message) => message.installationId === INSTALLATION));
+  assert.equal(p.state.maxInFlight, 1);
+});
+
+for (const offset of [0, 0.25]) {
+  test(`background delivery across multiple passes stops near its budget with a ${offset}ms clock offset`, async (t) => {
+    const f = await fixture(t, enrolled({ phase: "draining" }));
+    const p = portal(f);
+    const monotonicNow = () => f.clock.monotonicNow() + offset;
+    const shell = await composeSender({ ...p.options, monotonicNow });
+    const count = 2 * MAX_DELIVERY_ATTEMPTS + 3;
+    await acknowledgements(f, count);
+    const began = monotonicNow();
+    p.state.answer = async (_url, init) => {
+      assert.ok(monotonicNow() + DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS <= began + BACKGROUND_BUDGET_MS);
+      f.clock.advance(5_000);
+      return receipt(init.body!);
+    };
+    assert.equal(await backgroundTaskBody(shell.backgroundPollingProvider)(), 2);
+    assert.equal(p.requests.length, 84, "the second pass continues until the full exchange no longer fits");
+    assert.equal((await outboxMessages(f.database())).length, count - 84);
+    assert.ok(monotonicNow() <= began + BACKGROUND_BUDGET_MS);
+    assert.ok(monotonicNow() + DELIVERY_TIMEOUT_MS + DELIVERY_FINISH_RESERVE_MS > began + BACKGROUND_BUDGET_MS);
+    p.state.answer = async (_url, init) => receipt(init.body!);
+    await shell.manualSync();
+    assert.deepEqual(await outboxMessages(f.database()), []);
+  });
+}
+
+test("an idle shell Sync after the baseline stages only its Sync Checkpoint with quiet change reads", async (t) => {
+  const f = await fixture(t);
+  f.state.versions = { steps: 1, weight: 1 };
+  f.state.status = enrolled({ stagingContext: { ...enrolled().stagingContext!, generation: {
+    generation: 1, maxRecordCount: 100, maxMessageBytes: 65_536, projectionSchemas: { steps: [1], weight: [1] },
+  } } });
+  // The fixture's offline Portal retains staged messages for inspection.
+  const shell = await composeSender(f.options);
+  const baseline = checkpoint(await shell.manualSync());
+  assert.ok(baseline.summary.recordTypes.every((type) => type.outcome === "completed"));
+  const before = await lastOutboxSequence(f.database(), INSTALLATION);
+  const reads = f.sources.callsOf("change").length;
+  const idle = checkpoint(await shell.manualSync());
+  assert.equal(f.sources.callsOf("change").length, reads + 2, "both types were read again");
+  assert.deepEqual(idle.summary.recordTypes.map((type) => [type.recordType, type.outcome, type.sourceDataStaged]),
+    [["steps", "no-change", false], ["weight", "no-change", false]]);
+  const added = (await outboxMessages(f.database())).filter((message) => message.sequence > before);
+  assert.equal(added.length, 1);
+  assert.equal(added[0].kind, "sync-checkpoint");
+  const opened = await f.cipher.open(KEY, added[0].sealed, outboxAad(INSTALLATION, added[0].sequence));
+  assert.equal(opened.status, "ok");
+  if (opened.status !== "ok") throw new Error("Expected readable synthetic checkpoint");
+  const message = decodeMessage(opened.value);
+  assert.equal(message.kind, "sync-checkpoint");
+  assert.equal(message.run_sequence, idle.runSequence);
 });
 
 test("background delivery spends only the remaining shared task budget and reserves a full exchange", async (t) => {
@@ -1265,7 +1435,7 @@ test("coalesced background delivery callers preserve the tightest pending deadli
 
 
 
-test("the pending delivery pass has its own attempt cap and consumes one overlapping trigger set", { timeout: 5_000 }, async (t) => {
+test("overlapping triggers preserve serialized delivery while the active call drains past two caps", { timeout: 5_000 }, async (t) => {
   const f = await fixture(t, enrolled({ phase: "draining" }));
   const p = portal(f);
   let arrive!: () => void;
@@ -1285,11 +1455,9 @@ test("the pending delivery pass has its own attempt cap and consumes one overlap
     await new Promise<void>((resolve) => setImmediate(resolve));
     release();
     await Promise.all([first, ...overlapping]);
-    assert.equal(p.requests.length, MAX_DELIVERY_ATTEMPTS * 2);
-    assert.equal((await outboxMessages(f.database())).length, 1);
-    assert.equal(p.state.maxInFlight, 1);
-    await shell.manualSync();
+    assert.equal(p.requests.length, MAX_DELIVERY_ATTEMPTS * 2 + 1);
     assert.deepEqual(await outboxMessages(f.database()), []);
+    assert.equal(p.state.maxInFlight, 1);
   } finally { release(); }
 });
 

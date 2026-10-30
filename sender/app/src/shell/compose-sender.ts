@@ -175,7 +175,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     await observeLifecycle(attempt, deadline);
   }
   async function afterDelivery(attempt: ObservationAttempt, deadline: () => number): Promise<void> {
-    // One extra bounded read per pass, independent of Outbox length. Reserve
+    // One extra bounded read per deliver() call, after its last pass. Reserve
     // the full observation allowance as well as this read before starting it.
     if (!hasTime(deadline(), CONDITION_OBSERVATION_BUDGET_MS)) return;
     try {
@@ -213,7 +213,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     return options.monotonicNow() + timeout + DELIVERY_FINISH_RESERVE_MS <= deadline;
   }
   function deliver(deadline = Infinity, observation: ObservationAttempt = {}): Promise<DeliveryPass> {
-    // Joining callers retain one subsequent pass, including after empty,
+    // Joining callers retain one subsequent delivery call, including after empty,
     // retryable and blocked observations or a delivery-context replacement.
     if (delivery) {
       deliveryDeadline = Math.min(deliveryDeadline, deadline);
@@ -226,27 +226,28 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     }
     deliveryDeadline = deadline;
     delivery = Promise.resolve().then(async (): Promise<DeliveryPass> => {
-      if (!hasTime(deliveryDeadline, DELIVERY_TIMEOUT_MS)) return "stopped";
-      const current = await status();
-      // Enrollment pack R7–R8 / Decisions 4–7: pending acknowledgements and
-      // draining messages remain deliverable without opening a Polling Run.
-      if (!isStatus(current) || !["enrolled", "draining"].includes(current.phase)) return "stopped";
-      const outbox = currentSender(current);
-      // Two enrollment reads per admitted delivery pass: this context read and
-      // the post-delivery lifecycle read, independent of Outbox length.
-      // Delivery pack R3 scopes every head read to this installation; reset or
-      // unlink removes its rows, so sendNext then returns empty without sending.
-      // The next pass observes enrollment again, including a replacement context.
-      for (let attempt = 0; attempt < MAX_DELIVERY_ATTEMPTS; attempt++) {
+      while (true) {
         if (!hasTime(deliveryDeadline, DELIVERY_TIMEOUT_MS)) return "stopped";
-        const result = await outbox.sendNext();
-        failures.record("delivery", result);
-        if (result.outcome === "empty") return "drained";
-        // Delivery pack Decisions 3–4: only receipts advance the head. A
-        // retryable or blocked head waits for another trigger, never a spin.
-        if (result.outcome !== "delivered") return "terminal";
+        const current = await status();
+        // Enrollment pack R7–R8 / Decisions 4–7: pending acknowledgements and
+        // draining messages remain deliverable without opening a Polling Run.
+        if (!isStatus(current) || !["enrolled", "draining"].includes(current.phase)) return "stopped";
+        const outbox = currentSender(current);
+        // Re-read enrollment and context once per bounded pass. Delivery pack
+        // R3 scopes every head read to this installation; reset or unlink removes
+        // its rows, so sendNext then returns empty without sending.
+        for (let attempt = 0; attempt < MAX_DELIVERY_ATTEMPTS; attempt++) {
+          if (!hasTime(deliveryDeadline, DELIVERY_TIMEOUT_MS)) return "stopped";
+          const result = await outbox.sendNext();
+          failures.record("delivery", result);
+          if (result.outcome === "empty") return "drained";
+          // Delivery pack Decisions 3–4: only receipts advance the head. A
+          // retryable or blocked head waits for another trigger, never a spin.
+          if (result.outcome !== "delivered") return "terminal";
+        }
+        // Hitting the cap refreshes the context and continues in this call;
+        // only an empty head, non-delivery, deadline, or ineligibility stops it.
       }
-      return "stopped";
     }).catch((): DeliveryPass => {
       failures.record("delivery", { outcome: "operation-failed" });
       return "terminal";
@@ -255,7 +256,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
       delivery = null;
       const next = pendingDelivery;
       pendingDelivery = null;
-      // Consume the signal before opening the next bounded pass. A terminal
+      // Consume the signal before opening the next delivery call. A terminal
       // head cannot repeat it; only another overlapping caller can request one.
       if (next) void deliver(next.deadline, next.attempt).then(next.resolve);
     });
@@ -421,6 +422,7 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
     const schemaVersions = Object.fromEntries(recordTypes.map((type) => [type, versions[type]]));
     coordinator = createSenderSync({
       database, cipher: options.cipher, sources: options.sources, recordTypes,
+      quietChangeReads: true,
       projection: { implementationVersion: PROJECTION_IMPLEMENTATION_VERSION, schemaVersions },
       async context() {
         const latest = await status();
@@ -471,8 +473,8 @@ export async function composeSender(options: ComposeSenderOptions): Promise<Send
                 }
                 catch { failures.record("enrollment", { outcome: "operation-failed" }); }
               }
-              // A drained pass may pick up a new acknowledgement. Adoption can
-              // also resume a capped pass, but never retries its terminal head.
+              // A drained delivery may pick up a new acknowledgement. Adoption
+              // can resume stopped delivery, but never retries its terminal head.
               if (pass === "drained" || adopted && pass !== "terminal") {
                 await deliver(Infinity, observation);
                 deliveredAfterRefresh = true;
