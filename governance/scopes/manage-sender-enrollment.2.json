@@ -1,0 +1,186 @@
+{
+  "contract_schema": 1,
+  "scope": "manage-sender-enrollment",
+  "version": "2",
+  "kind": "integration",
+  "purpose": "Enroll the Sender from a scanned or typed enrollment offer under the Operator-mediated Wire Protocol Version 1 lifecycle, adopt advertised capabilities, and drain, unlink, or destructively reset its own installation: require a secure screen lock, create a durable opaque installation identity, its fingerprint, and a non-exportable installation key, send one byte-stable enrollment confirmation until the Portal answers, adopt the advertised capability generation and acknowledge it as the installation's first Outbox Message, learn the Operator's confirmation from that acknowledgement's receipt, supply the staging and delivery contexts, adopt later generations only before draining, drain by stopping new messages and reporting the final sequence once the Outbox is empty, and destroy the local key and state only on explicit intent. Version 2 answers every status, drain, and unlink question from stage-outbox-batch@2's backlog reads, never loading a sealed Outbox message, with identical answers.",
+  "inputs": [
+    {
+      "name": "enrollment_offer",
+      "mode": "pure",
+      "description": "A scanned enrollment-offer message, or a typed Portal URL and enrollment code."
+    },
+    {
+      "name": "operator_intent",
+      "mode": "pure",
+      "description": "The Operator's request on the Sender to enroll, drain, unlink after the Portal retired the installation, or destructively reset with acknowledged possible loss."
+    },
+    {
+      "name": "secure_lock",
+      "mode": "volatile",
+      "description": "Whether the Device has a secure screen lock, read through the installation cipher when enrolling."
+    },
+    {
+      "name": "identity_source",
+      "mode": "volatile",
+      "description": "A random UUID source for the new installation identity."
+    },
+    {
+      "name": "installation_key",
+      "mode": "effectful",
+      "description": "The installation cipher: creating, sealing with, and deleting the non-exportable installation key."
+    },
+    {
+      "name": "portal_transport",
+      "mode": "effectful",
+      "description": "A seam that performs one HTTP request to the Portal's enrollment-confirmation or capabilities route and returns its response body, or reports that no response arrived."
+    },
+    {
+      "name": "portal_response",
+      "mode": "volatile",
+      "description": "The Portal's answer: a capability advertisement, a retryable failure, any other body, or no response."
+    },
+    {
+      "name": "sender_storage",
+      "mode": "effectful",
+      "description": "The Sender's SQLite database: this unit's enrollment state, stage-outbox-batch@2's Outbox, read through its health-data-free high-water mark and backlog reads, and, on destruction, every Sender table, behind the 3ug seam and storage lane."
+    },
+    {
+      "name": "clock",
+      "mode": "volatile",
+      "description": "The Sender wall clock for the enrollment and adoption times."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "installation_identity",
+      "description": "A durable opaque installation identity, its fingerprint for the Operator to compare, a non-exportable installation key under an identity-derived alias, and the exact enrollment-confirmation bytes resent on every attempt."
+    },
+    {
+      "name": "enrollment_state",
+      "description": "The installation's local phase (confirming, refused, enrolled, or draining), its adopted capability advertisement and generation, whether the Operator's confirmation has been learned, and the drained final sequence once the Outbox is empty. Deriving it loads no sealed Outbox message, so its cost does not grow with the Outbox's ciphertext."
+    },
+    {
+      "name": "capability_acknowledgement",
+      "description": "A byte-stable capability acknowledgement appended through stage-outbox-batch@1's Outbox, sealed with the installation key, atomically with each adopted generation; the first is the installation's first Outbox Message."
+    },
+    {
+      "name": "sync_contexts",
+      "description": "The staging context (installation, key alias, and adopted generation's limits and schemas) and the delivery context (installation, key alias, and Portal URL) that the shell supplies to the stage and delivery units."
+    },
+    {
+      "name": "local_destruction",
+      "description": "On unlink after a complete drain, or on destructive reset with acknowledged possible loss, deletion of the installation key and every row of every Sender table, keeping the schema."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "offer-invalid",
+      "outcome": "refusal"
+    },
+    {
+      "name": "already-enrolled",
+      "outcome": "refusal"
+    },
+    {
+      "name": "screen-lock-required",
+      "outcome": "refusal"
+    },
+    {
+      "name": "not-confirming",
+      "outcome": "refusal"
+    },
+    {
+      "name": "not-enrolled",
+      "outcome": "refusal"
+    },
+    {
+      "name": "not-confirmed",
+      "outcome": "refusal"
+    },
+    {
+      "name": "not-drained",
+      "outcome": "refusal"
+    },
+    {
+      "name": "enrollment-refused",
+      "outcome": "portal-refusal"
+    },
+    {
+      "name": "capabilities-unsupported",
+      "outcome": "portal-refusal"
+    },
+    {
+      "name": "transport-failed",
+      "outcome": "retryable"
+    },
+    {
+      "name": "temporarily-unavailable",
+      "outcome": "retryable"
+    },
+    {
+      "name": "cipher-failed",
+      "outcome": "cipher-failure"
+    },
+    {
+      "name": "storage-failed",
+      "outcome": "storage-failure"
+    }
+  ],
+  "observable_effects": [
+    {
+      "name": "installation-key-lifecycle",
+      "description": "Creates the installation key when enrolling, seals capability acknowledgements with it, and deletes it only on unlink or destructive reset, or when enrolling cannot record the identity the key was created for."
+    },
+    {
+      "name": "portal-enrollment-request",
+      "description": "Sends at most one HTTP request per confirmation or capability-refresh attempt."
+    },
+    {
+      "name": "sender-storage-write",
+      "description": "Applies this unit's Sender schema migration, writes its own enrollment state, appends capability acknowledgements through stage-outbox-batch@1, and on destruction deletes every row of every Sender table."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the Sender's local enrollment lifecycle: confirming, refused, enrolled, and draining, and destruction",
+      "creating the installation identity, fingerprint, key alias, and the exact enrollment-confirmation bytes",
+      "the confirmation and capability requests' method, path, content type, timeout, and largest answer read",
+      "adopting a capability generation, deriving the staging generation from it, and acknowledging it",
+      "learning the Operator's confirmation from the first acknowledgement's receipt",
+      "the drained final sequence, and the unlink and destructive-reset rules",
+      "this unit's Sender schema migration",
+      "answering confirmation, drain completion, and the final sequence from the Outbox's high-water mark and backlog reads without loading sealed messages"
+    ],
+    "does_not_own": [
+      "wire schemas, the enrollment-offer, enrollment-confirmation, capability-advertisement, and capability-acknowledgement messages, and fingerprints, which belong to ingest-protocol",
+      "the Sender Outbox's schema, sealing, AAD, sequences, and high-water mark, which belong to stage-outbox-batch",
+      "enrollment offers, confirmation answers, Operator confirmation, draining, retirement, and capability generations in the Portal, which belong to manage-sender-installation",
+      "delivering the acknowledgement and every other Outbox Message, which belongs to send-outbox-message",
+      "Polling Runs and pausing collection, which belong to coordinate-sender-sync",
+      "the HTTP client, timeout enforcement, QR scanning, Sender screens, the native Keystore module, and when to refresh capabilities, which belong to the Sender shell enabling task"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "ingest-protocol",
+      "version": "1"
+    },
+    {
+      "scope": "stage-outbox-batch",
+      "version": "2"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/manage-sender-enrollment-2.spec.md",
+    "executable_tests": {
+      "typescript": "sender/app/test/manage-sender-enrollment-2.test.ts",
+      "python": "tests/acceptance/test_manage_sender_enrollment_2.py"
+    },
+    "runner": "tests/acceptance/run_manage_sender_enrollment_2.sh",
+    "languages": [
+      "python",
+      "typescript"
+    ]
+  }
+}

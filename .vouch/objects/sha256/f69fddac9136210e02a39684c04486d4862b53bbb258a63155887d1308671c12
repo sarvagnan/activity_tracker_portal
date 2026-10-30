@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"OpenInCiMarked","pack_digest":"","payload":{"name":"manage-sender-enrollment@2","reason":"manage-sender-enrollment@2 is frozen and awaits implementation on stage-outbox-batch@2's backlog reads"},"prev":"8abcd23368e6096c33c9f2a6abc87c8d200c7b6f11f98a64a8eb630ed9ea0958","recorded_at":"2026-10-30T09:09:57+00:00","revision":378,"run_id":""}

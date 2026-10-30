@@ -1,0 +1,1 @@
+{"actor":"claude","event":"UnitSpecified","pack_digest":"","payload":{"depends_on":["ingest-protocol","stage-outbox-batch"],"name":"manage-sender-enrollment","version":"2"},"prev":"060c5927fb49af6df779584e477b079d14269473ac34382a6a9c59c0a3b2ce3e","recorded_at":"2026-10-30T09:41:03+00:00","revision":389,"run_id":""}

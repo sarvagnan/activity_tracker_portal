@@ -1776,7 +1776,7 @@ test("the_module_stays_inside_its_boundary", async (t) => {
       if (!relative(SOURCE_STORAGE, target).startsWith("..")) continue;
       assert.equal(target, STAGE_OUTBOX_BATCH, `${file}: ${specifier}`);
       for (const value of values) {
-        assert.ok(["appendOutboxMessages", "lastOutboxSequence", "outboxMessages", "outboxAad"].includes(value), `${file}: ${value}`);
+        assert.ok(["appendOutboxMessages", "lastOutboxSequence", "outboxMessages", "outboxAad", "outboxBacklog", "outboxHolds"].includes(value), `${file}: ${value}`);
       }
     }
     assert.deepEqual(code.references.filter((name) => NETWORK.has(name)), [], file);
