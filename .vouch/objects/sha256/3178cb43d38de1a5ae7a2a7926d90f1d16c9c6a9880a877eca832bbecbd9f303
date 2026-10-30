@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"OpenInCiMarked","pack_digest":"","payload":{"name":"coordinate-sender-sync@3","reason":"coordinate-sender-sync@3 is frozen and awaits implementation after stage-sync-checkpoint@2 publishes"},"prev":"dc1c33f569ec7652a059bf862e6551a2f4ae46420536374158a21c8d20561a5a","recorded_at":"2026-10-30T09:11:31+00:00","revision":375,"run_id":""}
