@@ -66,18 +66,32 @@ Tests: `checkpoint_counts_match_the_outbox_oracle`, `the_recheck_still_detects_e
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the TypeScript suite `stage-sync-checkpoint-2.test.ts`;
-- the Python contract suite `tests/acceptance/test_stage_sync_checkpoint_2.py`;
-- the runner `tests/acceptance/run_stage_sync_checkpoint_2.sh`, which runs the version 2 contract check, `@1`'s bound runner unchanged, and then the `@2` suite under a per-test timeout.
+The Operator approved the draft. The executable pack adds:
+- the TypeScript suite `stage-sync-checkpoint-2.test.ts`, 5 tests;
+- the Python contract suite `tests/acceptance/test_stage_sync_checkpoint_2.py`, 2 tests;
+- the runner `tests/acceptance/run_stage_sync_checkpoint_2.sh`. It runs the version 2 contract check, then `@1`'s bound runner unchanged, then the `@2` suite under a 60-second per-test timeout. It passes the suite only when a fresh JUnit report lists exactly its tests, none failed, errored, or skipped.
+
+The suite migrates with `@1`'s explicit list to version 4. It fills the Outbox through `appendOutboxMessages`, and uses `@1`'s `outboxMessages` as the oracle.
 
 There is no new Interface stub. The published `@1` module is the RED baseline, against which:
-- R11's tests fail, because `@1` reads `outboxMessages`;
-- R12's tests pass by design, because they pin that `@2` keeps `@1`'s checkpoint;
-- `@1`'s whole suite passes.
+- R11's 3 tests fail, because `@1` loads 12 sealed rows to stage one checkpoint;
+- R12's 2 tests pass by design, because they pin that `@2` keeps `@1`'s checkpoint;
+- `@1`'s 24 tests pass;
+- both Python suites pass.
+
+**The reference run.** A throwaway reference calls `stage-outbox-batch@2`'s `outboxBacklog`, taken from that unit's own throwaway reference, in place of `outboxMessages`. It passes all 5 new tests and `@1`'s 24.
+
+An earlier draft of the reference queried `outbox_messages` directly, and failed `@1`'s `the_module_uses_other_units_tables_only_through_their_functions`. So the implementation must go through `stage-outbox-batch@2`'s reads, and the published suite enforces that.
+
+Three mutants each fail at least one test:
+- counting every installation;
+- a byte total ignored by the counts;
+- loading the sealed rows as well.
 
 The binding is:
 - **spec files:** this contract and pack, and `@1`'s contract and pack;
-- **test files:** the new suite, `test_stage_sync_checkpoint_2.py`, the `@2` runner, and every file `stage-sync-checkpoint-pack/1` binds.
+- **test files:**
+  - `stage-sync-checkpoint-2.test.ts`, `test_stage_sync_checkpoint_2.py`, and the `@2` runner;
+  - every file `stage-sync-checkpoint-pack/1` binds: `stage-sync-checkpoint-1.test.ts`, its 3ug substitutes `sender/app/test/support/node-database.ts` and `sender/app/test/support/node-installation-cipher.ts`, `test_stage_sync_checkpoint_1.py`, and `run_stage_sync_checkpoint_1.sh`.
 
-GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation adds the runner to the project CI `test` job.
+Implementation waits until `stage-outbox-batch@2` publishes, and this branch then merges `main`. GPT 6.1 Sol's read-only implementability review runs before Gate B. The implementation adds the runner to the project CI `test` job.
