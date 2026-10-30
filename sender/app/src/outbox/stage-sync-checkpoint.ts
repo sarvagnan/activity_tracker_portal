@@ -2,7 +2,7 @@ import { encodeMessage } from "@activity-tracker-portal/ingest-protocol";
 import type { InstallationCipher } from "../installation-cipher.ts";
 import type { SenderDatabase } from "../storage/database.ts";
 import type { Migration } from "../storage/migrations.ts";
-import { appendOutboxMessages, lastOutboxSequence, outboxAad, outboxMessages } from "./stage-outbox-batch.ts";
+import { appendOutboxMessages, lastOutboxSequence, outboxAad, outboxBacklog } from "./stage-outbox-batch.ts";
 import type { StagingContext } from "./stage-outbox-batch.ts";
 
 export type CheckpointTrigger = "background" | "foreground" | "manual";
@@ -160,10 +160,10 @@ interface CheckpointState {
 }
 
 async function readState(database: SenderDatabase, installationId: string, runSequence: number): Promise<CheckpointState> {
-  const rows = (await outboxMessages(database)).filter((row) => row.installationId === installationId);
+  const backlog = await outboxBacklog(database, installationId);
   const lastSequence = await lastOutboxSequence(database, installationId);
   const checkpoint = await runCheckpoint(database, installationId, runSequence);
-  return { messageCount: rows.length, byteCount: rows.reduce((sum, row) => sum + row.messageBytes, 0), lastSequence, checkpoint };
+  return { messageCount: backlog.messageCount, byteCount: backlog.byteCount, lastSequence, checkpoint };
 }
 
 function object(value: unknown): value is Record<string, unknown> {
