@@ -178,3 +178,17 @@ This log records friction encountered while adopting Vouch mk2 in its first exte
 **Context**: Vouch now lets each frozen pack declare its unit's effects (D-31). An existing store opts in with the one-way `require-effects` switch, and the PR #57 upgrade correctly did not turn it on.
 
 **Decision**: The Operator chose to turn it on. From now on, every bound freeze passes `--pack-effects-file packs/<scope>-<version>.effects.json`, written from the contract's `observable_effects`. The 21 units frozen earlier stay reported as not declared, which does not fail CI. A rebind of one of them stays allowed: Vouch's effects-specific rebind check rejects a changed declaration, not a legacy pack that has none.
+
+## 2026-11-24 — Both re-pin gaps are fixed upstream
+
+**Context**: Vouch answered the two findings from the 3e3c1e7 re-pin. With D-53, `check-merge` upgrades private copies of an older base or head store before it replays (`vouch_mk2-bd4.4.25`). With D-55, a new row, `check.workflow-current`, fails when `.github/workflows/vouch.yml` differs from the workflow the pinned lock generates, and `refresh-workflow` rewrites the file (`vouch_mk2-bd4.4.26`). The portal re-pinned to Vouch `6eef7f7`, which has both fixes.
+
+**Evidence**:
+
+- The store stayed at format 7, so `upgrade` rebuilt nothing.
+- `check.workflow-current` passed before any refresh, and `refresh-workflow` left the file byte-unchanged. PR #58 had already made `vouch.yml` byte-identical to the 3e3c1e7 template, and Vouch's generated workflow has not changed since.
+- The re-pin went out as one pull request, and its `merge_check` job ran the new lock.
+
+**Friction**: None.
+
+**Decision**: Re-pin in one pull request again. The re-pin procedure is: replace `vouch.lock`, update the digest in `.vouch/config.json`, then run `upgrade`, `python3 vouch.lock refresh-workflow --project .`, and `check --ci`. `vouch.yml` belongs to Vouch: change it only with `refresh-workflow`, never by hand.
