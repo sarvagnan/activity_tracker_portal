@@ -158,3 +158,23 @@ This log records friction encountered while adopting Vouch mk2 in its first exte
 **Friction**: Nothing failed, and the amended vectors could have been accepted unexecuted.
 
 **Decision**: Record a fresh GREEN on the bound runner after every re-freeze, even when Vouch carries evidence forward. The upstream question is `vouch_mk2-bd4.4.5`. The RED for the amendment is shown outside Vouch: against pack/1's schemas, all four new negatives are accepted and `test_schema_negatives_are_rejected` fails.
+
+## 2026-11-23 — The pull-request merge check refuses a store-format upgrade
+
+**Context**: PR #57 re-pinned `vouch.lock` from Vouch `48f1eb4` to `3e3c1e7` and upgraded the store from state format 5 to 7. Vouch's generated workflow now includes a read-only `merge_check` job (D-50). It replays the pull request's head store onto its base store and compares the result with GitHub's trial merge.
+
+**Evidence**:
+
+- The job runs the pull request's own lock. Run locally against a trial merge of PR #57 into `main`, `check-merge` failed before any replay: `state_format: format 5 is older than supported format 7; run vouch-mk2 upgrade`.
+- The validation job passed on the same pull request, because it reads only the head's upgraded store.
+- Vouch introduced format 7 on 2026-11-18 and the merge check on 2026-11-22. Vouch's own history has no store-upgrade pull request after the check existed.
+
+**Friction**: Every adopter pull request that upgrades the store format fails the merge check, although nothing in it is wrong.
+
+**Decision**: PR #57 left the job out, and Astra approved that for the migration only. The job was added in the next pull request, once `main` was at format 7. The upstream question is `vouch_mk2-bd4.4.25`.
+
+## 2026-11-23 — Effect declarations required for new packs
+
+**Context**: Vouch now lets each frozen pack declare its unit's effects (D-31). An existing store opts in with the one-way `require-effects` switch, and the PR #57 upgrade correctly did not turn it on.
+
+**Decision**: The Operator chose to turn it on. From now on, every bound freeze passes `--pack-effects-file packs/<scope>-<version>.effects.json`, written from the contract's `observable_effects`. The 21 units frozen earlier stay reported as not declared, which does not fail CI. A rebind of one of them stays allowed: Vouch's effects-specific rebind check rejects a changed declaration, not a legacy pack that has none.

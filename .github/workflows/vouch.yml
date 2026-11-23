@@ -37,6 +37,83 @@ jobs:
         shell: bash
         run: python vouch.lock formal
 
+  merge_check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - name: Verify vouch.lock against the recorded digest
+        shell: bash
+        run: python vouch.lock self-check --expect @.vouch/config.json
+      - name: Check pull request store merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GIT_NO_REPLACE_OBJECTS=1
+          parents="$(git rev-list --parents -n 1 HEAD)"
+          IFS=' ' read -r -a commits <<< "$parents"
+          if (( ${#commits[@]} != 3 )); then
+            echo 'FAIL check-merge: expected a checkout with exactly two parents' >&2
+            exit 1
+          fi
+          merged="${commits[0]}"
+          base="${commits[1]}"
+          head="${commits[2]}"
+          base_state="$(git ls-tree --full-tree "$base" -- .vouch/state.json)"
+          if [[ -z "$base_state" ]]; then
+            echo 'PASS check-merge: adoption pull request (base has no .vouch/state.json)'
+            exit 0
+          fi
+
+          scratch="$(mktemp -d "$RUNNER_TEMP/vouch-merge-check.XXXXXX")"
+          trap 'rm -rf -- "$scratch"' EXIT
+          # Copy committed blobs verbatim, independently of checkout attributes.
+          extract_store() {
+            local commit="$1" root="$2" entry metadata path mode kind object relative target
+            git ls-tree -r -z --full-tree "$commit" -- .vouch > "$scratch/tree"
+            if [[ ! -s "$scratch/tree" ]]; then
+              echo "FAIL check-merge: $commit has no .vouch/ files" >&2
+              return 1
+            fi
+            mkdir -- "$root"
+            while IFS= read -r -d '' entry; do
+              metadata="${entry%%$'\t'*}"
+              path="${entry#*$'\t'}"
+              IFS=' ' read -r mode kind object <<< "$metadata"
+              if [[ "$path" != .vouch/* || "$kind" != blob || ( "$mode" != 100644 && "$mode" != 100755 ) ]]; then
+                printf 'FAIL check-merge: %s has a non-regular store entry %q\n' "$commit" "$path" >&2
+                return 1
+              fi
+              relative="${path#.vouch/}"
+              case "/$relative/" in
+                *'/../'*|*'/./'*|*'//'*)
+                  printf 'FAIL check-merge: %s has an invalid store path %q\n' "$commit" "$path" >&2
+                  return 1
+                  ;;
+              esac
+              target="$root/$relative"
+              mkdir -p -- "${target%/*}"
+              if [[ -e "$target" ]]; then
+                printf 'FAIL check-merge: %s has a duplicate store path %q\n' "$commit" "$path" >&2
+                return 1
+              fi
+              git cat-file blob "$object" > "$target"
+            done < "$scratch/tree"
+          }
+          extract_store "$base" "$scratch/base"
+          extract_store "$head" "$scratch/head"
+          extract_store "$merged" "$scratch/merged"
+          python vouch.lock check-merge \
+            --base "$scratch/base" --head "$scratch/head" --merged "$scratch/merged"
+
   anchor_plan:
     needs: [validation]
     if: inputs.anchoring == true && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork == false
