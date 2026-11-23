@@ -69,7 +69,7 @@ jobs:
 
           state = json.loads(Path(".vouch/state.json").read_text())
           for head in state["evidence_heads"]:
-              if not head["anchor_run_id"]:
+              if not head["anchor_run_id"] or head["anchored"] != head["head"]:
                   print(f"{head['unit_name']}@{head['unit_version']}")
           PY
           while IFS= read -r label; do
