@@ -177,4 +177,4 @@ This log records friction encountered while adopting Vouch mk2 in its first exte
 
 **Context**: Vouch now lets each frozen pack declare its unit's effects (D-31). An existing store opts in with the one-way `require-effects` switch, and the PR #57 upgrade correctly did not turn it on.
 
-**Decision**: The Operator chose to turn it on. From now on, every bound freeze passes `--pack-effects-file packs/<scope>-<version>.effects.json`, written from the contract's `observable_effects`. The 21 units frozen earlier stay reported as not declared, which does not fail CI. A rebind of one of them stays allowed, because Vouch refuses a rebind only when its effect declaration changes.
+**Decision**: The Operator chose to turn it on. From now on, every bound freeze passes `--pack-effects-file packs/<scope>-<version>.effects.json`, written from the contract's `observable_effects`. The 21 units frozen earlier stay reported as not declared, which does not fail CI. A rebind of one of them stays allowed: Vouch's effects-specific rebind check rejects a changed declaration, not a legacy pack that has none.
