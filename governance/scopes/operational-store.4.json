@@ -1,0 +1,287 @@
+{
+  "contract_schema": 1,
+  "scope": "operational-store",
+  "version": "4",
+  "kind": "shared",
+  "purpose": "Preserve the ingest-side domain invariants of the Portal's single SQLite Operational Store through deep transactional operations: Sender Installation lifecycle records, one-use enrollment codes, capability generations, exact archival of accepted Outbox Messages, Delivery Block and sequence-gap evidence, Sync Checkpoint history, the storage reserve, coherent current-state reads, and each delivery cycle's state derived from archived rows, so callers validate fragment continuity and completions without replaying archived envelopes, and the Source Record index: Source Records identified independently of Sender Installation, append-only projection and retraction evidence indexed from archived items with observing-Sender provenance, and append-only reconciled selections recorded against the evidence they were computed from, and processing: Processing Jobs keyed by Source Record and processor version with expiring fenced leases and bounded retry, immutable Canonical Revisions with an indexed header and an opaque versioned body, Unmodeled, Policy-Pending, and Quarantine outcomes recorded against the reconciled selection they interpret, failed jobs with their attempt history, and quarantine of archived items that cannot be indexed.",
+  "inputs": [
+    {
+      "name": "domain_transactions",
+      "mode": "pure",
+      "description": "Caller-supplied lifecycle intents, enrollment-code digests, capability advertisements, accepted-message archival records with exact envelope and receipt bytes, and Delivery Block records, each carrying a timezone-aware Portal time; index entries that pair an archived item's position with its caller-extracted source-system kind, origin, Source Identity, and source modification time; and reconciled selections naming the evidence they select and the evidence head they were computed from; processing intents naming a Source Record, its latest projection selection, a processor version, and a retry bound; lease claims, renewals, completions carrying one interpretation outcome, and transient or deterministic failures, each carrying the caller's lease fence and lease duration; and item quarantines naming an archived item and a health-data-free reason."
+    },
+    {
+      "name": "database_file",
+      "mode": "effectful",
+      "description": "The one SQLite database file at a deployment-chosen path, with its write-ahead log, either absent or created by this or a later store version, at the schema of the store's known migrations."
+    },
+    {
+      "name": "free_space",
+      "mode": "volatile",
+      "description": "Free bytes on the database file's filesystem compared with the deployment-configured storage reserve at the moment of each write transaction."
+    },
+    {
+      "name": "sqlite_runtime",
+      "mode": "volatile",
+      "description": "The SQLite library version linked into the running Python interpreter."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "opened_store",
+      "description": "A store handle on a database at exactly the schema of the store's known migrations, with WAL journaling, synchronous FULL, and foreign keys enforced, or a named startup refusal."
+    },
+    {
+      "name": "archive_result",
+      "description": "The Delivery Receipt bytes committed with a newly archived message, or the identical prior receipt for an identical retry with no write."
+    },
+    {
+      "name": "lifecycle_record",
+      "description": "An append-only Sender Installation lifecycle event and the resulting installation state."
+    },
+    {
+      "name": "coherent_view",
+      "description": "Reads served from one SQLite read transaction: installation states and operational facts, accepted envelopes in sequence order, archived items, honored capability generations, sequence gaps, Delivery Blocks, paginated Sync Checkpoint history, storage-reserve status, and one delivery cycle's last archived fragment, chain inputs, counts, and completion; archived items not yet indexed, in archival order; one Source Record's identity, evidence, and selection history; Source Records whose evidence is newer than their latest selection; and health-data-free index counts; Processing Jobs with their attempt history, every processing outcome and Canonical Revision of a Source Record, its latest outcome under one processor version, projection selections awaiting processing under the caller's processor versions, archived items awaiting indexing that are not quarantined, a projection's archived bytes by evidence identity, and health-data-free processing counts at a given time."
+    },
+    {
+      "name": "store_refusal",
+      "description": "A named refusal that leaves the database exactly as it was before the operation."
+    },
+    {
+      "name": "index_result",
+      "description": "The Source Record and evidence rows an index transaction created, or none for an identical repeat of entries already indexed."
+    },
+    {
+      "name": "selection_record",
+      "description": "An append-only reconciled selection for one Source Record: a current projection, a current retraction, or a Source Conflict over named evidence, recorded with the evidence head it was computed from."
+    },
+    {
+      "name": "processing_job",
+      "description": "A durable Processing Job for one Source Record and processor version, queued, leased, completed, failed, or superseded, with its target selection, attempts, retry bound, and append-only attempt history."
+    },
+    {
+      "name": "processing_lease",
+      "description": "An expiring lease on one Processing Job, identified by a fence that increases with every claim, naming the selection and projection evidence the holder must interpret."
+    },
+    {
+      "name": "processing_outcome",
+      "description": "An immutable outcome recorded atomically with the job's completion: a Canonical Revision, Unmodeled, Policy-Pending, or Quarantine for one selection, processor version, and policy identity; an identical repeat does not append or alter an outcome, and completion still updates its held job and attempt."
+    },
+    {
+      "name": "item_quarantine",
+      "description": "A health-data-free quarantine of one archived projection item whose bytes cannot yield a Source Record key, which removes it from the items awaiting indexing without changing it."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "sqlite-runtime-unsupported",
+      "outcome": "startup-refusal"
+    },
+    {
+      "name": "store-migration-required",
+      "outcome": "startup-refusal"
+    },
+    {
+      "name": "store-schema-unsupported",
+      "outcome": "startup-refusal"
+    },
+    {
+      "name": "store-migration-checksum-mismatch",
+      "outcome": "startup-refusal"
+    },
+    {
+      "name": "storage-reserve-exhausted",
+      "outcome": "retryable"
+    },
+    {
+      "name": "store-busy",
+      "outcome": "retryable"
+    },
+    {
+      "name": "timestamp-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "enrollment-code-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "enrollment-code-expired",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "enrollment-code-consumed",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "enrollment-code-exists",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "installation-exists",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "installation-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "installation-transition-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "active-installation-exists",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "installation-not-delivering",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "message-digest-mismatch",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "sequence-content-conflict",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "sequence-out-of-order",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "generation-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "generation-not-monotonic",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "generation-still-required",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "cycle-already-completed",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "archived-item-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "index-entry-mismatch",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "index-entry-conflict",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "source-key-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "source-record-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "selection-evidence-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "selection-stale",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "selection-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "selection-not-latest",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "selection-not-projection",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "processor-version-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "processing-request-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "processing-job-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "lease-not-held",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "outcome-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "outcome-conflict",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "item-already-indexed",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "item-quarantine-conflict",
+      "outcome": "invariant-refusal"
+    }
+  ],
+  "observable_effects": [
+    {
+      "name": "operational-database-writes",
+      "description": "Committed SQLite transactions on the Operational Store file and its write-ahead log; a refused or failed operation commits nothing."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the baseline SQLite schema, its later additive migrations in the order recorded, and connection durability settings",
+      "transactional invariants for one active or draining Sender Installation, one-use enrollment codes, and append-only lifecycle events",
+      "exact envelope and per-item archival, sequence uniqueness and ordering, sequence-gap evidence, and Last Delivery",
+      "capability generation monotonicity and the rule that a generation stops being honored only after a later generation's acknowledgement is archived",
+      "health-data-free Delivery Block and Sync Checkpoint history records",
+      "storage-reserve enforcement at write time and coherent read snapshots",
+      "deriving each delivery cycle's last archived fragment, its chain inputs, its fragment and record counts, and its completion from archived rows, without a schema change",
+      "Source Record identity by source-system kind, origin, record type, and Source Identity, never by Sender Installation, with every observing installation kept as provenance",
+      "indexing each archived ingest item exactly once as append-only projection or retraction evidence, idempotently for identical repeats",
+      "append-only reconciled selections that refuse to record against evidence newer than the selection was computed from",
+      "Processing Jobs keyed by Source Record and processor version, at most one open at a time, that interpret the record's latest projection selection when claimed",
+      "expiring leases fenced by a per-claim identity, recovery of expired leases, and the caller's retry bound enforced atomically, including when an expired lease is reclaimed",
+      "recording exactly one immutable outcome per selection, processor version, and policy identity atomically with the job's completion, and refusing a different outcome for the same key",
+      "append-only Canonical Revisions with indexed header columns and opaque header and body bytes, and append-only health-data-free attempt history",
+      "quarantine of archived items whose projection bytes cannot be indexed, without changing the items or the index"
+    ],
+    "does_not_own": [
+      "wire decoding, delivery evaluation, chain calculation, receipts, or compatibility decisions",
+      "Operator intent, enrollment-offer issuance, or when lifecycle transitions happen",
+      "Polling Freshness classification or clock-skew conditions",
+      "extracting origin, Source Identity, or modification time from projection bytes, or deciding which evidence is current",
+      "interpreting projections, choosing an outcome or quarantine reason, mapping record types to processor versions, retry policy, or backoff timing",
+      "upgrading an existing database to a later schema",
+      "HTTP ingress, Authorized Ingress, or the deployment's reserve value",
+      "Reconciliation Absence, Abandoned Attempt Evidence, policy records, Summary Refresh Jobs, summaries, Processor Generations, current-view selection, cutovers, deletion, export, or backup"
+    ]
+  },
+  "dependencies": [],
+  "acceptance_oracle": {
+    "specification": "packs/operational-store-4.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_operational_store_4.py"
+    },
+    "runner": "tests/acceptance/run_operational_store_4.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}

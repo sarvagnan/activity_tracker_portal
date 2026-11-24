@@ -195,3 +195,88 @@ CREATE TABLE selection_evidence (
     UNIQUE (selection_id, evidence_id)
 ) STRICT;
 """
+
+_PROCESSING_SQL = """
+CREATE TABLE processing_jobs (
+    job_id INTEGER PRIMARY KEY,
+    record_id INTEGER NOT NULL REFERENCES source_records (record_id),
+    processor_version TEXT NOT NULL,
+    selection_id INTEGER NOT NULL REFERENCES source_selections (selection_id),
+    state TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'completed', 'failed', 'superseded')),
+    max_attempts INTEGER NOT NULL CHECK (max_attempts BETWEEN 1 AND 100),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    not_before TEXT NOT NULL,
+    fence INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    failure TEXT,
+    enqueued_at TEXT NOT NULL,
+    closed_at TEXT
+) STRICT;
+CREATE UNIQUE INDEX processing_open_job ON processing_jobs (record_id, processor_version)
+    WHERE state IN ('queued', 'leased');
+CREATE INDEX processing_job_record ON processing_jobs (record_id, job_id);
+CREATE INDEX processing_job_ready ON processing_jobs (state, not_before, job_id);
+CREATE INDEX processing_job_expiry ON processing_jobs (state, lease_expires_at, job_id);
+CREATE INDEX processing_job_failed ON processing_jobs (record_id, processor_version, selection_id)
+    WHERE state = 'failed';
+CREATE TABLE processing_attempts (
+    job_id INTEGER NOT NULL REFERENCES processing_jobs (job_id),
+    fence INTEGER NOT NULL,
+    owner TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    finished_at TEXT,
+    result TEXT CHECK (result IN ('completed', 'transient-failure', 'deterministic-failure', 'lease-expired')),
+    reason TEXT,
+    PRIMARY KEY (job_id, fence)
+) STRICT;
+CREATE TABLE processing_outcomes (
+    outcome_id INTEGER PRIMARY KEY,
+    record_id INTEGER NOT NULL REFERENCES source_records (record_id),
+    selection_id INTEGER NOT NULL REFERENCES source_selections (selection_id),
+    evidence_id INTEGER NOT NULL REFERENCES source_evidence (evidence_id),
+    processor_version TEXT NOT NULL,
+    policy_identity TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('revision', 'unmodeled', 'policy-pending', 'quarantine')),
+    reason TEXT,
+    pointer TEXT,
+    policy_kind TEXT,
+    job_id INTEGER NOT NULL,
+    fence INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    UNIQUE (selection_id, processor_version, policy_identity),
+    FOREIGN KEY (job_id, fence) REFERENCES processing_attempts (job_id, fence)
+) STRICT;
+CREATE INDEX processing_outcome_record ON processing_outcomes (record_id, outcome_id);
+CREATE INDEX processing_outcome_kind ON processing_outcomes (kind);
+CREATE TABLE canonical_revisions (
+    outcome_id INTEGER PRIMARY KEY REFERENCES processing_outcomes (outcome_id),
+    header_bytes BLOB NOT NULL,
+    body_bytes BLOB NOT NULL,
+    body_version INTEGER NOT NULL CHECK (body_version >= 1),
+    start_epoch_ns INTEGER NOT NULL,
+    end_epoch_ns INTEGER,
+    start_local_date TEXT NOT NULL,
+    end_local_date TEXT,
+    start_attribution TEXT NOT NULL CHECK (start_attribution IN ('experienced', 'inferred')),
+    end_attribution TEXT CHECK (end_attribution IN ('experienced', 'inferred')),
+    header_sha256 TEXT NOT NULL,
+    body_sha256 TEXT NOT NULL
+) STRICT;
+CREATE INDEX canonical_revision_instants ON canonical_revisions (start_epoch_ns, end_epoch_ns);
+CREATE INDEX canonical_revision_dates ON canonical_revisions (start_local_date, end_local_date);
+CREATE TABLE item_quarantines (
+    installation_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    item_index INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    pointer TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (installation_id, sequence, item_index),
+    FOREIGN KEY (installation_id, sequence, item_index)
+        REFERENCES batch_items (installation_id, sequence, item_index)
+) STRICT;
+CREATE INDEX processing_record_type ON source_records (record_type, record_id);
+CREATE INDEX processing_latest_selection ON source_selections (record_id, selection_id, outcome);
+"""

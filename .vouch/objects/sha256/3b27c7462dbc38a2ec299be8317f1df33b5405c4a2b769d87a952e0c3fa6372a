@@ -1,0 +1,1 @@
+{"actor":"operator","event":"UnitInvalidated","event_format":2,"pack_digest":"","payload":{"name":"operational-store","trigger_deviation_id":"DEV-os4-01"},"prev":"6b6dfa911c2891c9e97d1e6d7e4f3af3e4ae18cedf772562bc9e42b6785c0265","recorded_at":"2026-11-24T15:01:52+00:00","revision":471,"run_id":""}
