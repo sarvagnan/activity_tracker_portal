@@ -266,9 +266,60 @@ Not mechanically provable here; the approver confirms these in implementation re
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- the new suite `tests/acceptance/test_operational_store_4.py`, covering R28–R40;
-- the fixture `tests/acceptance/fixtures/operational-store-3-index.sql`, a synthetic database written by the published `@3` module (R29);
-- the runner `tests/acceptance/run_operational_store_4.sh`, which runs `@3`'s bound runner unchanged and then the new suite;
-- the Interface stub, appended to the published module: the new dataclasses and operations, each raising `NotImplementedError`. The stub adds no `FAILURES` entries and no migration; the implementer adds both.
+- the new suite `tests/acceptance/test_operational_store_4.py`, 55 tests across R28–R40. Every proposed test name above is present. One extra test, `test_processing_reserve_admits_no_write_calls_and_equal_free_space`, pins Decision 12 across all six writes;
+- the fixture `tests/acceptance/fixtures/operational-store-3-index.sql`. It is an `iterdump` of a synthetic database that the published `@3` module wrote, at `5ee9db6`, unchanged since `1b13103`, with `PRAGMA user_version=2` appended. It holds:
+  - six Source Records: a projection selection, a record whose newer projection was selected again, a retraction selection, a Source Conflict, a weight record, and an indexed record with no selection;
+  - three unindexed items (R29).
+- the runner `tests/acceptance/run_operational_store_4.sh`, which runs `@3`'s bound runner unchanged (it runs `@2`'s and `@1`'s) and then the new suite;
+- the Interface stub, added to the published module: the ten frozen dataclasses (real, with bytes omitted from `repr`) and fifteen operations, each raising `NotImplementedError("operational-store@4")`. The stub adds no `FAILURES` entries and no migration; the implementer adds both.
 
-RED must come from the stubs alone, and the 113 bound tests of `@1`–`@3` must still pass. The implementer then reviews the pack read-only for tests a correct implementation could not pass, and those findings are resolved before freeze.
+RED, against the stub: 53 of the 55 new tests fail, all because of the stub. 49 raise `NotImplementedError`. Four fail on an `AssertionError` because the stub has no new `FAILURES` names and no migration 3: `test_failures_match_contract_4`, `test_new_database_records_migrations_1_to_3`, `test_version_3_database_requires_migration_and_is_untouched` (the stub opens a migration-2 database without refusing), and `test_migrated_version_3_index_awaits_processing` (no table is added). The two pure contract tests pass. `@1`, `@2`, and `@3`'s 113 bound tests (53, 15, and 45) still pass.
+
+A throwaway reference implementation, kept out of the repository, passes all four suites. The reference also passes `tests/unit`, including the hardening test that expects every known migration, and `tests/governance`. The drafter tried 69 wrong implementations of the high-risk rules: fences and held leases, the expiry and `not_before` boundaries, re-targeting, the retry bound at reclaim and at transient failure, idempotence and the outcome key, outcome conflicts, reserve gating, backfilling migrations, quarantine and items awaiting indexing, counts, split transactions, supersession, re-queueing, the awaiting-processing filters, and refusal shapes. The final suite kills 68 of them. One of the 68 recorded the newer selection's evidence on an outcome and survived the first draft; R33 now checks the outcome's `evidence_id`. The one survivor adds no-op `UPDATE`s (`SET origin = origin`) to earlier tables. They change no row, so R40 cannot observe them; the approver checks this in review.
+
+The tests pin these refinements beyond the approved text. None is meant to change approved semantics; items marked **(escalate)** are readings the approver should confirm with the Operator.
+- **Interface.** `fail_processing_job`'s `kind` is `"transient"` or `"deterministic"`. `selections_awaiting_processing` takes a mapping from record type to processor version. `RevisionEntry`, `StoredRevision`, and therefore `OutcomeEntry` and `ProcessingOutcome` leave their bytes out of `repr` (R38).
+- **Migrations (R29).**
+  - Migrations 1 and 2 keep the checksums the published `@3` module recorded.
+  - Each statement of migration 3 is a `CREATE TABLE` or `CREATE [UNIQUE] INDEX`.
+  - A migrated `@3` database is writable: enqueueing works on it.
+- **Open job (R30).** Enqueueing returns the open job unchanged and writes nothing, below the reserve too, whatever selection, bound, or time the call names. A leased job whose lease expired is still the open job. The suite never combines the open-job return with a refusal cause, so the order between them is unpinned.
+- **Times.**
+  - `closed_at` is the closing call's `at`. That covers completion, failure, supersession at claim or completion, and expiry exhaustion at claim.
+  - A new, re-queued, or retried job has no lease owner, lease expiry, or failure.
+  - `not_before` equal to `at` is eligible. A lease expiring exactly at `at` is expired, both for claims and for `processing_counts`.
+- **Fences and attempts.**
+  - Each claim of a job gives it a strictly higher fence than the last, and renewal keeps the fence. The initial value and the step are unpinned.
+  - An attempt's `claimed_at` and `expires_at` are pinned at claim time. `finished_at` is the call's `at` for completed and failed attempts. For `lease-expired` attempts it is only non-`None`.
+  - A completed attempt has no reason. A failed attempt carries the caller's reason.
+- **Expiry and supersession together.** A reclaimed expired lease whose record is now retracted closes its attempt as `lease-expired`, then the job is `superseded`. **(escalate)** No rule in R31–R35 produces the `superseded` attempt result. The suite never expects it, and it is still a valid value.
+- **Retry bound (R31, R35).**
+  - Exhaustion at reclaim means the attempts used equal `max_attempts`. With two attempts, a job whose lease expires twice fails at the third claim with `lease-expired-retries-exhausted`.
+  - A reclaim counts toward the bound for transient failures too.
+  - Re-queueing for a newer selection resets attempts, so a one-attempt job can be claimed again.
+- **Held leases.** Renewal, completion, and failure all succeed on an expired lease that no other claim took (Decision 4). A repeat completion or failure after success is `lease-not-held`.
+- **Outcome conflict (R33).** Any difference in kind, reason, pointer, policy kind, revision bytes, body version, or any indexed header column is `outcome-conflict`. The identical repeat returns the first outcome, with its own job, fence, and time.
+- **Outcome shape (R34).**
+  - Valid: an instant with all `end_*` columns `None`, an end equal to its start, a 64-character reason, and the pointer `""`.
+  - Invalid: an uppercase, underscored, spaced, hyphen-led, hyphen-ended, empty, or non-string reason.
+  - Unpinned: leading digits, double hyphens, a `datetime` passed as a local date, an end local date before the start date, and the pointer for kinds other than quarantine.
+- **Request shape.**
+  - Invalid processor versions pinned: no `@`, an empty scope or version, uppercase, an underscore, a space, a non-numeric version, two `@`, and a non-string. `@0` and leading zeros are unpinned.
+  - `max_attempts` and `lease_seconds` refuse non-integers such as `2.5` and `"3"`, and accept their bounds (1 and 100; 1 and 86,400). `bool` is unpinned.
+  - An empty owner is refused.
+  - A naive `retry_at` is `timestamp-invalid`.
+- **Item quarantine (R36).**
+  - The pointer follows the quarantine-outcome rule: `""` or a string starting with `/`. A `None` or non-string pointer is `processing-request-invalid`.
+  - `items_awaiting_index(limit)` applies the limit after leaving quarantined items out.
+  - Unpinned: an identical repeat after the item was indexed.
+- **Reads (R37).**
+  - `selections_awaiting_processing` returns `()` for an empty mapping, and applies the limit across all mapped types in record order.
+  - A failed job blocks only the selection it last targeted. A newer projection selection awaits again.
+  - A superseded job never blocks.
+  - `latest_outcome` picks the highest `outcome_id` among policy identities for the latest selection.
+  - Every processing read in one view is isolated from later commits.
+- **Counts (R38).** `quarantined_items` is checked only where no quarantined item was later indexed. Whether it counts history or only unindexed items is unpinned.
+- **Concurrency (R31).** Two threads with separate handles claim twelve jobs without overlap.
+- **Refusal order.** Every new refusal assertion is single-cause, as for `@3`'s `record_selection`. Below the reserve, an invariant refusal is never combined with a write.
+
+The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze.

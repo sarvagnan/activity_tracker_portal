@@ -8,10 +8,10 @@ callers behave, inside one SQLite transaction per operation.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 import hashlib
 import os
 from os import PathLike
@@ -622,6 +622,171 @@ _AWAITING_SELECTION_SQL = (
 )
 
 
+# operational-store@4: Processing Jobs, leases, outcomes, and item quarantine
+# (packs/operational-store-4.spec.md).
+
+Attribution = Literal["experienced", "inferred"]
+OutcomeKind = Literal["revision", "unmodeled", "policy-pending", "quarantine"]
+JobState = Literal["queued", "leased", "completed", "failed", "superseded"]
+AttemptResult = Literal["completed", "transient-failure", "deterministic-failure", "lease-expired", "superseded"]
+FailureKind = Literal["transient", "deterministic"]
+
+
+@dataclass(frozen=True)
+class RevisionEntry:
+    """The caller's Canonical Revision: opaque header and body bytes plus indexed header columns (Decision 7).
+
+    The end_* columns are all None for an instant. The store never parses the bytes, and repr omits them.
+    """
+
+    header_bytes: bytes = field(repr=False)
+    body_bytes: bytes = field(repr=False)
+    body_version: int
+    start_epoch_ns: int
+    end_epoch_ns: int | None
+    start_local_date: date
+    end_local_date: date | None
+    start_attribution: Attribution
+    end_attribution: Attribution | None
+
+
+@dataclass(frozen=True)
+class OutcomeEntry:
+    """One interpretation outcome, decided by interpret-source-projection; the store checks its shape only."""
+
+    kind: OutcomeKind
+    processor_version: str
+    policy_identity: str
+    reason: str | None
+    pointer: str | None
+    policy_kind: str | None
+    revision: RevisionEntry | None
+
+
+@dataclass(frozen=True)
+class StoredRevision:
+    """A recorded Canonical Revision with the store's digests; repr omits its bytes."""
+
+    header_bytes: bytes = field(repr=False)
+    body_bytes: bytes = field(repr=False)
+    body_version: int
+    start_epoch_ns: int
+    end_epoch_ns: int | None
+    start_local_date: date
+    end_local_date: date | None
+    start_attribution: Attribution
+    end_attribution: Attribution | None
+    header_sha256: str
+    body_sha256: str
+
+
+@dataclass(frozen=True)
+class ProcessingOutcome:
+    """One immutable outcome for a selection, processor version, and policy identity; a revision's identity is outcome_id."""
+
+    outcome_id: int
+    record_id: int
+    selection_id: int
+    evidence_id: int
+    processor_version: str
+    policy_identity: str
+    kind: OutcomeKind
+    reason: str | None
+    pointer: str | None
+    policy_kind: str | None
+    revision: StoredRevision | None
+    job_id: int
+    fence: int
+    recorded_at: datetime
+
+
+@dataclass(frozen=True)
+class ProcessingAttempt:
+    """One claim of a Processing Job; result is None while the attempt is open."""
+
+    fence: int
+    owner: str
+    claimed_at: datetime
+    expires_at: datetime
+    finished_at: datetime | None
+    result: AttemptResult | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class ProcessingJob:
+    """A Processing Job for one Source Record and processor version, with its attempts in order."""
+
+    job_id: int
+    record_id: int
+    processor_version: str
+    selection_id: int
+    state: JobState
+    max_attempts: int
+    attempts: int
+    not_before: datetime
+    fence: int
+    lease_owner: str | None
+    lease_expires_at: datetime | None
+    failure: str | None
+    enqueued_at: datetime
+    closed_at: datetime | None
+    history: tuple[ProcessingAttempt, ...]
+
+
+@dataclass(frozen=True)
+class Lease:
+    """An expiring lease on one job, fenced by the claim that took it, naming what the holder interprets."""
+
+    job_id: int
+    fence: int
+    owner: str
+    record_id: int
+    selection_id: int
+    evidence_id: int
+    processor_version: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class ItemQuarantine:
+    """A health-data-free quarantine of one archived projection item that cannot be indexed."""
+
+    position: ItemPosition
+    reason: str
+    pointer: str
+    recorded_at: datetime
+
+
+@dataclass(frozen=True)
+class AwaitingProcessing:
+    """A Source Record's latest projection selection that awaits processing under one processor version."""
+
+    record_id: int
+    selection_id: int
+    processor_version: str
+
+
+@dataclass(frozen=True)
+class ProcessingCounts:
+    """Health-data-free processing counts at one caller time."""
+
+    jobs_ready: int
+    jobs_delayed: int
+    jobs_leased: int
+    jobs_lease_expired: int
+    jobs_completed: int
+    jobs_failed: int
+    jobs_superseded: int
+    revisions: int
+    unmodeled: int
+    policy_pending: int
+    quarantined: int
+    quarantined_items: int
+    items_awaiting_index: int
+
+
+
 class StoreView:
     """Reads bound to one SQLite read transaction."""
 
@@ -920,6 +1085,35 @@ class StoreView:
         return IndexCounts(
             row["unindexed_items"], row["source_records"], row["evidence_items"], row["records_awaiting_selection"],
         )
+
+    def processing_job(self, job_id: int) -> ProcessingJob | None:
+        raise NotImplementedError("operational-store@4")
+
+    def processing_jobs(self, record_id: int) -> tuple[ProcessingJob, ...]:
+        raise NotImplementedError("operational-store@4")
+
+    def processing_outcomes(self, record_id: int) -> tuple[ProcessingOutcome, ...]:
+        raise NotImplementedError("operational-store@4")
+
+    def latest_outcome(self, record_id: int, processor_version: str) -> ProcessingOutcome | None:
+        raise NotImplementedError("operational-store@4")
+
+    def selections_awaiting_processing(
+        self, processor_versions: Mapping[str, str], limit: int
+    ) -> tuple[AwaitingProcessing, ...]:
+        raise NotImplementedError("operational-store@4")
+
+    def items_awaiting_index(self, limit: int) -> tuple[PendingItem, ...]:
+        raise NotImplementedError("operational-store@4")
+
+    def item_quarantine(self, position: ItemPosition) -> ItemQuarantine | None:
+        raise NotImplementedError("operational-store@4")
+
+    def projection_bytes(self, evidence_id: int) -> bytes | None:
+        raise NotImplementedError("operational-store@4")
+
+    def processing_counts(self, at: datetime) -> ProcessingCounts:
+        raise NotImplementedError("operational-store@4")
 
     def storage_reserve(self) -> ReserveStatus:
         free = _sample_free_bytes(self._free_bytes, self._path)
@@ -1379,6 +1573,30 @@ class OperationalStore:
                 selection_id, cast(Literal["projection", "retraction", "conflict"], outcome),
                 evidence_ids, evidence_head, _datetime(timestamp),
             )
+
+    def enqueue_processing(
+        self, record_id: int, selection_id: int, processor_version: str, max_attempts: int, at: datetime
+    ) -> ProcessingJob:
+        raise NotImplementedError("operational-store@4")
+
+    def claim_processing_job(self, owner: str, lease_seconds: int, at: datetime) -> Lease | None:
+        raise NotImplementedError("operational-store@4")
+
+    def renew_processing_lease(self, job_id: int, fence: int, lease_seconds: int, at: datetime) -> Lease:
+        raise NotImplementedError("operational-store@4")
+
+    def complete_processing_job(
+        self, job_id: int, fence: int, outcome: OutcomeEntry, at: datetime
+    ) -> ProcessingOutcome:
+        raise NotImplementedError("operational-store@4")
+
+    def fail_processing_job(
+        self, job_id: int, fence: int, kind: FailureKind, reason: str, retry_at: datetime | None, at: datetime
+    ) -> ProcessingJob:
+        raise NotImplementedError("operational-store@4")
+
+    def quarantine_item(self, position: ItemPosition, reason: str, pointer: str, at: datetime) -> ItemQuarantine:
+        raise NotImplementedError("operational-store@4")
 
     def read(self) -> AbstractContextManager[StoreView]:
         return self._read_view()
