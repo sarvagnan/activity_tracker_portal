@@ -86,6 +86,7 @@ Proposed tests: `test_envelope_yields_index_key_and_time`, `test_unparseable_byt
 `interpret` checks, in this order, and stops at the first that applies:
 1. `processing-input-invalid` when the input is malformed:
    - a naive timestamp;
+   - a `record_id`, `selection_id`, or `evidence_id` that is not a positive Python `int` (a `bool` is not an `int` here);
    - a policy timeline that is not strictly increasing, has duplicate identities, or names an unknown zone;
    - a processor whose record type differs from the input's.
 2. `projection-digest-mismatch` when the bytes' SHA-256 differs from the evidence digest.
@@ -147,6 +148,7 @@ Proposed tests: `test_instant_and_interval_shapes`, `test_instants_keep_nanoseco
 - **Timezone data.** Zones load only from the pinned `tzdata` package, never the host database. Its IANA version is part of the policy identity (Decision 5).
 - **Policy-Pending.** If any endpoint has no source offset and no applicable policy, the outcome is `PolicyPending("fallback-timezone", "fallback-timezone-policy-missing")` (Decision 4).
 - **Policy identity.** The policy identity is `"none"` when every endpoint is experienced. Otherwise it is `"fallback-timezone:"` followed by the sorted policy identities used and the tzdata version, in a documented canonical form. It names only the policies that changed the result, so a policy change never alters a revision that used none.
+- **Policy identity on other outcomes.** Every endpoint is attributed before any outcome is chosen. A Policy-Pending or `instant-out-of-range` outcome therefore carries the identity of every policy applied to any endpoint, in the same form. Examples are a pending interval whose other endpoint was inferred, and a local date that a policy pushed out of range. The identity is `"none"` only when no policy was applied. This restores the approved guarantee after GPT 6 Astra's Gate B review.
 
 Proposed tests: `test_inferred_local_date_uses_applicable_policy`, `test_inferred_offset_keeps_seconds` (for the seconds decision), `test_policy_boundary_is_inclusive`, `test_explicit_offset_overrides_policy`, `test_missing_policy_is_policy_pending`, `test_one_missing_endpoint_is_policy_pending`, `test_policy_identity_names_only_policies_used`, `test_zones_load_from_pinned_tzdata`.
 
@@ -163,7 +165,7 @@ Proposed tests: `test_inferred_local_date_uses_applicable_policy`, `test_inferre
 - `UNITS` is the projection's storage units (`project-source-record@1` R6): `g`, `cal`, `m`, `L`, `m/s`, `W`, `mmHg`, `degC`, `mmol/L`, `percent`. It adds `count`, `1/min` for rates such as beats per minute, `ns` for durations, and `mL/(kg*min)`.
 - A body value is the projection's value in that unit. Nothing is converted or rounded (Decision 8).
 - The body bytes are RFC 8785 canonical UTF-8 JSON.
-- Every Python `int` in the body lies within ±(2^53 − 1), the integers an RFC 8785 number holds exactly; otherwise the outcome is `processor-invariant-violated`. The limit applies to integer values, not to the tokens RFC 8785 writes for finite floats, so the float `1e16` is valid and is written `10000000000000000`.
+- **Body integer domain (Operator decision, 2026-11-24).** The body follows the I-JSON safe-integer domain. Every Python `int` in the body lies within ±(2^53 − 1); otherwise the outcome is `processor-invariant-violated`. This also excludes 2^53, although binary64 holds it exactly, because the I-JSON domain is the interoperable one. Finite floats keep their RFC 8785 rendering, so the float `1e16` is valid and is written `10000000000000000`.
 
 Proposed tests: `test_processor_receives_record_and_header`, `test_processor_quarantine_uses_declared_reason`, `test_undeclared_reason_violates_invariant`, `test_undeclared_numeric_field_violates_invariant`, `test_integer_and_float_kinds_are_enforced`, `test_unknown_unit_violates_invariant`, `test_body_bytes_are_canonical`, `test_processor_exception_is_an_invariant_violation`, and `test_processor_pointer_must_name_a_schema_field` (added after the implementer's review).
 
@@ -181,15 +183,17 @@ The header is RFC 8785 canonical JSON with these fields, and nothing a processor
   - each endpoint is `{"instant", "applied_offset", "local_date", "attribution"}`, plus `source_offset` and `policy_id` when they are not `None`;
   - `instant` is the exact text and `local_date` is `YYYY-MM-DD`. Epoch nanoseconds are not serialized, because they follow from the exact text.
 - **Versions:** `header_version` (`COMMON_VERSION`), `processor_version`, `body_schema` (record type and body version), and `policy_identity`.
+- **Store identities as text (Operator decision, 2026-11-24).** `record_id`, `selection_id`, and `evidence_id` are written in the header bytes as decimal strings, such as `"record_id":"9007199254740993"`. That keeps any size exact. SQLite `INTEGER` keys can exceed what an RFC 8785 number holds. In `RevisionHeader` they stay Python `int`s, and R4 step 1 refuses any that is not a positive `int`. Every other integer in the header is schema-bounded and stays a JSON number.
 - **Body:** `body_sha256`.
 
 `revision_sha256` is the SHA-256 of the header bytes, so it covers the body. The processor must meet these rules, or the outcome is `processor-invariant-violated`:
 - `processor_version` has the form `<scope>@<version>`, for example `interpret-steps@1` (Decision 7);
-- the body schema's record type equals the processor's.
+- the body schema's record type equals the processor's;
+- the body schema's `body_version` is a positive Python `int` (not a `bool`) within 2^53 − 1, the I-JSON domain of the Operator's body-integer decision.
 
 The Portal revision identity is assigned when `operational-store@4` stores the revision, not here.
 
-Proposed tests: `test_header_carries_identity_provenance_and_versions`, `test_header_omits_client_record_id`, `test_revision_digest_covers_header_and_body`, `test_processor_version_form_is_checked`, `test_body_schema_must_match_processor_type`.
+Proposed tests: `test_header_carries_identity_provenance_and_versions`, `test_header_omits_client_record_id`, `test_revision_digest_covers_header_and_body`, `test_processor_version_form_is_checked`, `test_body_schema_must_match_processor_type`, and, for the store-identity decision, `test_store_identities_are_exact_decimal_text`.
 
 ### R11 — Health-data-free outcomes and failures
 
@@ -237,21 +241,35 @@ Proposed tests: `test_outcomes_are_health_data_free`, `test_failures_are_health_
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the suite `tests/acceptance/test_interpret_source_projection_1.py`, 53 tests across R1–R11, one per proposed test name. The 50 drafted names are joined by `test_out_of_range_instants_are_quarantined` and `test_inferred_offset_keeps_seconds` for the two Operator decisions below, and by `test_processor_pointer_must_name_a_schema_field` for Sol's finding 7;
+- the suite `tests/acceptance/test_interpret_source_projection_1.py`, 54 tests across R1–R11, one per proposed test name. Four tests join the 50 drafted names:
+  - `test_out_of_range_instants_are_quarantined` and `test_inferred_offset_keeps_seconds`, for the first two Operator decisions below;
+  - `test_processor_pointer_must_name_a_schema_field`, for Sol's finding 7;
+  - `test_store_identities_are_exact_decimal_text`, for the store-identity decision;
 - the runner `tests/acceptance/run_interpret_source_projection_1.sh`;
 - the Interface stub `src/activity_tracker_portal/interpret_source_projection.py`: `COMMON_VERSION`, `UNITS`, `InterpretFailure`, the frozen dataclasses `ProcessingInput`, `FallbackTimezonePolicy`, `Instant`, `Endpoint`, `TemporalHeader`, `NumericField`, `BodySchema`, `Quarantine`, `Unmodeled`, `PolicyPending`, `RevisionHeader`, `CanonicalRevision`, and `Envelope`, and the `Processor` protocol, with `decode_envelope` and `interpret` raising `NotImplementedError`. Every outcome carries `processor_version` and `policy_identity`; on `Quarantine`, `Unmodeled`, and `PolicyPending` they default to `COMMON_VERSION` and `"none"`, so a processor returns `Quarantine(reason, pointer)`. `RevisionHeader` has one field per R10 header entry, with the temporal header as `time`, `last_modified_time` as an `Instant`, and `body_schema` as the processor's `BodySchema`;
 - `tzdata==2026.6` (IANA release `2026f`) as a pinned runtime dependency in `pyproject.toml` and `uv.lock`, per Decision 5. `jsonschema` stays a development dependency.
 
-RED, against the stub: 50 of the 53 tests fail. Counting subtests, there are 269 errors, each a `NotImplementedError` from the stub, and 2 failures, the subprocess tests of R2 and R8, which fail with `AssertionError` because the subprocess raised the stub's `NotImplementedError`. The three R1 contract tests pass.
+RED, against the stub: 51 of the 54 tests fail. Counting subtests, there are 306 errors, each a `NotImplementedError` from the stub, and 2 failures, the subprocess tests of R2 and R8, which fail with `AssertionError` because the subprocess raised the stub's `NotImplementedError`. The three R1 contract tests pass.
 
-A throwaway reference implementation passes all 53 tests. Of 92 incorrect implementations of the high-risk rules, 91 fail at least one test:
+A throwaway reference implementation passes all 54 tests. Of 114 incorrect implementations of the high-risk rules, 113 fail at least one test:
 - the 74 from the first round, rebuilt against the updated reference;
 - 5 that port GPT 6.1 Sol's surviving mutants;
-- 13 for the new rules: pointer grammar only, pointer must exist, reason grammar unchecked when declared, the year-0000 envelope reported as `projection-envelope-invalid`, the year check after Unmodeled, the year check after the reversed-interval check, Policy-Pending before `instant-out-of-range`, a clamped local date, the wrong out-of-range pointer, an offset truncated to minutes, an offset text without seconds, seconds always written, and an extra key in the `time` layout.
+- 13 for the rules of Sol's round: pointer grammar only, pointer must exist, reason grammar unchecked when declared, the year-0000 envelope reported as `projection-envelope-invalid`, the year check after Unmodeled, the year check after the reversed-interval check, Policy-Pending before `instant-out-of-range`, a clamped local date, the wrong out-of-range pointer, an offset truncated to minutes, an offset text without seconds, seconds always written, and an extra key in the `time` layout;
+- GPT 6 Astra's 12 independent mutants, rebased onto the updated reference;
+- 8 for this Gate B round:
+  - `"none"` on an inferred `instant-out-of-range`;
+  - `"none"` on a partly inferred Policy-Pending;
+  - attribution that stops at the first failing endpoint;
+  - store identities as JSON numbers;
+  - store identities rounded through a float;
+  - store identities unvalidated;
+  - zero accepted as a store identity;
+  - `bool` accepted as a store identity;
+- 2 for the `body_version` check: the check skipped, and a `bool` accepted.
 
 The survivor accepts a `oneOf` that more than one branch matches. Every `oneOf` in `projection/v1` discriminates on a `kind` constant, so no projection can tell it apart.
 
-A variant of the reference that calls `time.gmtime`, `time.strftime`, and `time.asctime` with explicit arguments passes all 53 tests. Sol's original mutants and Sol's independent reference fail against this suite, because they predate the Operator decisions below. Sol's five former survivors fail the tests aimed at them:
+A variant of the reference that calls `time.gmtime`, `time.strftime`, and `time.asctime` with explicit arguments passed all 53 tests of Sol's round. Sol's original mutants and Sol's independent reference fail against this suite, because they predate the Operator decisions below. Sol's five former survivors fail the tests aimed at them:
 - `allow-wide-body-int` fails `test_integer_and_float_kinds_are_enforced`;
 - `clock-at-import` fails `test_interpret_has_no_store_or_clock_dependency` with `clock read`;
 - `drop-pointer-sanitization` fails `test_processor_pointer_must_name_a_schema_field`;
@@ -275,6 +293,21 @@ A variant of the reference that calls `time.gmtime`, `time.strftime`, and `time.
   - `Asia/Kolkata` 1800 at `+05:53:28`, across midnight;
   - `Asia/Kolkata` 1900 at `+05:21:10`;
   - a modern offset that keeps `±hh:mm`.
+
+- **Store identities as text** (Astra Gate B finding 2; R4, R10). `record_id`, `selection_id`, and `evidence_id` are decimal strings in the header bytes, so any size stays exact. In memory they stay Python `int`s, and R4 step 1 refuses any that is not a positive `int`, which rules out zero, negatives, `bool`, strings, floats, and `None`. The tests cover each identity at 1, 2^53 − 1, 2^53, 2^53 + 1, 2^63 − 1, and 2^64 + 5. The header text must match exactly, and two identities beyond 2^53 that differ by 1 must give different revisions.
+- **Body integer domain** (Astra Gate B finding 3; R9). The body follows the I-JSON safe-integer domain, ±(2^53 − 1). A processor returning an integer outside it raises `processor-invariant-violated`, including 2^53, which binary64 holds exactly. Finite floats keep their RFC 8785 rendering.
+
+**GPT 6 Astra's Gate B objection (2026-11-24): resolutions.**
+1. **Policy identity** (high). The approved guarantee is restored without a new decision (R8, "Policy identity on other outcomes"). Every endpoint is attributed before an outcome is chosen. Policy-Pending and `instant-out-of-range` then name every policy applied, in the R8 form, and are `"none"` only when none was applied. New assertions:
+   - an inferred overflow through `America/New_York` and `Asia/Tokyo`;
+   - an interval with the end out of range and the start inferred, and the reverse;
+   - an experienced out-of-range start with an inferred end;
+   - Astra's partly inferred pending interval, and one more like it;
+   - a pending interval with an experienced start, which stays `"none"`.
+
+   Astra's probe now gives the policy identity in both cases. The previous reference fails 5 of the new tests.
+2. **Large store identities** (high). Resolved by the Operator decision above. Astra's probe now round-trips `9007199254740993` exactly.
+3. **Body integer domain** (medium). Resolved by the Operator decision above. The body tests were already in place from Sol's round. The same domain now applies to the processor's declared `body_version` (R10). Values of 0, −1, `True`, 2^53, 2^53 + 1, `"1"`, `1.0`, and `None` raise `processor-invariant-violated`, and 1 and 2^53 − 1 are written exactly. These cases are in `test_body_schema_must_match_processor_type`.
 
 **GPT 6.1 Sol's read-only review (2026-11-24): resolutions.**
 1. **Integer range** (blocking). The restriction applies to integer values, meaning Python `int`s in the body, not to the tokens RFC 8785 writes for finite floats (R9). The suite's `is_canonical` now requires each number token to be the RFC 8785 rendering of the binary64 value it denotes. Under that rule, `10000000000000000` for the float `1e16` passes and `9007199254740993` fails. Tests cover:
@@ -314,9 +347,9 @@ The tests also pin these refinements:
   - The `jsonschema` cross-check also covers 7,647 single-field faults derived from every positive vector outside the envelope fields: a field retyped, emptied, or deleted, or an unknown field added. 6,534 of them are invalid. The verdicts must agree, and where `jsonschema` reports one error outside a `oneOf`, the pointer must name the faulted field. A boolean is never an integer or a number.
 - **Versions and policy identity on non-revision outcomes (R4, R6, R8).**
   - With a processor, a `projection-schema-invalid`, `interval-reversed`, or `instant-out-of-range` Quarantine and a Policy-Pending carry that processor's version. `record-type-not-modeled` carries `COMMON_VERSION`.
-  - Those outcomes, and Policy-Pending when no policy applies to any endpoint, carry the policy identity `"none"`. The policy identity of an `instant-out-of-range` from an inferred local date is not pinned.
+  - The schema-invalid and interval-reversed Quarantines carry the policy identity `"none"`. So do Policy-Pending and `instant-out-of-range` when no policy was applied to any endpoint.
+  - Policy-Pending and `instant-out-of-range` name every policy applied to any endpoint (R8). That covers a pending interval whose other endpoint was inferred, a local date a policy pushed out of range, and an interval where one endpoint is out of range and the other inferred. The identity depends only on the set of policies used and the tzdata release, so the tests compare it with the identity of a revision that used the same policies.
   - A processor's Quarantine carries the policy identity of the temporal header it was given, which equals the identity the revision would have had.
-  - The policy identity of a Policy-Pending with one inferred endpoint is not pinned.
 - **Malformed input (R4).**
   - The timeline is validated eagerly. A naive `effective_from` is `processing-input-invalid`, and so is a `None` start that is not first, two policies at the same instant in different offsets, or an unknown zone in a policy that would never apply. This holds even when the outcome would otherwise be Unmodeled.
   - Timeline order and `last_modified_time` are compared as instants, whatever offset they are written in. An input time 1 µs away is `projection-identity-mismatch`, and so is a different source-system kind, origin, Source Identity, record type, or schema version.
@@ -333,7 +366,7 @@ The tests also pin these refinements:
 - **Header bytes (R10).**
   - The top-level keys are exactly the R10 names, with `time` for the temporal header. `device` is omitted when absent, never `null`. `body_schema` is `{"record_type", "body_version"}`. `last_modified_time` is the exact text.
   - The layout inside `time` is the documented one in R10, checked exactly.
-  - Header and body bytes are RFC 8785: every number token is the rendering of the binary64 value it denotes. Body integers stay within ±(2^53 − 1) (R9).
+  - Header and body bytes are RFC 8785: every number token is the rendering of the binary64 value it denotes. Body integers stay within ±(2^53 − 1) (R9). Store identities are decimal strings (R10).
 - **Body (R9).**
   - The processor violates the invariant if it returns something other than a mapping, or a body containing `null`, bytes, a date, or a non-string key.
   - Every value at a declared `NumericField` pointer must be a number of its kind, so a string `"5"` at an integer field is a violation.
@@ -356,7 +389,4 @@ The tests also pin these refinements:
   - an import of `operational_store`.
   This covers part of what the Ground rules list as not mechanically provable. The approver still reviews those items, because a C-level clock read such as `datetime.now()` cannot be intercepted.
 
-Still open for the approver:
-- Integer identities in the input are not range-checked by any test. These are `record_id`, `selection_id`, and `evidence_id`, which the store assigns. The suite does not pin a refusal for values beyond ±(2^53 − 1).
-
-The implementer reviewed the pack read-only, and the findings above are resolved. The approver confirms the resolution before freeze.
+The implementer reviewed the pack read-only, and the approver objected at Gate B. The findings of both are resolved above. The approver confirms the resolution before freeze.

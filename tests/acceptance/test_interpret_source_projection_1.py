@@ -414,6 +414,18 @@ class Checks(unittest.TestCase):
         self.assertEqual(json.loads(outcome.header_bytes)["time"], time_json(outcome.header.time))
         return outcome
 
+    def identity_for(self, *policy_ids: str) -> str:
+        """The policy identity of a revision whose endpoints use exactly these policies (R8: it depends only on them)."""
+        timeline = [policy(policy_id, None if index == 0 else datetime(2026, 1, 15, 7, 45, tzinfo=UTC), "UTC")
+                    for index, policy_id in enumerate(policy_ids)]
+        if len(policy_ids) == 1:
+            outcome = self.revision(weight(offset=None), SyntheticProcessor("weight"), timeline)
+        else:
+            outcome = self.revision(steps(start_offset=None, end_offset=None), steps_processor(), timeline)
+        for policy_id in policy_ids:
+            self.assertIn(policy_id, outcome.policy_identity)
+        return outcome.policy_identity
+
     def assert_health_free(self, text: str) -> None:
         self.assertNotIn(HEALTH_MARKER, text)
         self.assertNotIn(IDENTITY, text)
@@ -737,6 +749,10 @@ class R4OneOutcomeInFixedOrder(Checks):
         with self.subTest("naive last_modified_time"):
             self.assertEqual(self.refused(steps(), None, (), last_modified_time=datetime(2026, 1, 15, 9, 0, 0, 123456)),
                              "processing-input-invalid")
+        for field in ("record_id", "selection_id", "evidence_id"):
+            for value in (0, -1, True, "41", 41.0, None):
+                with self.subTest(field=field, value=value):
+                    self.assertEqual(self.refused(steps(), steps_processor(), (), **{field: value}), "processing-input-invalid")
         with self.subTest("processor for another record type"):
             self.assertEqual(self.refused(steps(), SyntheticProcessor("weight")), "processing-input-invalid")
         with self.subTest("valid timeline is accepted"):
@@ -1145,11 +1161,22 @@ class R7TemporalHeader(Checks):
                 timeline = [policy("policy-alpha", None, zone)]
                 outcome = run(weight(text, offset=None), SyntheticProcessor("weight"), timeline)
                 if expected is None:
-                    self.assertIsInstance(outcome, Quarantine)
-                    self.assertEqual((outcome.reason, outcome.pointer, outcome.processor_version), (out, "/record/time", PROCESSOR_VERSION))
+                    # The policy decided the overflow, so the outcome names it (R8).
+                    self.assertEqual(outcome, Quarantine(out, "/record/time", PROCESSOR_VERSION, self.identity_for("policy-alpha")))
                 else:
                     self.assertIsInstance(outcome, CanonicalRevision)
                     self.assertEqual((outcome.header.time.start.local_date, outcome.header.time.start.attribution), (expected, "inferred"))
+        # Every endpoint is attributed, and the outcome names every policy applied to any endpoint.
+        both = self.identity_for("policy-alpha", "policy-zulu")
+        self.assertEqual(run(steps("9999-12-31T14:00:00Z", "9999-12-31T23:00:00Z", start_offset=None, end_offset=None), steps_processor(),
+                             [policy("policy-zulu", None, "UTC"), policy("policy-alpha", datetime(9999, 12, 31, 15, tzinfo=UTC), "Asia/Tokyo")]),
+                         Quarantine(out, "/record/end_time", PROCESSOR_VERSION, both))
+        self.assertEqual(run(steps("9999-12-31T15:30:00Z", "9999-12-31T23:00:00Z", start_offset=None, end_offset=None), steps_processor(),
+                             [policy("policy-zulu", None, "Asia/Tokyo"), policy("policy-alpha", datetime(9999, 12, 31, 16, tzinfo=UTC), "UTC")]),
+                         Quarantine(out, "/record/start_time", PROCESSOR_VERSION, both))
+        self.assertEqual(run(steps("9999-12-31T20:00:00Z", "9999-12-31T21:00:00Z", start_offset="+05:30", end_offset=None), steps_processor(),
+                             [policy("policy-zulu", None, "UTC")]),
+                         Quarantine(out, "/record/start_time", PROCESSOR_VERSION, self.identity_for("policy-zulu")))
         # Per endpoint, and before Policy-Pending.
         self.assertEqual(run(steps("9999-12-31T20:00:00Z", "9999-12-31T21:00:00Z", start_offset="-05:00", end_offset="+05:30"),
                              steps_processor()), Quarantine(out, "/record/end_time", PROCESSOR_VERSION, "none"))
@@ -1271,10 +1298,15 @@ class R8FallbackTimezoneAttribution(Checks):
         self.assertEqual(outcome, PolicyPending(*expected, "none"))
         outcome = run(steps(start_offset=None, end_offset="+05:30"), processor, [])
         self.assertEqual(outcome, PolicyPending(*expected, "none"))
+        # The end was inferred through a policy, so the pending outcome names it (R8).
         between = [policy("policy-alpha", datetime(2026, 1, 15, 7, 45, tzinfo=UTC), "UTC")]
         outcome = run(steps(start_offset=None, end_offset=None), processor, between)
-        self.assertIsInstance(outcome, PolicyPending)
-        self.assertEqual((outcome.policy_kind, outcome.reason, outcome.processor_version), expected)
+        self.assertEqual(outcome, PolicyPending(*expected, self.identity_for("policy-alpha")))
+        later = [policy("policy-alpha", datetime(2026, 1, 15, 8, tzinfo=UTC), "Asia/Kolkata")]
+        outcome = run(steps("2026-01-15T07:30:00Z", "2026-01-15T08:30:00Z", start_offset=None, end_offset=None), processor, later)
+        self.assertEqual(outcome, PolicyPending(*expected, self.identity_for("policy-alpha")))
+        outcome = run(steps(start_offset="+05:30", end_offset=None), processor, [policy("policy-alpha", datetime(2026, 1, 15, 8, 30, tzinfo=UTC), "UTC")])
+        self.assertEqual(outcome, PolicyPending(*expected, "none"))
         self.assertEqual(processor.calls, [])
 
     def test_policy_identity_names_only_policies_used(self) -> None:
@@ -1557,7 +1589,7 @@ class R10RevisionHeaderAndIdentity(Checks):
         self.assertEqual(set(header), R10_KEYS)
         self.assertEqual({key: header[key] for key in R10_KEYS - {"time"}}, {
             "source_system_kind": HC, "origin": ORIGIN, "record_type": "steps", "source_identity": SOURCE_IDENTITY,
-            "record_id": 501, "selection_id": 502, "evidence_id": 503, "projection_sha256": sha(data),
+            "record_id": "501", "selection_id": "502", "evidence_id": "503", "projection_sha256": sha(data),
             "projection_schema_version": 1, "projection_implementation_version": "0.1.0-synthetic", "sdk_version": SDK,
             "provider_version": "synthetic-provider-1", "last_modified_time": LMT, "recording_method": 2,
             "device": {"type": 1, "manufacturer": "Synthetic Devices", "model": "SD-1"}, "header_version": COMMON_VERSION,
@@ -1594,6 +1626,22 @@ class R10RevisionHeaderAndIdentity(Checks):
         no_device = self.revision(steps(device=False), steps_processor())
         self.assertIsNone(no_device.header.device)
         self.assertEqual(set(json.loads(no_device.header_bytes)), R10_KEYS - {"device"})
+
+    def test_store_identities_are_exact_decimal_text(self) -> None:
+        """Operator decision, 2026-11-24: store identities are decimal strings in the header bytes, exact at any size."""
+        safe = 2**53 - 1
+        for value in (1, safe, safe + 1, safe + 2, 2**63 - 1, 2**64 + 5):
+            for field in ("record_id", "selection_id", "evidence_id"):
+                with self.subTest(field=field, value=value):
+                    outcome = self.revision(steps(), steps_processor(), (), **{field: value})
+                    self.assertEqual(getattr(outcome.header, field), value)
+                    self.assertIs(type(getattr(outcome.header, field)), int)
+                    self.assertEqual(json.loads(outcome.header_bytes)[field], str(value))
+                    self.assertIn(f'"{field}":"{value}"'.encode(), outcome.header_bytes)
+                    self.assertTrue(is_canonical(outcome.header_bytes))
+        wide = self.revision(steps(), steps_processor(), (), record_id=safe + 2)
+        wider = self.revision(steps(), steps_processor(), (), record_id=safe + 3)
+        self.assertNotEqual(wide.revision_sha256, wider.revision_sha256)
 
     def test_header_omits_client_record_id(self) -> None:
         processor = steps_processor(body=lambda record, temporal: {"count": record["count"], "note": "synthetic-body-sentinel"})
@@ -1633,6 +1681,15 @@ class R10RevisionHeaderAndIdentity(Checks):
     def test_body_schema_must_match_processor_type(self) -> None:
         self.assertEqual(self.refused(steps(), steps_processor(body_record_type="weight")), "processor-invariant-violated")
         self.assertIsInstance(run(steps(), steps_processor(body_record_type="steps")), CanonicalRevision)
+        # body_version is a positive int within the I-JSON safe range (Operator decision, 2026-11-24).
+        for version in (0, -1, True, 2**53, 2**53 + 1, "1", 1.0, None):
+            with self.subTest(body_version=version):
+                self.assertEqual(self.refused(steps(), steps_processor(body_version=version)), "processor-invariant-violated")
+        for version in (1, 2**53 - 1):
+            with self.subTest(body_version=version):
+                outcome = self.revision(steps(), steps_processor(body_version=version))
+                self.assertEqual(json.loads(outcome.header_bytes)["body_schema"], {"record_type": "steps", "body_version": version})
+                self.assertTrue(is_canonical(outcome.header_bytes))
 
 
 # ---- R11 ----
