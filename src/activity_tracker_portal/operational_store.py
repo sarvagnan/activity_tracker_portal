@@ -20,7 +20,7 @@ import sqlite3
 import time
 from typing import Literal, cast
 
-from ._operational_store_sql import _BASELINE_SQL
+from ._operational_store_sql import _BASELINE_SQL, _SOURCE_INDEX_SQL
 
 STARTUP_FAILURES = frozenset(
     {
@@ -50,13 +50,20 @@ INVARIANT_FAILURES = frozenset(
         "generation-not-monotonic",
         "generation-still-required",
         "cycle-already-completed",
+        "archived-item-unknown",
+        "index-entry-mismatch",
+        "index-entry-conflict",
+        "source-key-invalid",
+        "source-record-unknown",
+        "selection-evidence-invalid",
+        "selection-stale",
     }
 )
 FAILURES = STARTUP_FAILURES | RETRYABLE_FAILURES | INVARIANT_FAILURES
 
 # Ordered (version, exact SQL) pairs; store_migrations records the SHA-256 of each
 # migration's UTF-8 SQL. The baseline is migration 1.
-MIGRATIONS: tuple[tuple[int, str], ...] = ((1, _BASELINE_SQL),)
+MIGRATIONS: tuple[tuple[int, str], ...] = ((1, _BASELINE_SQL), (2, _SOURCE_INDEX_SQL))
 
 InstallationState = Literal["pending", "active", "draining", "retired", "withdrawn"]
 RetirementKind = Literal["drained", "destructive"]
@@ -550,6 +557,71 @@ class IndexCounts:
     records_awaiting_selection: int
 
 
+def _source_record_id(connection: sqlite3.Connection, key: SourceKey) -> int | None:
+    row = _execute(
+        connection,
+        "SELECT record_id FROM source_records WHERE source_system_kind = ? AND origin = ? "
+        "AND record_type = ? AND source_identity = ?",
+        (key.source_system_kind, key.origin, key.record_type, key.source_identity),
+    ).fetchone()
+    return None if row is None else row["record_id"]
+
+
+def _record_evidence(connection: sqlite3.Connection, record: sqlite3.Row) -> tuple[Evidence, ...]:
+    # Retractions match at read time, including ones indexed before this record
+    # existed. The two branches use their own indexes and cannot overlap.
+    rows = _execute(
+        connection,
+        "SELECT e.*, b.cycle_kind, b.cycle_id FROM ("
+        "SELECT * FROM source_evidence WHERE record_id = ? UNION ALL "
+        "SELECT * FROM source_evidence WHERE kind = 'retraction' AND record_type = ? AND source_identity = ?"
+        ") e JOIN ingest_batches b ON b.installation_id = e.installation_id AND b.sequence = e.sequence "
+        "JOIN archived_messages m ON m.installation_id = e.installation_id AND m.sequence = e.sequence "
+        "ORDER BY m.rowid, e.item_index",
+        (record["record_id"], record["record_type"], record["source_identity"]),
+    )
+    return tuple(
+        Evidence(
+            evidence_id=row["evidence_id"], kind=row["kind"],
+            position=ItemPosition(row["installation_id"], row["sequence"], row["item_index"]),
+            cycle_kind=row["cycle_kind"], cycle_id=row["cycle_id"],
+            last_modified_time=_optional_datetime(row["last_modified_time"]),
+            projection_sha256=row["projection_sha256"], indexed_at=_datetime(row["indexed_at"]),
+        )
+        for row in rows
+    )
+
+
+def _selection(connection: sqlite3.Connection, row: sqlite3.Row) -> Selection:
+    return Selection(
+        selection_id=row["selection_id"], outcome=row["outcome"],
+        evidence_ids=tuple(
+            item["evidence_id"] for item in _execute(
+                connection, "SELECT evidence_id FROM selection_evidence WHERE selection_id = ? ORDER BY evidence_index",
+                (row["selection_id"],),
+            )
+        ),
+        evidence_head=row["evidence_head"], recorded_at=_datetime(row["recorded_at"]),
+    )
+
+
+# Heads are based on indexing identity, independently of delivery-order listing.
+# Each correlated lookup uses an index on the new tables only.
+_EVIDENCE_HEAD_SQL = (
+    "nullif(max("
+    "coalesce((SELECT max(e.evidence_id) FROM source_evidence e WHERE e.record_id = r.record_id), 0), "
+    "coalesce((SELECT max(e.evidence_id) FROM source_evidence e WHERE e.kind = 'retraction' "
+    "AND e.record_type = r.record_type AND e.source_identity = r.source_identity), 0)"
+    "), 0)"
+)
+_AWAITING_SELECTION_SQL = (
+    "WITH record_heads AS (SELECT r.record_id, " + _EVIDENCE_HEAD_SQL + " AS evidence_head FROM source_records r) "
+    "SELECT h.record_id FROM record_heads h WHERE h.evidence_head > 0 AND h.evidence_head IS NOT "
+    "(SELECT s.evidence_head FROM source_selections s WHERE s.record_id = h.record_id "
+    "ORDER BY s.selection_id DESC LIMIT 1)"
+)
+
+
 class StoreView:
     """Reads bound to one SQLite read transaction."""
 
@@ -789,19 +861,65 @@ class StoreView:
         )
 
     def pending_items(self, limit: int) -> tuple[PendingItem, ...]:
-        raise NotImplementedError("operational-store@3")
+        return tuple(
+            PendingItem(
+                position=ItemPosition(row["installation_id"], row["sequence"], row["item_index"]),
+                record_type=row["record_type"], projection_schema_version=row["projection_schema_version"],
+                cycle_kind=row["cycle_kind"], cycle_id=row["cycle_id"],
+                projection=row["projection"], retracted_identity=row["retracted_identity"],
+            )
+            for row in _execute(
+                self._connection,
+                "SELECT i.*, b.record_type, b.projection_schema_version, b.cycle_kind, b.cycle_id "
+                "FROM batch_items i JOIN ingest_batches b "
+                "ON b.installation_id = i.installation_id AND b.sequence = i.sequence "
+                "JOIN archived_messages m ON m.installation_id = i.installation_id AND m.sequence = i.sequence "
+                "WHERE NOT EXISTS (SELECT 1 FROM source_evidence e WHERE e.installation_id = i.installation_id "
+                "AND e.sequence = i.sequence AND e.item_index = i.item_index) "
+                "ORDER BY m.rowid, i.item_index LIMIT ?",
+                (limit,),
+            )
+        )
 
     def source_record_id(self, key: SourceKey) -> int | None:
-        raise NotImplementedError("operational-store@3")
+        return _source_record_id(self._connection, key)
 
     def source_record(self, record_id: int) -> SourceRecord | None:
-        raise NotImplementedError("operational-store@3")
+        row = _execute(self._connection, "SELECT * FROM source_records WHERE record_id = ?", (record_id,)).fetchone()
+        if row is None:
+            return None
+        evidence = _record_evidence(self._connection, row)
+        return SourceRecord(
+            record_id=record_id,
+            key=SourceKey(row["source_system_kind"], row["origin"], row["record_type"], row["source_identity"]),
+            evidence=evidence, evidence_head=max((item.evidence_id for item in evidence), default=None),
+            observing_installations=tuple(sorted({item.position.installation_id for item in evidence})),
+            selections=tuple(
+                _selection(self._connection, selection) for selection in _execute(
+                    self._connection, "SELECT * FROM source_selections WHERE record_id = ? ORDER BY selection_id",
+                    (record_id,),
+                )
+            ),
+        )
 
     def records_awaiting_selection(self, limit: int) -> tuple[int, ...]:
-        raise NotImplementedError("operational-store@3")
+        return tuple(
+            row["record_id"] for row in _execute(
+                self._connection, _AWAITING_SELECTION_SQL + " ORDER BY h.record_id LIMIT ?", (limit,),
+            )
+        )
 
     def index_counts(self) -> IndexCounts:
-        raise NotImplementedError("operational-store@3")
+        row = _execute(
+            self._connection,
+            "SELECT (SELECT count(*) FROM batch_items) - (SELECT count(*) FROM source_evidence) AS unindexed_items, "
+            "(SELECT count(*) FROM source_records) AS source_records, "
+            "(SELECT count(*) FROM source_evidence) AS evidence_items, "
+            "(SELECT count(*) FROM (" + _AWAITING_SELECTION_SQL + ")) AS records_awaiting_selection",
+        ).fetchone()
+        return IndexCounts(
+            row["unindexed_items"], row["source_records"], row["evidence_items"], row["records_awaiting_selection"],
+        )
 
     def storage_reserve(self) -> ReserveStatus:
         free = _sample_free_bytes(self._free_bytes, self._path)
@@ -1098,12 +1216,169 @@ class OperationalStore:
             )
 
     def index_items(self, entries: Sequence[ProjectionEntry | RetractionEntry], at: datetime) -> IndexResult:
-        raise NotImplementedError("operational-store@3")
+        timestamp = _timestamp(at)
+        entries = tuple(entries)
+        modified_times = tuple(
+            _timestamp(entry.last_modified_time) if isinstance(entry, ProjectionEntry) else None
+            for entry in entries
+        )
+        for entry in entries:
+            if isinstance(entry, ProjectionEntry) and any(
+                not isinstance(value, str) or not value
+                for value in (entry.source_system_kind, entry.origin, entry.source_identity)
+            ):
+                raise StoreRefusal("source-key-invalid")
+
+        with _transaction(self._connection):
+            # Each validation pass covers the entire call before the next refusal
+            # class is considered. No row is written until all passes succeed.
+            archived: list[sqlite3.Row] = []
+            for entry in entries:
+                position = entry.position
+                row = _execute(
+                    self._connection,
+                    "SELECT i.*, b.record_type, m.rowid AS archive_order FROM batch_items i "
+                    "JOIN ingest_batches b ON b.installation_id = i.installation_id AND b.sequence = i.sequence "
+                    "JOIN archived_messages m ON m.installation_id = i.installation_id AND m.sequence = i.sequence "
+                    "WHERE i.installation_id = ? AND i.sequence = ? AND i.item_index = ?",
+                    (position.installation_id, position.sequence, position.item_index),
+                ).fetchone()
+                if row is None:
+                    raise StoreRefusal("archived-item-unknown")
+                archived.append(row)
+            for entry, row in zip(entries, archived):
+                if isinstance(entry, ProjectionEntry) != (row["projection"] is not None):
+                    raise StoreRefusal("index-entry-mismatch")
+
+            seen: dict[ItemPosition, tuple[object, ...]] = {}
+            pending: list[tuple[ProjectionEntry | RetractionEntry, sqlite3.Row, str | None]] = []
+            for entry, row, modified in zip(entries, archived, modified_times):
+                signature = (
+                    ("projection", entry.source_system_kind, entry.origin, entry.source_identity, modified)
+                    if isinstance(entry, ProjectionEntry)
+                    else ("retraction", None, None, row["retracted_identity"], None)
+                )
+                position = entry.position
+                if position in seen:
+                    if seen[position] != signature:
+                        raise StoreRefusal("index-entry-conflict")
+                    continue
+                seen[position] = signature
+                prior = _execute(
+                    self._connection,
+                    "SELECT e.kind, r.source_system_kind, r.origin, e.source_identity, e.last_modified_time "
+                    "FROM source_evidence e LEFT JOIN source_records r ON r.record_id = e.record_id "
+                    "WHERE e.installation_id = ? AND e.sequence = ? AND e.item_index = ?",
+                    (position.installation_id, position.sequence, position.item_index),
+                ).fetchone()
+                if prior is not None:
+                    if tuple(prior) != signature:
+                        raise StoreRefusal("index-entry-conflict")
+                else:
+                    pending.append((entry, row, modified))
+
+            if pending and _sample_free_bytes(self._free_bytes, self._path) < self._reserve_bytes:
+                raise StoreRetryable("storage-reserve-exhausted")
+            pending.sort(key=lambda item: (item[1]["archive_order"], item[1]["item_index"]))
+            created_records = 0
+            for entry, row, modified in pending:
+                record_id = None
+                projection_sha256 = None
+                if isinstance(entry, ProjectionEntry):
+                    source_key = SourceKey(
+                        entry.source_system_kind, entry.origin, row["record_type"], entry.source_identity,
+                    )
+                    record_id = _source_record_id(self._connection, source_key)
+                    if record_id is None:
+                        record_id = _execute(
+                            self._connection,
+                            "INSERT INTO source_records (source_system_kind, origin, record_type, source_identity) "
+                            "VALUES (?, ?, ?, ?)",
+                            (source_key.source_system_kind, source_key.origin,
+                             source_key.record_type, source_key.source_identity),
+                        ).lastrowid
+                        created_records += 1
+                    kind = "projection"
+                    source_identity = entry.source_identity
+                    projection_sha256 = hashlib.sha256(row["projection"]).hexdigest()
+                else:
+                    kind = "retraction"
+                    source_identity = row["retracted_identity"]
+                position = entry.position
+                _execute(
+                    self._connection,
+                    "INSERT INTO source_evidence (installation_id, sequence, item_index, kind, record_id, "
+                    "record_type, source_identity, last_modified_time, projection_sha256, indexed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (position.installation_id, position.sequence, position.item_index, kind, record_id,
+                     row["record_type"], source_identity, modified, projection_sha256, timestamp),
+                )
+            return IndexResult(created_records, len(pending))
 
     def record_selection(
         self, record_id: int, outcome: str, evidence_ids: Sequence[int], evidence_head: int, at: datetime
     ) -> Selection:
-        raise NotImplementedError("operational-store@3")
+        timestamp = _timestamp(at)
+        evidence_ids = tuple(evidence_ids)
+        with _transaction(self._connection):
+            record = _execute(
+                self._connection, "SELECT * FROM source_records WHERE record_id = ?", (record_id,),
+            ).fetchone()
+            if record is None:
+                raise StoreRefusal("source-record-unknown")
+            expected_kind = "retraction" if outcome == "retraction" else "projection"
+            if (
+                outcome not in ("projection", "retraction", "conflict")
+                or (len(evidence_ids) < 2 if outcome == "conflict" else len(evidence_ids) != 1)
+                or any(type(identity) is not int for identity in evidence_ids)
+                or len(set(evidence_ids)) != len(evidence_ids)
+            ):
+                raise StoreRefusal("selection-evidence-invalid")
+            # Check only the selected rows and the indexed head while holding
+            # the write lock; a selection need not load the record's history.
+            for identity in evidence_ids:
+                if _execute(
+                    self._connection,
+                    "SELECT 1 FROM source_evidence WHERE evidence_id = ? AND kind = ? AND "
+                    "(record_id = ? OR (kind = 'retraction' AND record_type = ? AND source_identity = ?))",
+                    (identity, expected_kind, record_id, record["record_type"], record["source_identity"]),
+                ).fetchone() is None:
+                    raise StoreRefusal("selection-evidence-invalid")
+            current_head = _execute(
+                self._connection,
+                "SELECT " + _EVIDENCE_HEAD_SQL + " FROM source_records r WHERE r.record_id = ?", (record_id,),
+            ).fetchone()[0]
+            if evidence_head != current_head:
+                raise StoreRefusal("selection-stale")
+            latest = _execute(
+                self._connection,
+                "SELECT * FROM source_selections WHERE record_id = ? ORDER BY selection_id DESC LIMIT 1",
+                (record_id,),
+            ).fetchone()
+            if latest is not None:
+                selection = _selection(self._connection, latest)
+                if (selection.outcome, selection.evidence_ids, selection.evidence_head) == (
+                    outcome, evidence_ids, evidence_head,
+                ):
+                    return selection
+            if _sample_free_bytes(self._free_bytes, self._path) < self._reserve_bytes:
+                raise StoreRetryable("storage-reserve-exhausted")
+            selection_id = _execute(
+                self._connection,
+                "INSERT INTO source_selections (record_id, outcome, evidence_head, recorded_at) VALUES (?, ?, ?, ?)",
+                (record_id, outcome, evidence_head, timestamp),
+            ).lastrowid
+            assert selection_id is not None
+            for index, identity in enumerate(evidence_ids):
+                _execute(
+                    self._connection,
+                    "INSERT INTO selection_evidence (selection_id, evidence_index, evidence_id) VALUES (?, ?, ?)",
+                    (selection_id, index, identity),
+                )
+            return Selection(
+                selection_id, cast(Literal["projection", "retraction", "conflict"], outcome),
+                evidence_ids, evidence_head, _datetime(timestamp),
+            )
 
     def read(self) -> AbstractContextManager[StoreView]:
         return self._read_view()

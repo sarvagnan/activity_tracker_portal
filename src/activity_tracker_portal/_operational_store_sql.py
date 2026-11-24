@@ -146,3 +146,52 @@ CREATE UNIQUE INDEX delivery_block_identity ON delivery_blocks (
     (sequence IS NULL), ifnull(sequence, 0), message_sha256, failure
 );
 """
+
+_SOURCE_INDEX_SQL = """
+CREATE TABLE source_records (
+    record_id INTEGER PRIMARY KEY,
+    source_system_kind TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    record_type TEXT NOT NULL,
+    source_identity TEXT NOT NULL,
+    UNIQUE (source_system_kind, origin, record_type, source_identity)
+) STRICT;
+CREATE TABLE source_evidence (
+    evidence_id INTEGER PRIMARY KEY,
+    installation_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    item_index INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('projection', 'retraction')),
+    record_id INTEGER REFERENCES source_records (record_id),
+    record_type TEXT NOT NULL,
+    source_identity TEXT NOT NULL,
+    last_modified_time TEXT,
+    projection_sha256 TEXT,
+    indexed_at TEXT NOT NULL,
+    CHECK ((kind = 'projection' AND record_id IS NOT NULL AND last_modified_time IS NOT NULL
+            AND projection_sha256 IS NOT NULL)
+        OR (kind = 'retraction' AND record_id IS NULL AND last_modified_time IS NULL
+            AND projection_sha256 IS NULL)),
+    UNIQUE (installation_id, sequence, item_index),
+    FOREIGN KEY (installation_id, sequence, item_index)
+        REFERENCES batch_items (installation_id, sequence, item_index)
+) STRICT;
+CREATE INDEX source_projection_evidence ON source_evidence (record_id, evidence_id);
+CREATE INDEX source_retraction_evidence ON source_evidence (record_type, source_identity, evidence_id)
+    WHERE kind = 'retraction';
+CREATE TABLE source_selections (
+    selection_id INTEGER PRIMARY KEY,
+    record_id INTEGER NOT NULL REFERENCES source_records (record_id),
+    outcome TEXT NOT NULL CHECK (outcome IN ('projection', 'retraction', 'conflict')),
+    evidence_head INTEGER NOT NULL REFERENCES source_evidence (evidence_id),
+    recorded_at TEXT NOT NULL
+) STRICT;
+CREATE INDEX source_selection_order ON source_selections (record_id, selection_id);
+CREATE TABLE selection_evidence (
+    selection_id INTEGER NOT NULL REFERENCES source_selections (selection_id),
+    evidence_index INTEGER NOT NULL,
+    evidence_id INTEGER NOT NULL REFERENCES source_evidence (evidence_id),
+    PRIMARY KEY (selection_id, evidence_index),
+    UNIQUE (selection_id, evidence_id)
+) STRICT;
+"""
