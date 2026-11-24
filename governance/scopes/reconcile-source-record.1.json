@@ -1,0 +1,98 @@
+{
+  "contract_schema": 1,
+  "scope": "reconcile-source-record",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Select the current source evidence for one Source Record across every Sender Installation that observed it, by source ordering rather than arrival order: the newest projection by source modification time, a retraction that supersedes every projection it follows, or an explicit Source Conflict when different content shares the newest time; record that selection against the evidence it was computed from without erasing or rewriting any evidence and without fuzzy or clientRecordId-only merging.",
+  "inputs": [
+    {
+      "name": "record_id",
+      "mode": "pure",
+      "description": "The Operational Store identity of one Source Record, typically taken from operational-store@3's records awaiting selection."
+    },
+    {
+      "name": "decided_at",
+      "mode": "pure",
+      "description": "The timezone-aware Portal time recorded with the selection."
+    },
+    {
+      "name": "source_record",
+      "mode": "effectful",
+      "description": "The Source Record read through operational-store@3: its key, every projection and retraction evidence row in delivery order with position, observing installation, cycle, source modification time and projection digest, its evidence head, and its earlier selections; and the selection written back through the same store."
+    },
+    {
+      "name": "free_space",
+      "mode": "volatile",
+      "description": "Free bytes on the store's filesystem, which the store compares with its reserve when recording a selection."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "decision",
+      "description": "A deterministic, health-data-free decision computed from the Source Record's evidence alone: a current projection naming one projection evidence row, a current retraction naming one retraction evidence row, or a Source Conflict naming one projection evidence row for each distinct content at the newest source modification time."
+    },
+    {
+      "name": "reconciliation_result",
+      "description": "The decision recorded as an append-only selection at the record's current evidence head, with whether it is unchanged from the record's previous selection; an identical decision at an unchanged head writes nothing."
+    },
+    {
+      "name": "reconcile_failure",
+      "description": "A named refusal or retryable failure that recorded nothing."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "source-record-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "evidence-moved",
+      "outcome": "retryable"
+    },
+    {
+      "name": "storage-reserve-exhausted",
+      "outcome": "retryable"
+    },
+    {
+      "name": "store-busy",
+      "outcome": "retryable"
+    }
+  ],
+  "observable_effects": [
+    {
+      "name": "source-selection-write",
+      "description": "One append-only reconciled selection committed through operational-store@3 for the Source Record; a refusal, retryable failure, or identical repeat commits nothing."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "ordering one Source Record's projections by source modification time, never by arrival order, Sender Installation, or clientRecordId",
+      "the rule by which a retraction supersedes the projections delivered before it and is superseded only by a strictly newer projection",
+      "treating identical content at the newest time as one assertion and different content at the newest time as an explicit Source Conflict",
+      "recording the decision against the evidence head it was computed from, and reporting whether it changed"
+    ],
+    "does_not_own": [
+      "extracting identities from projection bytes, indexing archived items, or storing evidence and selections",
+      "Reconciliation Absence and Abandoned Attempt Evidence, which arrive with the Phase 6 completion units",
+      "activating selections into current views, Cutover Targets, Candidate Builds, or Health Summaries",
+      "interpreting projections, Processing Jobs, policies, or duplicate grouping across Source Records",
+      "scheduling, retrying, or polling for records awaiting selection"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "operational-store",
+      "version": "3"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/reconcile-source-record-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_reconcile_source_record_1.py"
+    },
+    "runner": "tests/acceptance/run_reconcile_source_record_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}

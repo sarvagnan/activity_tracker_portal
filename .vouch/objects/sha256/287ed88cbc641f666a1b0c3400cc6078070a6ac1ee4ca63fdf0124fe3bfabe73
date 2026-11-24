@@ -1,0 +1,1 @@
+{"actor":"claude","event":"UnitSpecified","event_format":2,"pack_digest":"","payload":{"depends_on":["operational-store"],"name":"reconcile-source-record","version":"1"},"prev":"d13d232b4750ca54800db317148326ae66915b4c134065a40ef6a6dfe6f71f7d","recorded_at":"2026-11-24T09:40:13+00:00","revision":440,"run_id":""}
