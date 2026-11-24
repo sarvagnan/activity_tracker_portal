@@ -33,7 +33,7 @@ Proposed tests: `test_contract_shape_and_dependency`, `test_scope_map_row_does_n
 
 Among a record's projections, the newest by source modification time is current, whatever order they were delivered in and whichever installation delivered them. A projection delivered later with an older modification time never displaces a newer one (Decision 1).
 
-Proposed tests: `test_newest_projection_wins`, `test_later_delivered_older_projection_does_not_win`, `test_installation_does_not_affect_the_choice`.
+Proposed tests: `test_newest_projection_wins`, `test_later_delivered_older_projection_does_not_win`, `test_installation_does_not_affect_the_choice`, `test_times_compare_as_instants_across_zones`.
 
 ### R3 — The same content is one assertion
 
@@ -45,7 +45,7 @@ Proposed tests: `test_identical_reobservation_is_not_a_conflict`, `test_identica
 
 When projections with the newest modification time carry two or more different digests, the decision is a Source Conflict. It names, in delivery order, the earliest delivered projection of each distinct digest. A conflict is never resolved by arrival order. A newer projection ends it.
 
-Proposed tests: `test_different_content_at_the_newest_time_conflicts`, `test_conflict_names_one_row_per_distinct_content`, `test_newer_projection_ends_a_conflict`.
+Proposed tests: `test_different_content_at_the_newest_time_conflicts`, `test_conflict_names_one_row_per_distinct_content`, `test_older_conflicting_content_is_not_a_conflict`, `test_newer_projection_ends_a_conflict`.
 
 ### R5 — Retractions
 
@@ -59,9 +59,9 @@ Proposed tests: `test_retraction_after_projection_retracts`, `test_reprojection_
 
 ### R6 — `decide` is pure and deterministic
 
-`decide` reads only the given `SourceRecord`. Its result depends only on each evidence row's kind, modification time, digest, and delivery position. It does not depend on evidence identities, installation identities, cycle identities, selections, or wall-clock time. Shuffling the order in which the store returned the rows never changes the decision. `decide` never reads projection bytes, and has no `clientRecordId` to use.
+`decide` reads only the given `SourceRecord`. Its result depends only on each evidence row's kind, modification time, digest, and place in the record's evidence, which `operational-store@3` lists in delivery order. It does not depend on evidence identities, installation identities, positions, cycle identities, selections, or wall-clock time. `decide` never reads projection bytes, and has no `clientRecordId` to use.
 
-Proposed tests: `test_decide_ignores_installation_cycle_and_selection`, `test_decide_is_order_independent`, `test_decide_has_no_store_or_clock_dependency`.
+Proposed tests: `test_decide_ignores_installation_cycle_and_selection`, `test_decide_uses_delivery_order_not_identities`, `test_decide_has_no_store_or_clock_dependency`.
 
 ### R7 — Recording and unchanged state
 
@@ -105,9 +105,17 @@ Proposed tests: `test_unknown_record_is_refused`, `test_evidence_moved_is_retrya
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_reconcile_source_record_1.py`, with the tests above;
+The Operator approved the draft. The executable pack adds:
+- the suite `tests/acceptance/test_reconcile_source_record_1.py`, 30 tests across R1–R8;
 - the runner `tests/acceptance/run_reconcile_source_record_1.sh`;
-- an Interface stub module whose operations raise `NotImplementedError`.
+- the Interface stub `src/activity_tracker_portal/reconcile_source_record.py`: the dataclasses and exceptions, and `decide` and `reconcile` raising `NotImplementedError`.
 
-RED must come entirely from the stub, and the implementer's read-only findings must be resolved before freeze.
+RED, against the stub: 27 of the 30 tests fail with `NotImplementedError`, 31 errors counting subtests. The three contract tests pass.
+
+The tests pin these refinements:
+- R6 originally also said that shuffling the rows the store returned never changes the decision. That cannot hold, because delivery order is the order `operational-store@3` returns, and positions alone cannot reconstruct it across installations. R6 now says `decide` relies on that order and not on identities or positions. The delivery-order rules of R3–R5 are unchanged.
+- Older conflicting content is not a conflict once a newer projection exists (R4).
+- Equal-time content after a retraction, even different content, does not revive the record (R5, Decision 2: "strictly newer").
+- `evidence-moved` is the store's `selection-stale`; a test injects new evidence between `reconcile`'s read and its write through a delegating store (R8).
+
+The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze.
