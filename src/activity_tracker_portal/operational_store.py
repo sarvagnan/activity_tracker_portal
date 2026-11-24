@@ -522,7 +522,7 @@ class Selection:
 
 @dataclass(frozen=True)
 class SourceRecord:
-    """A Source Record with its evidence in evidence_id order and its selections in recording order."""
+    """A Source Record with its evidence in delivery order, its head the highest evidence_id, and its selections in recording order."""
 
     record_id: int
     key: SourceKey

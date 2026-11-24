@@ -99,7 +99,7 @@ Proposed tests: `test_index_refusal_order`, `test_each_index_refusal_leaves_data
 ### R24 — Source Record reads
 
 - `source_record_id(key)` returns the record's identity, or `None`.
-- `source_record(record_id)` returns `None` for an unknown identity. Otherwise it returns the key, every evidence row in `evidence_id` order, the evidence head, the sorted observing installations, and every selection.
+- `source_record(record_id)` returns `None` for an unknown identity. Otherwise it returns the key, every evidence row in delivery order (message archival order, then item index; R21), the evidence head (the highest `evidence_id`), the sorted observing installations, and every selection.
 - Each read comes from one read transaction, so a write committed during the read is either wholly visible or wholly absent.
 - Every read leaves the whole database unchanged.
 
