@@ -263,8 +263,11 @@ Not mechanically provable here; the approver confirms these in implementation re
 - no `@1`, `@2`, or `@3` code path changes behavior;
 - the store never parses projection, header, or body bytes;
 - the queue reads and counts are SQL over indexes. They never scan per item in Python, materialize `PendingItem`s or outcome rows just to count them, or load projection, header, or body bytes. Inspect the query plans of `claim_processing_job`, `selections_awaiting_processing`, `items_awaiting_index`, and `processing_counts`:
-  - claims and limited reads do work that scales with the eligible jobs or the requested limit;
+  - claims do work that scales with the eligible jobs;
+  - the two discovery reads, `items_awaiting_index` and `selections_awaiting_processing`, may make indexed scans that grow with retained history (DEV-os4-01, below);
   - counts may make narrow aggregate scans over covering indexes.
+
+  **DEV-os4-01 (Operator, 2026-11-24).** The frozen pack required every limited read to scale with the requested limit. In implementation review, GPT 6 Astra found that both discovery reads scale with excluded history. GPT 6.1 Sol showed the rule cannot hold under this pack's other rules: migration 3 creates tables only, with no backfill, and no `@1`–`@3` writer changes. So after a migration nothing records which items or selections are already done, and an index cannot store the difference of two tables. At 300,000 items the two reads took about 0.2–0.3 s per call, while a claim took about 0.02 s. The Operator amended the residual: the two discovery reads may scale with history, provided they remain SQL over indexes that never loads bytes or scans in Python. The `portal-worker` calls them periodically, for example once per idle cycle, never in a tight loop (bead `activity_tracker_portal-y2z`). The alternative was to make `@3`'s indexing, selection, and archival writes maintain `@4` pending tables, with a backfilling migration. That would reopen R17, R29 and Decision 1, and require rebinding `@3`.
 
   Astra's `@3` review warned against global scans at about 300,000 records. In Sol's `@4` review, at 300,000 synthetic items, a passing prototype that counted by reading every pending item took about 3.4 s and 214 MB peak RSS, against about 0.10 s for a SQL count over covering indexes. The suite has no wall-clock or query-plan test, because neither would be robust across correct designs. This criterion is the approver's obligation.
 
