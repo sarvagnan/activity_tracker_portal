@@ -494,9 +494,10 @@ class R22IndexingRetractions(StoreCase):
     def test_retraction_before_projection_still_belongs(self) -> None:
         store = self.ready()
         store.archive_ingest_batch(header(INSTALLATION, 1), batch(retraction("id-a"), cycle_kind="change-cycle", cycle_id=OTHER_CYCLE))
-        store.index_items((gone(1, 0),), at(5))
+        self.assertEqual(store.index_items((gone(1, 0),), at(5)), IndexResult(created_records=0, created_evidence=1))
         with store.read() as view:
             self.assertIsNone(view.source_record_id(key("id-a")))
+            self.assertEqual(view.index_counts(), IndexCounts(unindexed_items=0, source_records=0, evidence_items=1, records_awaiting_selection=0))
         store.archive_ingest_batch(header(INSTALLATION, 2), batch(projection("a"), page=2))
         store.index_items((entry(2, 0, "id-a"),), at(6))
         found = self.record(store, key("id-a"))
@@ -822,6 +823,123 @@ class R27VersionOneAndTwoUnchanged(StoreCase):
         with store.read() as view:
             self.assertEqual(view.archived_items(INSTALLATION, 1), (projection("a"), projection("b"), retraction("id-a")))
             self.assertIsNotNone(view.delivery_cycle(INSTALLATION, CYCLE))
+
+
+class R21R22OrderAcrossCalls(StoreCase):
+    def test_reverse_archival_indexing_across_calls_keeps_positions_and_advances_head(self) -> None:
+        store = self.ready()
+        store.archive_ingest_batch(header(INSTALLATION, 1), batch(projection("a")))
+        store.archive_ingest_batch(header(INSTALLATION, 2), batch(retraction("id-a"), cycle_kind="change-cycle", cycle_id=OTHER_CYCLE))
+        store.archive_ingest_batch(header(INSTALLATION, 3), batch(projection("a3"), cycle_kind="change-cycle", cycle_id=OTHER_CYCLE, page=2))
+        store.index_items((entry(1, 0, "id-a", minute=1),), at(5))
+        heads = [self.record(store, key("id-a")).evidence_head]
+        store.index_items((entry(3, 0, "id-a", minute=3),), at(6))
+        heads.append(self.record(store, key("id-a")).evidence_head)
+        store.index_items((gone(2, 0),), at(7))
+        found = self.record(store, key("id-a"))
+        heads.append(found.evidence_head)
+        # Indexing order across calls; every row keeps its delivery position.
+        self.assertEqual([(item.kind, item.position) for item in found.evidence],
+                         [("projection", position(1, 0)), ("projection", position(3, 0)), ("retraction", position(2, 0))])
+        self.assertEqual(heads, sorted(set(heads)))
+        self.assertEqual(found.evidence_head, found.evidence[-1].evidence_id)
+
+    def test_retraction_never_crosses_record_types(self) -> None:
+        store = self.ready()
+        store.archive_ingest_batch(header(INSTALLATION, 1), batch(projection("s"), projection("s2")))
+        store.archive_ingest_batch(header(INSTALLATION, 2), batch(projection("w"), record_type="weight", page=2))
+        store.index_items((entry(1, 0, "id-a"), entry(1, 1, "id-a", origin=OTHER_ORIGIN), entry(2, 0, "id-a")), at(5))
+        weight = self.record(store, key("id-a", record_type="weight"))
+        store.record_selection(weight.record_id, "projection", (weight.evidence[0].evidence_id,), weight.evidence_head, at(6))
+        steps_before = [self.record(store, candidate) for candidate in (key("id-a"), key("id-a", origin=OTHER_ORIGIN))]
+        store.archive_ingest_batch(header(INSTALLATION, 3), batch(retraction("id-a"), cycle_kind="change-cycle", cycle_id=OTHER_CYCLE, page=3))
+        store.index_items((gone(3, 0),), at(7))
+        retracted_ids = set()
+        for before in steps_before:
+            after = self.record(store, before.key)
+            self.assertEqual(after.evidence[:-1], before.evidence)
+            self.assertEqual((after.evidence[-1].kind, after.evidence[-1].position), ("retraction", position(3, 0)))
+            self.assertGreater(after.evidence_head, before.evidence_head)
+            retracted_ids.add(after.evidence[-1].evidence_id)
+        self.assertEqual(len(retracted_ids), 1)
+        weight_after = self.record(store, key("id-a", record_type="weight"))
+        self.assertEqual((weight_after.evidence, weight_after.evidence_head), (weight.evidence, weight.evidence_head))
+        with store.read() as view:
+            awaiting = view.records_awaiting_selection(10)
+        self.assertNotIn(weight.record_id, awaiting)
+        for before in steps_before:
+            self.assertIn(before.record_id, awaiting)
+
+
+class R23ReserveAndNoWriteCalls(StoreCase):
+    def test_reserve_allows_no_write_calls_and_equal_free_space(self) -> None:
+        store = self.ready()
+        store.archive_ingest_batch(header(INSTALLATION, 1), batch(projection("a"), projection("b"), retraction("id-a")))
+        store.index_items((entry(1, 0, "id-a"),), at(5))
+        found = self.record(store, key("id-a"))
+        selected = store.record_selection(found.record_id, "projection", (found.evidence[0].evidence_id,), found.evidence_head, at(6))
+        self.free = RESERVE - 1
+        before = contents(self.path)
+        self.assertEqual(store.index_items((), at(7)), IndexResult(created_records=0, created_evidence=0))
+        self.assertEqual(store.index_items((entry(1, 0, "id-a"),), at(7)), IndexResult(created_records=0, created_evidence=0))
+        self.assertEqual(store.record_selection(found.record_id, "projection", (found.evidence[0].evidence_id,), found.evidence_head, at(7)), selected)
+        self.assertEqual(contents(self.path), before)
+        self.assertRetryable("storage-reserve-exhausted", store.index_items, (entry(1, 0, "id-a"), entry(1, 1, "id-b")), at(7))
+        self.free = RESERVE
+        self.assertEqual(store.index_items((entry(1, 1, "id-b"), gone(1, 2)), at(8)), IndexResult(created_records=1, created_evidence=2))
+        found = self.record(store, key("id-a"))
+        self.free = RESERVE - 1
+        self.assertRetryable("storage-reserve-exhausted", store.record_selection, found.record_id, "retraction",
+                             (found.evidence[-1].evidence_id,), found.evidence_head, at(9))
+        self.free = RESERVE
+        store.record_selection(found.record_id, "retraction", (found.evidence[-1].evidence_id,), found.evidence_head, at(9))
+        self.assertEqual(self.record(store, key("id-a")).selections[-1].outcome, "retraction")
+
+
+class R25LatestSelectionAndStaleness(StoreCase):
+    def test_only_the_latest_selection_is_a_repeat(self) -> None:
+        store = self.two_records()
+        a = self.record(store, key("id-a"))
+        projected, retracted = (item.evidence_id for item in a.evidence)
+        first = store.record_selection(a.record_id, "projection", (projected,), a.evidence_head, at(11))
+        second = store.record_selection(a.record_id, "retraction", (retracted,), a.evidence_head, at(12))
+        third = store.record_selection(a.record_id, "projection", (projected,), a.evidence_head, at(13))
+        self.assertNotEqual(third.selection_id, first.selection_id)
+        self.assertEqual(self.record(store, key("id-a")).selections, (first, second, third))
+
+    def test_identical_selection_after_new_evidence_is_stale(self) -> None:
+        store = self.two_records()
+        b = self.record(store, key("id-b"))
+        store.record_selection(b.record_id, "projection", (b.evidence[0].evidence_id,), b.evidence_head, at(11))
+        store.archive_ingest_batch(header(INSTALLATION, 3), batch(projection("b3"), cycle_kind="change-cycle", cycle_id=OTHER_CYCLE, page=2))
+        store.index_items((entry(3, 0, "id-b", minute=30),), at(12))
+        self.assertRefused("selection-stale", store.record_selection, b.record_id, "projection",
+                           (b.evidence[0].evidence_id,), b.evidence_head, at(13))
+
+
+class R25DurabilityAcrossReopen(StoreCase):
+    def test_index_and_selections_survive_reopen(self) -> None:
+        store = self.two_records()
+        a = self.record(store, key("id-a"))
+        selection_args = (a.record_id, "retraction", (a.evidence[1].evidence_id,), a.evidence_head)
+        store.record_selection(*selection_args, at(11))
+        store.archive_ingest_batch(header(INSTALLATION, 3), batch(retraction("id-q"), projection("p"), cycle_kind="change-cycle", cycle_id=OTHER_CYCLE, page=2))
+        store.index_items((gone(3, 0),), at(12))
+        with store.read() as view:
+            snapshot = (view.source_record(a.record_id), view.source_record(self.record(store, key("id-b")).record_id),
+                        view.index_counts(), view.pending_items(10), view.records_awaiting_selection(10))
+        store.close()
+        reopened = self.open()
+        with reopened.read() as view:
+            self.assertEqual((view.source_record(a.record_id), view.source_record(snapshot[1].record_id),
+                              view.index_counts(), view.pending_items(10), view.records_awaiting_selection(10)), snapshot)
+        before = contents(self.path)
+        self.assertEqual(reopened.index_items((entry(1, 0, "id-a", minute=1), gone(3, 0)), at(13)), IndexResult(0, 0))
+        self.assertEqual(reopened.record_selection(*selection_args, at(13)), snapshot[0].selections[-1])
+        self.assertEqual(contents(self.path), before)
+        reopened.index_items((entry(3, 1, "id-q"),), at(14))
+        q = self.record(reopened, key("id-q"))
+        self.assertEqual([(item.kind, item.position) for item in q.evidence], [("retraction", position(3, 0)), ("projection", position(3, 1))])
 
 
 if __name__ == "__main__":

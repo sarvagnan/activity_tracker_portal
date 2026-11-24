@@ -66,7 +66,8 @@ Proposed tests: `test_pending_items_are_every_unindexed_item_in_archival_order`,
   - A different origin, Source Identity, record type, or source-system kind is a different Source Record.
   - The entry has no `client_record_id`, so it can never contribute to identity.
 - **Evidence.** The evidence row keeps the position, the batch's cycle kind and identity, the modification time, and the SHA-256 of the archived projection bytes. Nothing is overwritten, and no evidence is erased.
-- **Idempotence.** Re-indexing a position with an identical entry writes nothing and returns zero counts, and the whole database stays unchanged. Repeating an entry within one call counts once.
+- **Idempotence.** Re-indexing a position with an identical entry writes nothing and returns zero counts, and the whole database stays unchanged. Repeating an entry within one call counts once. An empty call returns zero counts.
+- **Order.** Evidence identities increase in indexing order. Within one call, rows are recorded in archival order (their messages' archival order, then item index, as `pending_items` returns them), whatever the order of the entries. Across calls, a later call's rows come after an earlier call's, even when they were delivered earlier. Every row keeps its position, so a consumer that needs delivery order sorts by position (Decision 4). The `portal-worker` indexes `pending_items` in the order returned, so in normal operation indexing order is delivery order. Because identities only increase, new evidence always advances a record's head.
 
 Proposed tests: `test_new_key_creates_a_source_record`, `test_another_installation_joins_the_same_source_record`, `test_each_key_part_separates_source_records`, `test_evidence_keeps_position_cycle_time_and_digest`, `test_identical_reindex_writes_nothing`, `test_repeated_entry_in_one_call_counts_once`.
 
@@ -74,7 +75,9 @@ Proposed tests: `test_new_key_creates_a_source_record`, `test_another_installati
 
 A retraction's evidence row takes its record type and Source Identity from the archived item. It is part of every Source Record with that record type and Source Identity, whatever their origin (Decision 2).
 - A retraction indexed before any matching projection still belongs to Source Records created later.
-- The evidence order keeps a retraction and a later re-projection of the same identity in delivery order.
+- Indexed in one call, a retraction and a later re-projection of the same identity keep delivery order. Indexed in separate calls, they follow R21's order rule, and each keeps its position.
+- A retraction never belongs to a Source Record of another record type, even one with the same Source Identity.
+- A retraction that matches no Source Record yet is still counted as evidence.
 - A retraction never deletes, hides, or changes any projection evidence.
 
 Proposed tests: `test_retraction_belongs_to_every_matching_source_record`, `test_retraction_before_projection_still_belongs`, `test_retract_then_reproject_keeps_delivery_order`, `test_retraction_changes_no_projection_evidence`.
@@ -87,7 +90,7 @@ An index call is refused, with the whole database unchanged, in this order:
 3. `archived-item-unknown`: a position names no archived Ingest Batch item.
 4. `index-entry-mismatch`: a projection entry names a retraction item, or a retraction entry names a projection item.
 5. `index-entry-conflict`: a position is already indexed, or repeated within the call, with a different entry.
-6. `storage-reserve-exhausted`: free space is below the reserve (Decision 5).
+6. `storage-reserve-exhausted`: the call would write a row and free space is below the reserve (Decision 5). Free space equal to the reserve is enough. A call that writes nothing, because it is empty or every entry is already indexed identically, succeeds below the reserve, as an identical archival retry does under `@1`.
 
 The call is all-or-nothing: one refused entry refuses every entry, and a failure injected after any row write commits nothing.
 
@@ -112,12 +115,13 @@ Proposed tests: `test_source_record_lists_evidence_and_provenance`, `test_unknow
 - **Refusals:**
   - `source-record-unknown` for an unknown record;
   - `selection-evidence-invalid` for any other shape;
-  - `selection-stale` when `evidence_head` is not the record's current evidence head;
+  - `selection-stale` when `evidence_head` is not the record's current evidence head, even if the selection is otherwise identical to one already recorded;
   - `timestamp-invalid`;
-  - `storage-reserve-exhausted`.
+  - `storage-reserve-exhausted`, only when the selection would be written and free space is below the reserve.
 
   Each leaves the whole database unchanged.
-- **Idempotence.** Repeating the latest selection exactly, at the same head, returns it and writes nothing.
+- **Idempotence.** Repeating the latest selection exactly, at the current head, returns it and writes nothing, even below the reserve. Only the latest selection counts: repeating an earlier one after a different selection appends a new selection.
+- **Durability.** Source Records, evidence, selections, and the pending set read the same after the store is closed and reopened, and repeats after reopening are still idempotent.
 - **Awaiting selection.** `records_awaiting_selection(limit)` returns, in ascending identity, the records that have evidence but no selection at their current evidence head.
 
 Proposed tests: `test_each_selection_outcome_is_recorded`, `test_selection_shapes_are_checked`, `test_stale_selection_is_refused`, `test_selection_history_is_append_only`, `test_identical_selection_writes_nothing`, `test_records_awaiting_selection`, `test_new_evidence_makes_a_selected_record_await_again`.
@@ -157,11 +161,11 @@ Not mechanically provable here; the approver confirms these in implementation re
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the new suite `tests/acceptance/test_operational_store_3.py`, 39 tests across R18–R27;
+- the new suite `tests/acceptance/test_operational_store_3.py`, 45 tests across R18–R27;
 - the runner `tests/acceptance/run_operational_store_3.sh`, which runs `@2`'s bound runner unchanged (it runs `@1`'s) and then the new suite;
 - the Interface stub, appended to the published module: the ten dataclasses and seven operations, each raising `NotImplementedError`. The stub adds no `FAILURES` entries and no migration; the implementer adds both.
 
-RED, against the stub: 37 of the 39 new tests fail. 33 raise `NotImplementedError`. Three expect the new failure names or migration 2, and the atomicity test never completes an index call. The two pure contract tests pass. `@1` and `@2`'s 68 bound tests still pass.
+RED, against the stub: 43 of the 45 new tests fail. 39 raise `NotImplementedError`. Three expect the new failure names or migration 2, and the atomicity test never completes an index call. The two pure contract tests pass. `@1` and `@2`'s 68 bound tests still pass.
 
 The tests pin these refinements:
 - `pending_items` follows message archival order across installations, not installation and sequence order (R20).
@@ -172,5 +176,13 @@ The tests pin these refinements:
 - A selection of an unknown outcome is `selection-evidence-invalid` (R25).
 - `record_selection` checks the timestamp, then the record, then the shape, then staleness, then the reserve; the suite pins only single-cause refusals for it.
 - Modification times are returned in UTC, equal to the given instant (R21).
+- Sol's read-only review (2026-11-24) found five gaps, now resolved:
+  - evidence order across calls is indexing order, with positions kept (R21, R22);
+  - a retraction never crosses record types, and an orphan retraction counts as evidence (R22);
+  - only the latest selection is a repeat, and staleness is checked first (R25);
+  - calls that write nothing succeed below the reserve, and free space equal to the reserve is enough (R23, R25);
+  - the index and selections survive a reopen (R25).
+
+  Sol's throwaway implementation passes all 113 bound tests, and the five wrong implementations Sol built now each fail one.
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze.
