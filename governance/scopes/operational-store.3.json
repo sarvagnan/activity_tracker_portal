@@ -1,0 +1,221 @@
+{
+  "contract_schema": 1,
+  "scope": "operational-store",
+  "version": "3",
+  "kind": "shared",
+  "purpose": "Preserve the ingest-side domain invariants of the Portal's single SQLite Operational Store through deep transactional operations: Sender Installation lifecycle records, one-use enrollment codes, capability generations, exact archival of accepted Outbox Messages, Delivery Block and sequence-gap evidence, Sync Checkpoint history, the storage reserve, coherent current-state reads, and each delivery cycle's state derived from archived rows, so callers validate fragment continuity and completions without replaying archived envelopes, and the Source Record index: Source Records identified independently of Sender Installation, append-only projection and retraction evidence indexed from archived items with observing-Sender provenance, and append-only reconciled selections recorded against the evidence they were computed from.",
+  "inputs": [
+    {
+      "name": "domain_transactions",
+      "mode": "pure",
+      "description": "Caller-supplied lifecycle intents, enrollment-code digests, capability advertisements, accepted-message archival records with exact envelope and receipt bytes, and Delivery Block records, each carrying a timezone-aware Portal time; index entries that pair an archived item's position with its caller-extracted source-system kind, origin, Source Identity, and source modification time; and reconciled selections naming the evidence they select and the evidence head they were computed from."
+    },
+    {
+      "name": "database_file",
+      "mode": "effectful",
+      "description": "The one SQLite database file at a deployment-chosen path, with its write-ahead log, either absent or created by this or a later store version, at the schema of the store's known migrations."
+    },
+    {
+      "name": "free_space",
+      "mode": "volatile",
+      "description": "Free bytes on the database file's filesystem compared with the deployment-configured storage reserve at the moment of each archival transaction."
+    },
+    {
+      "name": "sqlite_runtime",
+      "mode": "volatile",
+      "description": "The SQLite library version linked into the running Python interpreter."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "opened_store",
+      "description": "A store handle on a database at exactly the schema of the store's known migrations, with WAL journaling, synchronous FULL, and foreign keys enforced, or a named startup refusal."
+    },
+    {
+      "name": "archive_result",
+      "description": "The Delivery Receipt bytes committed with a newly archived message, or the identical prior receipt for an identical retry with no write."
+    },
+    {
+      "name": "lifecycle_record",
+      "description": "An append-only Sender Installation lifecycle event and the resulting installation state."
+    },
+    {
+      "name": "coherent_view",
+      "description": "Reads served from one SQLite read transaction: installation states and operational facts, accepted envelopes in sequence order, archived items, honored capability generations, sequence gaps, Delivery Blocks, paginated Sync Checkpoint history, storage-reserve status, and one delivery cycle's last archived fragment, chain inputs, counts, and completion; archived items not yet indexed, in archival order; one Source Record's identity, evidence, and selection history; Source Records whose evidence is newer than their latest selection; and health-data-free index counts."
+    },
+    {
+      "name": "store_refusal",
+      "description": "A named refusal that leaves the database exactly as it was before the operation."
+    },
+    {
+      "name": "index_result",
+      "description": "The Source Record and evidence rows an index transaction created, or none for an identical repeat of entries already indexed."
+    },
+    {
+      "name": "selection_record",
+      "description": "An append-only reconciled selection for one Source Record: a current projection, a current retraction, or a Source Conflict over named evidence, recorded with the evidence head it was computed from."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "sqlite-runtime-unsupported",
+      "outcome": "startup-refusal"
+    },
+    {
+      "name": "store-migration-required",
+      "outcome": "startup-refusal"
+    },
+    {
+      "name": "store-schema-unsupported",
+      "outcome": "startup-refusal"
+    },
+    {
+      "name": "store-migration-checksum-mismatch",
+      "outcome": "startup-refusal"
+    },
+    {
+      "name": "storage-reserve-exhausted",
+      "outcome": "retryable"
+    },
+    {
+      "name": "store-busy",
+      "outcome": "retryable"
+    },
+    {
+      "name": "timestamp-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "enrollment-code-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "enrollment-code-expired",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "enrollment-code-consumed",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "enrollment-code-exists",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "installation-exists",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "installation-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "installation-transition-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "active-installation-exists",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "installation-not-delivering",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "message-digest-mismatch",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "sequence-content-conflict",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "sequence-out-of-order",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "generation-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "generation-not-monotonic",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "generation-still-required",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "cycle-already-completed",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "archived-item-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "index-entry-mismatch",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "index-entry-conflict",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "source-key-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "source-record-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "selection-evidence-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "selection-stale",
+      "outcome": "invariant-refusal"
+    }
+  ],
+  "observable_effects": [
+    {
+      "name": "operational-database-writes",
+      "description": "Committed SQLite transactions on the Operational Store file and its write-ahead log; a refused or failed operation commits nothing."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the baseline SQLite schema, its later additive migrations in the order recorded, and connection durability settings",
+      "transactional invariants for one active or draining Sender Installation, one-use enrollment codes, and append-only lifecycle events",
+      "exact envelope and per-item archival, sequence uniqueness and ordering, sequence-gap evidence, and Last Delivery",
+      "capability generation monotonicity and the rule that a generation stops being honored only after a later generation's acknowledgement is archived",
+      "health-data-free Delivery Block and Sync Checkpoint history records",
+      "storage-reserve enforcement at write time and coherent read snapshots",
+      "deriving each delivery cycle's last archived fragment, its chain inputs, its fragment and record counts, and its completion from archived rows, without a schema change",
+      "Source Record identity by source-system kind, origin, record type, and Source Identity, never by Sender Installation, with every observing installation kept as provenance",
+      "indexing each archived ingest item exactly once as append-only projection or retraction evidence, idempotently for identical repeats",
+      "append-only reconciled selections that refuse to record against evidence newer than the selection was computed from"
+    ],
+    "does_not_own": [
+      "wire decoding, delivery evaluation, chain calculation, receipts, or compatibility decisions",
+      "Operator intent, enrollment-offer issuance, or when lifecycle transitions happen",
+      "Polling Freshness classification or clock-skew conditions",
+      "extracting origin, Source Identity, or modification time from projection bytes, or deciding which evidence is current",
+      "upgrading an existing database to a later schema",
+      "HTTP ingress, Authorized Ingress, or the deployment's reserve value",
+      "Reconciliation Absence, Abandoned Attempt Evidence, processing, Canonical Revisions, policies, summaries, cutovers, deletion, export, or backup"
+    ]
+  },
+  "dependencies": [],
+  "acceptance_oracle": {
+    "specification": "packs/operational-store-3.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_operational_store_3.py"
+    },
+    "runner": "tests/acceptance/run_operational_store_3.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}

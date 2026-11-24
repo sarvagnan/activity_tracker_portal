@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"OpenInCiMarked","event_format":2,"pack_digest":"","payload":{"name":"operational-store@3","reason":"operational-store@3 is frozen and in implementation; it stays open in CI until Gate C publishes it."},"prev":"a59bb40588d3df2d385c9f3295df9492b4e1146474b9503d87e1be6150a74317","recorded_at":"2026-11-24T08:52:30+00:00","revision":430,"run_id":""}

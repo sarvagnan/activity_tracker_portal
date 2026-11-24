@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_operational_store_3.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"e424e12bf8f286158597f544608a08f5de937ccc84be0c45f640323e05645b09","parent":"GENESIS","recorded_at":"2026-11-24T08:52:37+00:00","sequence":1,"unit":{"name":"operational-store","version":"3"}}
