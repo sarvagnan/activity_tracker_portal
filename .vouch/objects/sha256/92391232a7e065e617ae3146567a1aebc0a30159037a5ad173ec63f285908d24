@@ -1,0 +1,1 @@
+{"actor":"claude","event":"UnitSpecified","event_format":2,"pack_digest":"","payload":{"depends_on":["reconcile-source-record"],"name":"interpret-source-projection","version":"1"},"prev":"13a19bff637857f4af2043c814522910e73c24d144d239bffbb20d84dec437f7","recorded_at":"2026-11-24T12:01:33+00:00","revision":452,"run_id":""}
