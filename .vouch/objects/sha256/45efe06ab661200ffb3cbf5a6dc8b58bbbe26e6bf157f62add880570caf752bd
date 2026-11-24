@@ -1,0 +1,1 @@
+{"actor":"operator","event":"UnitInvalidated","event_format":2,"pack_digest":"","payload":{"name":"receipt-bound-delivery","trigger_deviation_id":"DEV-os4-01"},"prev":"3b27c7462dbc38a2ec299be8317f1df33b5405c4a2b769d87a952e0c3fa6372a","recorded_at":"2026-11-24T15:01:52+00:00","revision":472,"run_id":""}

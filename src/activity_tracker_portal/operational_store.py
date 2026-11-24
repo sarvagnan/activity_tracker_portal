@@ -8,19 +8,20 @@ callers behave, inside one SQLite transaction per operation.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import os
+import re
 from os import PathLike
 import shutil
 import sqlite3
 import time
 from typing import Literal, cast
 
-from ._operational_store_sql import _BASELINE_SQL, _SOURCE_INDEX_SQL
+from ._operational_store_sql import _BASELINE_SQL, _PROCESSING_SQL, _SOURCE_INDEX_SQL
 
 STARTUP_FAILURES = frozenset(
     {
@@ -57,13 +58,24 @@ INVARIANT_FAILURES = frozenset(
         "source-record-unknown",
         "selection-evidence-invalid",
         "selection-stale",
+        "selection-unknown",
+        "selection-not-latest",
+        "selection-not-projection",
+        "processor-version-invalid",
+        "processing-request-invalid",
+        "processing-job-unknown",
+        "lease-not-held",
+        "outcome-invalid",
+        "outcome-conflict",
+        "item-already-indexed",
+        "item-quarantine-conflict",
     }
 )
 FAILURES = STARTUP_FAILURES | RETRYABLE_FAILURES | INVARIANT_FAILURES
 
 # Ordered (version, exact SQL) pairs; store_migrations records the SHA-256 of each
 # migration's UTF-8 SQL. The baseline is migration 1.
-MIGRATIONS: tuple[tuple[int, str], ...] = ((1, _BASELINE_SQL), (2, _SOURCE_INDEX_SQL))
+MIGRATIONS: tuple[tuple[int, str], ...] = ((1, _BASELINE_SQL), (2, _SOURCE_INDEX_SQL), (3, _PROCESSING_SQL))
 
 InstallationState = Literal["pending", "active", "draining", "retired", "withdrawn"]
 RetirementKind = Literal["drained", "destructive"]
@@ -622,6 +634,373 @@ _AWAITING_SELECTION_SQL = (
 )
 
 
+# operational-store@4: Processing Jobs, leases, outcomes, and item quarantine
+# (packs/operational-store-4.spec.md).
+
+Attribution = Literal["experienced", "inferred"]
+OutcomeKind = Literal["revision", "unmodeled", "policy-pending", "quarantine"]
+JobState = Literal["queued", "leased", "completed", "failed", "superseded"]
+AttemptResult = Literal["completed", "transient-failure", "deterministic-failure", "lease-expired"]
+FailureKind = Literal["transient", "deterministic"]
+
+
+@dataclass(frozen=True)
+class RevisionEntry:
+    """The caller's Canonical Revision: opaque header and body bytes plus indexed header columns (Decision 7).
+
+    The end_* columns are all None for an instant. The store never parses the bytes, and repr omits them.
+    """
+
+    header_bytes: bytes = field(repr=False)
+    body_bytes: bytes = field(repr=False)
+    body_version: int
+    start_epoch_ns: int
+    end_epoch_ns: int | None
+    start_local_date: date
+    end_local_date: date | None
+    start_attribution: Attribution
+    end_attribution: Attribution | None
+
+
+@dataclass(frozen=True)
+class OutcomeEntry:
+    """One interpretation outcome, decided by interpret-source-projection; the store checks its shape only."""
+
+    kind: OutcomeKind
+    processor_version: str
+    policy_identity: str
+    reason: str | None
+    pointer: str | None
+    policy_kind: str | None
+    revision: RevisionEntry | None
+
+
+@dataclass(frozen=True)
+class StoredRevision:
+    """A recorded Canonical Revision with the store's digests; repr omits its bytes."""
+
+    header_bytes: bytes = field(repr=False)
+    body_bytes: bytes = field(repr=False)
+    body_version: int
+    start_epoch_ns: int
+    end_epoch_ns: int | None
+    start_local_date: date
+    end_local_date: date | None
+    start_attribution: Attribution
+    end_attribution: Attribution | None
+    header_sha256: str
+    body_sha256: str
+
+
+@dataclass(frozen=True)
+class ProcessingOutcome:
+    """One immutable outcome for a selection, processor version, and policy identity; a revision's identity is outcome_id."""
+
+    outcome_id: int
+    record_id: int
+    selection_id: int
+    evidence_id: int
+    processor_version: str
+    policy_identity: str
+    kind: OutcomeKind
+    reason: str | None
+    pointer: str | None
+    policy_kind: str | None
+    revision: StoredRevision | None
+    job_id: int
+    fence: int
+    recorded_at: datetime
+
+
+@dataclass(frozen=True)
+class ProcessingAttempt:
+    """One claim of a Processing Job; result is None while the attempt is open."""
+
+    fence: int
+    owner: str
+    claimed_at: datetime
+    expires_at: datetime
+    finished_at: datetime | None
+    result: AttemptResult | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class ProcessingJob:
+    """A Processing Job for one Source Record and processor version, with its attempts in order."""
+
+    job_id: int
+    record_id: int
+    processor_version: str
+    selection_id: int
+    state: JobState
+    max_attempts: int
+    attempts: int
+    not_before: datetime
+    fence: int
+    lease_owner: str | None
+    lease_expires_at: datetime | None
+    failure: str | None
+    enqueued_at: datetime
+    closed_at: datetime | None
+    history: tuple[ProcessingAttempt, ...]
+
+
+@dataclass(frozen=True)
+class Lease:
+    """An expiring lease on one job, fenced by the claim that took it, naming what the holder interprets."""
+
+    job_id: int
+    fence: int
+    owner: str
+    record_id: int
+    selection_id: int
+    evidence_id: int
+    processor_version: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class ItemQuarantine:
+    """A health-data-free quarantine of one archived projection item that cannot be indexed."""
+
+    position: ItemPosition
+    reason: str
+    pointer: str
+    recorded_at: datetime
+
+
+@dataclass(frozen=True)
+class AwaitingProcessing:
+    """A Source Record's latest projection selection that awaits processing under one processor version."""
+
+    record_id: int
+    selection_id: int
+    processor_version: str
+
+
+@dataclass(frozen=True)
+class ProcessingCounts:
+    """Health-data-free processing counts at one caller time."""
+
+    jobs_ready: int
+    jobs_delayed: int
+    jobs_leased: int
+    jobs_lease_expired: int
+    jobs_completed: int
+    jobs_failed: int
+    jobs_superseded: int
+    revisions: int
+    unmodeled: int
+    policy_pending: int
+    quarantined: int
+    quarantined_items: int
+    items_awaiting_index: int
+
+
+
+# All routing and counting uses scalar columns; bytes are loaded only by reads
+# that explicitly return them. The earlier migrations and write paths are intact.
+_CLAIM_PROCESSING_SQL = (
+    "SELECT * FROM processing_jobs WHERE job_id = (SELECT min(job_id) FROM ("
+    "SELECT job_id FROM processing_jobs WHERE state = 'queued' AND not_before <= ? UNION ALL "
+    "SELECT job_id FROM processing_jobs WHERE state = 'leased' AND lease_expires_at <= ?))"
+)
+_UNINDEXED_PROCESSING_SQL = (
+    "NOT EXISTS (SELECT 1 FROM source_evidence e WHERE e.installation_id = i.installation_id "
+    "AND e.sequence = i.sequence AND e.item_index = i.item_index) "
+    "AND NOT EXISTS (SELECT 1 FROM item_quarantines q WHERE q.installation_id = i.installation_id "
+    "AND q.sequence = i.sequence AND q.item_index = i.item_index)"
+)
+_ITEMS_AWAITING_INDEX_SQL = (
+    "WITH positions AS MATERIALIZED ("
+    "SELECT i.installation_id, i.sequence, i.item_index, m.rowid AS archive_order "
+    "FROM archived_messages m CROSS JOIN batch_items i "
+    "ON i.installation_id = m.installation_id AND i.sequence = m.sequence "
+    "WHERE " + _UNINDEXED_PROCESSING_SQL + " ORDER BY m.rowid, i.item_index LIMIT ?) "
+    "SELECT i.*, b.record_type, b.projection_schema_version, b.cycle_kind, b.cycle_id "
+    "FROM positions p JOIN batch_items i USING (installation_id, sequence, item_index) "
+    "JOIN ingest_batches b USING (installation_id, sequence) ORDER BY p.archive_order, p.item_index"
+)
+_PROCESSING_JOB_COUNTS = (
+    "state = 'queued' AND not_before <= ?", "state = 'queued' AND not_before > ?",
+    "state = 'leased' AND lease_expires_at > ?", "state = 'leased' AND lease_expires_at <= ?",
+    "state = 'completed'", "state = 'failed'", "state = 'superseded'",
+)
+
+
+def _awaiting_processing_sql(processor_versions: Mapping[str, str]) -> tuple[str, tuple[object, ...]]:
+    # A branch per caller-mapped type uses the type/identity index. UNION ALL
+    # merges the branches in record order and applies one limit across types.
+    branch = (
+        "SELECT r.record_id, s.selection_id, ? AS processor_version FROM source_records r "
+        "JOIN source_selections s ON s.selection_id = (SELECT max(latest.selection_id) "
+        "FROM source_selections latest WHERE latest.record_id = r.record_id) "
+        "WHERE r.record_type = ? AND s.outcome = 'projection' "
+        "AND NOT EXISTS (SELECT 1 FROM processing_outcomes o WHERE o.selection_id = s.selection_id "
+        "AND o.processor_version = ?) "
+        "AND NOT EXISTS (SELECT 1 FROM processing_jobs j WHERE j.record_id = r.record_id "
+        "AND j.processor_version = ? AND j.state IN ('queued', 'leased')) "
+        "AND NOT EXISTS (SELECT 1 FROM processing_jobs j WHERE j.record_id = r.record_id "
+        "AND j.processor_version = ? AND j.selection_id = s.selection_id AND j.state = 'failed')"
+    )
+    parameters = tuple(value for record_type, version in processor_versions.items()
+                       for value in (version, record_type, version, version, version))
+    return " UNION ALL ".join(branch for _ in processor_versions) + " ORDER BY 1 LIMIT ?", parameters
+
+
+def _processing_bound(value: int, maximum: int) -> None:
+    if type(value) is not int or not 1 <= value <= maximum:
+        raise StoreRefusal("processing-request-invalid")
+
+
+def _kebab(value: object) -> bool:
+    return isinstance(value, str) and len(value) <= 64 and re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", value) is not None
+
+
+def _pointer(value: object) -> bool:
+    return isinstance(value, str) and (not value or value.startswith("/"))
+
+
+def _latest_processing_selection(connection: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
+    return _execute(
+        connection, "SELECT selection_id, outcome FROM source_selections WHERE record_id = ? "
+        "ORDER BY selection_id DESC LIMIT 1", (record_id,),
+    ).fetchone()
+
+
+def _processing_evidence(connection: sqlite3.Connection, selection_id: int) -> int:
+    return _execute(
+        connection, "SELECT evidence_id FROM selection_evidence WHERE selection_id = ? AND evidence_index = 0",
+        (selection_id,),
+    ).fetchone()[0]
+
+
+def _processing_job(connection: sqlite3.Connection, row: sqlite3.Row) -> ProcessingJob:
+    history = tuple(
+        ProcessingAttempt(
+            item["fence"], item["owner"], _datetime(item["claimed_at"]), _datetime(item["expires_at"]),
+            _optional_datetime(item["finished_at"]), item["result"], item["reason"],
+        )
+        for item in _execute(connection, "SELECT * FROM processing_attempts WHERE job_id = ? ORDER BY fence", (row["job_id"],))
+    )
+    return ProcessingJob(
+        row["job_id"], row["record_id"], row["processor_version"], row["selection_id"], row["state"],
+        row["max_attempts"], row["attempts"], _datetime(row["not_before"]), row["fence"], row["lease_owner"],
+        _optional_datetime(row["lease_expires_at"]), row["failure"], _datetime(row["enqueued_at"]),
+        _optional_datetime(row["closed_at"]), history,
+    )
+
+
+def _held_processing_job(connection: sqlite3.Connection, job_id: int, fence: int) -> sqlite3.Row:
+    row = _execute(connection, "SELECT * FROM processing_jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if row is None:
+        raise StoreRefusal("processing-job-unknown")
+    if row["state"] != "leased" or row["fence"] != fence:
+        raise StoreRefusal("lease-not-held")
+    return row
+
+
+def _processing_lease(connection: sqlite3.Connection, row: sqlite3.Row) -> Lease:
+    return Lease(
+        row["job_id"], row["fence"], row["lease_owner"], row["record_id"], row["selection_id"],
+        _processing_evidence(connection, row["selection_id"]), row["processor_version"], _datetime(row["lease_expires_at"]),
+    )
+
+
+def _finish_processing_attempt(
+    connection: sqlite3.Connection, job: sqlite3.Row, result: AttemptResult, reason: str | None, timestamp: str
+) -> None:
+    # expires_at is claim-time history: renewal changes only the job's expiry.
+    _execute(
+        connection, "UPDATE processing_attempts SET finished_at = ?, result = ?, reason = ? "
+        "WHERE job_id = ? AND fence = ?", (timestamp, result, reason, job["job_id"], job["fence"]),
+    )
+
+
+def _close_processing_job(
+    connection: sqlite3.Connection, job_id: int, state: JobState, timestamp: str, failure: str | None = None
+) -> None:
+    _execute(
+        connection, "UPDATE processing_jobs SET state = ?, closed_at = ?, failure = ?, "
+        "lease_owner = NULL, lease_expires_at = NULL WHERE job_id = ?", (state, timestamp, failure, job_id),
+    )
+
+
+def _validate_processing_outcome(outcome: OutcomeEntry, processor_version: str) -> None:
+    if not isinstance(outcome, OutcomeEntry):
+        raise StoreRefusal("outcome-invalid")
+    invalid = (
+        outcome.kind not in ("revision", "unmodeled", "policy-pending", "quarantine")
+        or outcome.processor_version != processor_version
+        or not isinstance(outcome.policy_identity, str) or not outcome.policy_identity
+        or (outcome.kind == "revision") != (outcome.revision is not None)
+        or (outcome.reason is not None if outcome.kind == "revision" else not _kebab(outcome.reason))
+        or (not _kebab(outcome.policy_kind) if outcome.kind == "policy-pending" else outcome.policy_kind is not None)
+        or (outcome.kind == "quarantine" and not _pointer(outcome.pointer))
+        or (outcome.pointer is not None and not isinstance(outcome.pointer, str))
+    )
+    revision = outcome.revision
+    if revision is not None:
+        if not isinstance(revision, RevisionEntry):
+            raise StoreRefusal("outcome-invalid")
+        ends = (revision.end_epoch_ns, revision.end_local_date, revision.end_attribution)
+        invalid |= (
+            not isinstance(revision.header_bytes, bytes) or not revision.header_bytes
+            or not isinstance(revision.body_bytes, bytes) or not revision.body_bytes
+            or type(revision.body_version) is not int or revision.body_version < 1
+            or type(revision.start_epoch_ns) is not int or type(revision.start_local_date) is not date
+            or revision.start_attribution not in ("experienced", "inferred")
+            or (any(value is None for value in ends) and any(value is not None for value in ends))
+        )
+        if revision.end_epoch_ns is not None:
+            invalid |= (
+                type(revision.end_epoch_ns) is not int
+                or type(revision.start_epoch_ns) is not int
+                or revision.end_epoch_ns < revision.start_epoch_ns
+                or type(revision.end_local_date) is not date
+                or revision.end_attribution not in ("experienced", "inferred")
+            )
+    if invalid:
+        raise StoreRefusal("outcome-invalid")
+
+
+def _processing_outcome(connection: sqlite3.Connection, row: sqlite3.Row) -> ProcessingOutcome:
+    revision_row = _execute(connection, "SELECT * FROM canonical_revisions WHERE outcome_id = ?", (row["outcome_id"],)).fetchone()
+    revision = None if revision_row is None else StoredRevision(
+        revision_row["header_bytes"], revision_row["body_bytes"], revision_row["body_version"],
+        revision_row["start_epoch_ns"], revision_row["end_epoch_ns"], date.fromisoformat(revision_row["start_local_date"]),
+        None if revision_row["end_local_date"] is None else date.fromisoformat(revision_row["end_local_date"]),
+        revision_row["start_attribution"], revision_row["end_attribution"],
+        revision_row["header_sha256"], revision_row["body_sha256"],
+    )
+    return ProcessingOutcome(
+        row["outcome_id"], row["record_id"], row["selection_id"], row["evidence_id"], row["processor_version"],
+        row["policy_identity"], row["kind"], row["reason"], row["pointer"], row["policy_kind"], revision,
+        row["job_id"], row["fence"], _datetime(row["recorded_at"]),
+    )
+
+
+def _outcome_entry(outcome: ProcessingOutcome) -> OutcomeEntry:
+    revision = outcome.revision
+    entry = None if revision is None else RevisionEntry(
+        revision.header_bytes, revision.body_bytes, revision.body_version, revision.start_epoch_ns,
+        revision.end_epoch_ns, revision.start_local_date, revision.end_local_date,
+        revision.start_attribution, revision.end_attribution,
+    )
+    return OutcomeEntry(outcome.kind, outcome.processor_version, outcome.policy_identity,
+                        outcome.reason, outcome.pointer, outcome.policy_kind, entry)
+
+
+def _item_quarantine(connection: sqlite3.Connection, position: ItemPosition) -> ItemQuarantine | None:
+    row = _execute(
+        connection, "SELECT reason, pointer, recorded_at FROM item_quarantines "
+        "WHERE installation_id = ? AND sequence = ? AND item_index = ?",
+        (position.installation_id, position.sequence, position.item_index),
+    ).fetchone()
+    return None if row is None else ItemQuarantine(position, row["reason"], row["pointer"], _datetime(row["recorded_at"]))
+
+
 class StoreView:
     """Reads bound to one SQLite read transaction."""
 
@@ -920,6 +1299,84 @@ class StoreView:
         return IndexCounts(
             row["unindexed_items"], row["source_records"], row["evidence_items"], row["records_awaiting_selection"],
         )
+
+    def processing_job(self, job_id: int) -> ProcessingJob | None:
+        row = _execute(self._connection, "SELECT * FROM processing_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        return None if row is None else _processing_job(self._connection, row)
+
+    def processing_jobs(self, record_id: int) -> tuple[ProcessingJob, ...]:
+        return tuple(
+            _processing_job(self._connection, row) for row in _execute(
+                self._connection, "SELECT * FROM processing_jobs WHERE record_id = ? ORDER BY job_id", (record_id,),
+            )
+        )
+
+    def processing_outcomes(self, record_id: int) -> tuple[ProcessingOutcome, ...]:
+        return tuple(
+            _processing_outcome(self._connection, row) for row in _execute(
+                self._connection, "SELECT * FROM processing_outcomes WHERE record_id = ? ORDER BY outcome_id", (record_id,),
+            )
+        )
+
+    def latest_outcome(self, record_id: int, processor_version: str) -> ProcessingOutcome | None:
+        row = _execute(
+            self._connection, "SELECT * FROM processing_outcomes WHERE selection_id = "
+            "(SELECT max(selection_id) FROM source_selections WHERE record_id = ?) "
+            "AND processor_version = ? ORDER BY outcome_id DESC LIMIT 1", (record_id, processor_version),
+        ).fetchone()
+        return None if row is None else _processing_outcome(self._connection, row)
+
+    def selections_awaiting_processing(
+        self, processor_versions: Mapping[str, str], limit: int
+    ) -> tuple[AwaitingProcessing, ...]:
+        if not processor_versions:
+            return ()
+        sql, parameters = _awaiting_processing_sql(processor_versions)
+        return tuple(
+            AwaitingProcessing(row["record_id"], row["selection_id"], row["processor_version"])
+            for row in _execute(self._connection, sql, parameters + (limit,))
+        )
+
+    def items_awaiting_index(self, limit: int) -> tuple[PendingItem, ...]:
+        return tuple(
+            PendingItem(
+                position=ItemPosition(row["installation_id"], row["sequence"], row["item_index"]),
+                record_type=row["record_type"], projection_schema_version=row["projection_schema_version"],
+                cycle_kind=row["cycle_kind"], cycle_id=row["cycle_id"],
+                projection=row["projection"], retracted_identity=row["retracted_identity"],
+            )
+            for row in _execute(self._connection, _ITEMS_AWAITING_INDEX_SQL, (limit,))
+        )
+
+    def item_quarantine(self, position: ItemPosition) -> ItemQuarantine | None:
+        return _item_quarantine(self._connection, position)
+
+    def projection_bytes(self, evidence_id: int) -> bytes | None:
+        row = _execute(
+            self._connection, "SELECT i.projection FROM source_evidence e JOIN batch_items i "
+            "USING (installation_id, sequence, item_index) WHERE e.evidence_id = ? AND e.kind = 'projection'",
+            (evidence_id,),
+        ).fetchone()
+        return None if row is None else row[0]
+
+    def processing_counts(self, at: datetime) -> ProcessingCounts:
+        timestamp = _timestamp(at)
+        # Only narrow SQL aggregates: no PendingItem, job history, outcome, or
+        # revision is materialized merely to count it. Outcomes count history.
+        counts = [
+            _execute(self._connection, "SELECT count(*) FROM processing_jobs WHERE " + condition,
+                     (timestamp,) if "?" in condition else ()).fetchone()[0]
+            for condition in _PROCESSING_JOB_COUNTS
+        ]
+        counts.extend(
+            _execute(self._connection, "SELECT count(*) FROM processing_outcomes WHERE kind = ?", (kind,)).fetchone()[0]
+            for kind in ("revision", "unmodeled", "policy-pending", "quarantine")
+        )
+        counts.append(_execute(self._connection, "SELECT count(*) FROM item_quarantines").fetchone()[0])
+        counts.append(_execute(
+            self._connection, "SELECT count(*) FROM batch_items i WHERE " + _UNINDEXED_PROCESSING_SQL,
+        ).fetchone()[0])
+        return ProcessingCounts(*counts)
 
     def storage_reserve(self) -> ReserveStatus:
         free = _sample_free_bytes(self._free_bytes, self._path)
@@ -1379,6 +1836,221 @@ class OperationalStore:
                 selection_id, cast(Literal["projection", "retraction", "conflict"], outcome),
                 evidence_ids, evidence_head, _datetime(timestamp),
             )
+
+    def _processing_write_reserve(self) -> None:
+        if _sample_free_bytes(self._free_bytes, self._path) < self._reserve_bytes:
+            raise StoreRetryable("storage-reserve-exhausted")
+
+    def enqueue_processing(
+        self, record_id: int, selection_id: int, processor_version: str, max_attempts: int, at: datetime
+    ) -> ProcessingJob:
+        timestamp = _timestamp(at)
+        _processing_bound(max_attempts, 100)
+        if not isinstance(processor_version, str) or re.fullmatch(
+            r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*@[0-9]+", processor_version,
+        ) is None:
+            raise StoreRefusal("processor-version-invalid")
+        with _transaction(self._connection):
+            row = _execute(
+                self._connection, "SELECT * FROM processing_jobs WHERE record_id = ? AND processor_version = ? "
+                "AND state IN ('queued', 'leased')", (record_id, processor_version),
+            ).fetchone()
+            if row is not None:
+                return _processing_job(self._connection, row)
+            if _execute(self._connection, "SELECT 1 FROM source_records WHERE record_id = ?", (record_id,)).fetchone() is None:
+                raise StoreRefusal("source-record-unknown")
+            selection = _execute(
+                self._connection, "SELECT selection_id, outcome FROM source_selections WHERE selection_id = ? AND record_id = ?",
+                (selection_id, record_id),
+            ).fetchone()
+            if selection is None:
+                raise StoreRefusal("selection-unknown")
+            latest = _latest_processing_selection(self._connection, record_id)
+            assert latest is not None
+            if latest["selection_id"] != selection_id:
+                raise StoreRefusal("selection-not-latest")
+            if selection["outcome"] != "projection":
+                raise StoreRefusal("selection-not-projection")
+            self._processing_write_reserve()
+            job_id = _execute(
+                self._connection, "INSERT INTO processing_jobs "
+                "(record_id, processor_version, selection_id, state, max_attempts, not_before, enqueued_at) "
+                "VALUES (?, ?, ?, 'queued', ?, ?, ?)",
+                (record_id, processor_version, selection_id, max_attempts, timestamp, timestamp),
+            ).lastrowid
+            row = _execute(self._connection, "SELECT * FROM processing_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            return _processing_job(self._connection, row)
+
+    def claim_processing_job(self, owner: str, lease_seconds: int, at: datetime) -> Lease | None:
+        timestamp = _timestamp(at)
+        _processing_bound(lease_seconds, 86_400)
+        if not isinstance(owner, str) or not owner:
+            raise StoreRefusal("processing-request-invalid")
+        expiry = _timestamp(at.astimezone(timezone.utc) + timedelta(seconds=lease_seconds))
+        with _transaction(self._connection):
+            reserve_checked = False
+            while True:
+                job = _execute(self._connection, _CLAIM_PROCESSING_SQL, (timestamp, timestamp)).fetchone()
+                if job is None:
+                    return None
+                # Expiry exhaustion and supersession also write. Gate them before
+                # closing an attempt, even if this call never returns a lease.
+                if not reserve_checked:
+                    self._processing_write_reserve()
+                    reserve_checked = True
+                if job["state"] == "leased":
+                    _finish_processing_attempt(self._connection, job, "lease-expired", None, timestamp)
+                    if job["attempts"] >= job["max_attempts"]:
+                        _close_processing_job(
+                            self._connection, job["job_id"], "failed", timestamp, "lease-expired-retries-exhausted",
+                        )
+                        continue
+                latest = _latest_processing_selection(self._connection, job["record_id"])
+                assert latest is not None
+                if latest["outcome"] != "projection":
+                    _close_processing_job(self._connection, job["job_id"], "superseded", timestamp)
+                    continue
+                fence = job["fence"] + 1
+                _execute(
+                    self._connection, "UPDATE processing_jobs SET selection_id = ?, state = 'leased', "
+                    "attempts = attempts + 1, fence = ?, lease_owner = ?, lease_expires_at = ? WHERE job_id = ?",
+                    (latest["selection_id"], fence, owner, expiry, job["job_id"]),
+                )
+                _execute(
+                    self._connection, "INSERT INTO processing_attempts (job_id, fence, owner, claimed_at, expires_at) "
+                    "VALUES (?, ?, ?, ?, ?)", (job["job_id"], fence, owner, timestamp, expiry),
+                )
+                row = _held_processing_job(self._connection, job["job_id"], fence)
+                return _processing_lease(self._connection, row)
+
+    def renew_processing_lease(self, job_id: int, fence: int, lease_seconds: int, at: datetime) -> Lease:
+        _timestamp(at)
+        _processing_bound(lease_seconds, 86_400)
+        expiry = _timestamp(at.astimezone(timezone.utc) + timedelta(seconds=lease_seconds))
+        with _transaction(self._connection):
+            _held_processing_job(self._connection, job_id, fence)
+            self._processing_write_reserve()
+            _execute(
+                self._connection, "UPDATE processing_jobs SET lease_expires_at = ? WHERE job_id = ?", (expiry, job_id),
+            )
+            return _processing_lease(self._connection, _held_processing_job(self._connection, job_id, fence))
+
+    def complete_processing_job(
+        self, job_id: int, fence: int, outcome: OutcomeEntry, at: datetime
+    ) -> ProcessingOutcome:
+        timestamp = _timestamp(at)
+        with _transaction(self._connection):
+            job = _held_processing_job(self._connection, job_id, fence)
+            _validate_processing_outcome(outcome, job["processor_version"])
+            row = _execute(
+                self._connection, "SELECT * FROM processing_outcomes WHERE selection_id = ? "
+                "AND processor_version = ? AND policy_identity = ?",
+                (job["selection_id"], job["processor_version"], outcome.policy_identity),
+            ).fetchone()
+            recorded = None if row is None else _processing_outcome(self._connection, row)
+            if recorded is not None and _outcome_entry(recorded) != outcome:
+                raise StoreRefusal("outcome-conflict")
+            self._processing_write_reserve()
+            if recorded is None:
+                outcome_id = _execute(
+                    self._connection, "INSERT INTO processing_outcomes "
+                    "(record_id, selection_id, evidence_id, processor_version, policy_identity, kind, reason, "
+                    "pointer, policy_kind, job_id, fence, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (job["record_id"], job["selection_id"], _processing_evidence(self._connection, job["selection_id"]),
+                     job["processor_version"], outcome.policy_identity, outcome.kind, outcome.reason, outcome.pointer,
+                     outcome.policy_kind, job_id, fence, timestamp),
+                ).lastrowid
+                revision = outcome.revision
+                if revision is not None:
+                    _execute(
+                        self._connection, "INSERT INTO canonical_revisions "
+                        "(outcome_id, header_bytes, body_bytes, body_version, start_epoch_ns, end_epoch_ns, "
+                        "start_local_date, end_local_date, start_attribution, end_attribution, header_sha256, body_sha256) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (outcome_id, revision.header_bytes, revision.body_bytes, revision.body_version,
+                         revision.start_epoch_ns, revision.end_epoch_ns, revision.start_local_date.isoformat(),
+                         None if revision.end_local_date is None else revision.end_local_date.isoformat(),
+                         revision.start_attribution, revision.end_attribution,
+                         hashlib.sha256(revision.header_bytes).hexdigest(), hashlib.sha256(revision.body_bytes).hexdigest()),
+                    )
+                row = _execute(self._connection, "SELECT * FROM processing_outcomes WHERE outcome_id = ?", (outcome_id,)).fetchone()
+                recorded = _processing_outcome(self._connection, row)
+            _finish_processing_attempt(self._connection, job, "completed", None, timestamp)
+            latest = _latest_processing_selection(self._connection, job["record_id"])
+            assert latest is not None
+            if latest["outcome"] != "projection":
+                _close_processing_job(self._connection, job_id, "superseded", timestamp)
+            elif latest["selection_id"] == job["selection_id"]:
+                _close_processing_job(self._connection, job_id, "completed", timestamp)
+            else:
+                # Successful completion against older evidence starts a fresh
+                # retry budget. Claim-time retargeting deliberately does not.
+                _execute(
+                    self._connection, "UPDATE processing_jobs SET selection_id = ?, state = 'queued', attempts = 0, "
+                    "not_before = ?, lease_owner = NULL, lease_expires_at = NULL, failure = NULL, closed_at = NULL "
+                    "WHERE job_id = ?", (latest["selection_id"], timestamp, job_id),
+                )
+            return recorded
+
+    def fail_processing_job(
+        self, job_id: int, fence: int, kind: FailureKind, reason: str, retry_at: datetime | None, at: datetime
+    ) -> ProcessingJob:
+        timestamp = _timestamp(at)
+        retry_timestamp = None if retry_at is None else _timestamp(retry_at)
+        if (
+            kind not in ("transient", "deterministic") or not _kebab(reason)
+            or (kind == "transient" and (retry_timestamp is None or retry_timestamp < timestamp))
+            or (kind == "deterministic" and retry_timestamp is not None)
+        ):
+            raise StoreRefusal("processing-request-invalid")
+        with _transaction(self._connection):
+            job = _held_processing_job(self._connection, job_id, fence)
+            self._processing_write_reserve()
+            _finish_processing_attempt(self._connection, job, cast(AttemptResult, kind + "-failure"), reason, timestamp)
+            if kind == "deterministic":
+                _close_processing_job(self._connection, job_id, "failed", timestamp, reason)
+            elif job["attempts"] >= job["max_attempts"]:
+                _close_processing_job(self._connection, job_id, "failed", timestamp, "retries-exhausted")
+            else:
+                _execute(
+                    self._connection, "UPDATE processing_jobs SET state = 'queued', not_before = ?, "
+                    "lease_owner = NULL, lease_expires_at = NULL, failure = NULL, closed_at = NULL WHERE job_id = ?",
+                    (retry_timestamp, job_id),
+                )
+            row = _execute(self._connection, "SELECT * FROM processing_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            return _processing_job(self._connection, row)
+
+    def quarantine_item(self, position: ItemPosition, reason: str, pointer: str, at: datetime) -> ItemQuarantine:
+        timestamp = _timestamp(at)
+        if not _kebab(reason) or not _pointer(pointer):
+            raise StoreRefusal("processing-request-invalid")
+        parameters = (position.installation_id, position.sequence, position.item_index)
+        with _transaction(self._connection):
+            row = _execute(
+                self._connection, "SELECT projection IS NOT NULL AS is_projection FROM batch_items "
+                "WHERE installation_id = ? AND sequence = ? AND item_index = ?", parameters,
+            ).fetchone()
+            if row is None:
+                raise StoreRefusal("archived-item-unknown")
+            if not row["is_projection"]:
+                raise StoreRefusal("index-entry-mismatch")
+            if _execute(
+                self._connection, "SELECT 1 FROM source_evidence WHERE installation_id = ? AND sequence = ? AND item_index = ?",
+                parameters,
+            ).fetchone() is not None:
+                raise StoreRefusal("item-already-indexed")
+            existing = _item_quarantine(self._connection, position)
+            if existing is not None:
+                if (existing.reason, existing.pointer) != (reason, pointer):
+                    raise StoreRefusal("item-quarantine-conflict")
+                return existing
+            self._processing_write_reserve()
+            _execute(
+                self._connection, "INSERT INTO item_quarantines "
+                "(installation_id, sequence, item_index, reason, pointer, recorded_at) VALUES (?, ?, ?, ?, ?, ?)",
+                parameters + (reason, pointer, timestamp),
+            )
+            return ItemQuarantine(position, reason, pointer, _datetime(timestamp))
 
     def read(self) -> AbstractContextManager[StoreView]:
         return self._read_view()

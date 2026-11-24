@@ -1,0 +1,1 @@
+{"actor":"claude","event":"DeviationOpened","event_format":2,"pack_digest":"","payload":{"deviation_id":"DEV-os4-01","deviation_type":"contract-conflict","unit":{"name":"operational-store","version":"4"}},"prev":"755cb0a4615be66271cb01d5971d95cc89a1bbef1183b8b76670282a594fa69b","recorded_at":"2026-11-24T15:01:52+00:00","revision":463,"run_id":""}
