@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_reconcile_source_record_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"a4ba55aec126ec532a9050b37c0a5ffaff9ffcec10f9db91ec89f20a3adc523f","parent":"GENESIS","recorded_at":"2026-11-24T10:34:53+00:00","sequence":1,"unit":{"name":"reconcile-source-record","version":"1"}}
