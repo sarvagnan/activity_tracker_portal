@@ -1,0 +1,12 @@
+{
+  "effects_format": 1,
+  "effects": [
+    {
+      "kind": "action",
+      "name": "source-selection-write",
+      "system": "Portal Operational Store SQLite database, through operational-store@3",
+      "outcome": "confirmed",
+      "detail": "Appends one reconciled selection for the Source Record; refusals, retryable failures, and identical repeats commit nothing."
+    }
+  ]
+}
