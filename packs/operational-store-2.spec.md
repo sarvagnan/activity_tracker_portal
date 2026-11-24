@@ -92,9 +92,11 @@ Tests:
 
 ### R17 — No schema change
 
-`MIGRATIONS` is exactly `@1`'s: one baseline migration with an unchanged checksum. A database created under `@1` therefore opens under `@2`, and its existing archive answers cycle reads with no migration. Opening and reading it changes nothing in the whole database, including migration records with their times.
+`@2` adds no migration: `MIGRATIONS` is exactly `@1`'s, one baseline migration with an unchanged checksum. A database created under `@1` therefore opens under `@2`, and its existing archive answers cycle reads with no migration. Opening and reading it changes nothing in the whole database, including migration records with their times.
 
 The test proves this with `tests/acceptance/fixtures/operational-store-1-archive.sql`. That file is a dump of a synthetic database produced by the published `@1` module at `bee3744`, with no `delivery_cycle`.
+
+Rebound 2026-11-24, by Operator decision, so that later versions can add migrations without breaking this suite. The tests now require that migration 1 keeps its baseline checksum, rather than that `MIGRATIONS` has exactly one entry. The fixture is brought to the current schema by applying every later migration in order, as an explicit migration would, with no backfill of its rows. The cycle reads must then answer from the `@1` rows, and opening and reading must change nothing. While `MIGRATIONS` is `[1]`, no migration is applied and the test is exactly the original.
 
 Tests: `test_version_2_keeps_the_baseline_schema`, `test_version_1_database_answers_cycle_reads`.
 

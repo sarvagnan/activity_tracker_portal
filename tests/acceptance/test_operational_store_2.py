@@ -192,11 +192,15 @@ class R13GovernedScopeContractVersion2(unittest.TestCase):
         by_outcome: dict[str, set[str]] = {}
         for failure in CONTRACT_2["named_failures"]:
             by_outcome.setdefault(failure["outcome"], set()).add(failure["name"])
-        self.assertEqual(by_outcome, {
+        # Later versions may add failures; version 2's keep their outcome classes.
+        partitions = {
             "startup-refusal": set(store_module.STARTUP_FAILURES),
             "retryable": set(store_module.RETRYABLE_FAILURES),
             "invariant-refusal": set(store_module.INVARIANT_FAILURES),
-        })
+        }
+        self.assertEqual(set(by_outcome), set(partitions))
+        for outcome, members in by_outcome.items():
+            self.assertLessEqual(members, partitions[outcome], outcome)
         owns_1, owns_2 = set(CONTRACT_1["authority"]["owns"]), set(CONTRACT_2["authority"]["owns"])
         self.assertLessEqual(owns_1, owns_2)
         self.assertTrue(any("delivery cycle" in entry for entry in owns_2 - owns_1))
@@ -427,7 +431,9 @@ class R16CoherentDurableAndHealthDataFree(StoreCase):
 
 class R17NoSchemaChange(StoreCase):
     def test_version_2_keeps_the_baseline_schema(self) -> None:
-        self.assertEqual([version for version, _sql in store_module.MIGRATIONS], [1])
+        # Version 2 added no migration. Later versions may append migrations, but
+        # never change the baseline that version 1 databases record.
+        self.assertEqual(store_module.MIGRATIONS[0][0], 1)
         self.assertEqual(digest(store_module.MIGRATIONS[0][1].encode("utf-8")), BASELINE_CHECKSUM)
 
     def test_version_1_database_answers_cycle_reads(self) -> None:
@@ -437,9 +443,23 @@ class R17NoSchemaChange(StoreCase):
             connection.executescript((ROOT / "tests/acceptance/fixtures/operational-store-1-archive.sql").read_text(encoding="utf-8"))
         finally:
             connection.close()
+        self.assertEqual(contents(self.path)["user_version"], 1)
+        self.assertEqual([row[:2] for row in contents(self.path)["tables"]["store_migrations"]], [(1, BASELINE_CHECKSUM)])
+        # Later versions' migrations are applied as an explicit migration would,
+        # with no backfill of version 1 rows; none exist while MIGRATIONS is [1].
+        connection = sqlite3.connect(self.path)
+        try:
+            for version, sql in store_module.MIGRATIONS[1:]:
+                connection.executescript(sql)
+                connection.execute(
+                    "INSERT INTO store_migrations (version, checksum, applied_at) VALUES (?, ?, ?)",
+                    (version, digest(sql.encode("utf-8")), "2026-10-12T09:00:00.000000Z"),
+                )
+                connection.execute(f"PRAGMA user_version = {version}")
+                connection.commit()
+        finally:
+            connection.close()
         before = contents(self.path)
-        self.assertEqual(before["user_version"], 1)
-        self.assertEqual([row[:2] for row in before["tables"]["store_migrations"]], [(1, BASELINE_CHECKSUM)])
         store = self.open()
         self.assertEqual(self.cycle(store, INSTALLATION, CYCLE), DeliveryCycle(
             installation_id=INSTALLATION,
@@ -473,7 +493,7 @@ class R17NoSchemaChange(StoreCase):
         ))
         self.assertIsNone(self.cycle(store, INSTALLATION, "00000000-0000-4000-8000-00000000dead"))
         store.close()
-        # Opening and reading under @2 changed nothing: schema, version, migration records, and every row.
+        # Opening and reading changed nothing: schema, version, migration records, and every row.
         self.assertEqual(contents(self.path), before)
 
 if __name__ == "__main__":
