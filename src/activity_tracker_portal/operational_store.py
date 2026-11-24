@@ -1886,7 +1886,7 @@ class OperationalStore:
         _processing_bound(lease_seconds, 86_400)
         if not isinstance(owner, str) or not owner:
             raise StoreRefusal("processing-request-invalid")
-        expiry = _timestamp(at + timedelta(seconds=lease_seconds))
+        expiry = _timestamp(at.astimezone(timezone.utc) + timedelta(seconds=lease_seconds))
         with _transaction(self._connection):
             reserve_checked = False
             while True:
@@ -1926,7 +1926,7 @@ class OperationalStore:
     def renew_processing_lease(self, job_id: int, fence: int, lease_seconds: int, at: datetime) -> Lease:
         _timestamp(at)
         _processing_bound(lease_seconds, 86_400)
-        expiry = _timestamp(at + timedelta(seconds=lease_seconds))
+        expiry = _timestamp(at.astimezone(timezone.utc) + timedelta(seconds=lease_seconds))
         with _transaction(self._connection):
             _held_processing_job(self._connection, job_id, fence)
             self._processing_write_reserve()
