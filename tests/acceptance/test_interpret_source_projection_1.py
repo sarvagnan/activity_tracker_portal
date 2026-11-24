@@ -87,6 +87,7 @@ COMMON_REASONS = {
     "record-type-not-modeled",
     "schema-version-not-modeled",
     "fallback-timezone-policy-missing",
+    "instant-out-of-range",
 }
 R10_KEYS = {
     "source_system_kind", "origin", "record_type", "source_identity", "record_id",
@@ -178,11 +179,31 @@ def canonical(value) -> str:
 
 
 def is_canonical(data: bytes) -> bool:
-    """RFC 8785 form, with every integer inside the I-JSON range that RFC 8785 numbers represent exactly."""
-    value = json.loads(data)
-    exact = all(abs(item) <= 2**53 - 1 for item in json_values(value)
-                if isinstance(item, int) and not isinstance(item, bool))
-    return exact and canonical(value).encode("utf-8") == data
+    """RFC 8785 form: every number token is the ECMAScript rendering of the binary64 value it denotes.
+
+    An integer token beyond what binary64 holds exactly, such as 9007199254740993, fails; the token
+    10000000000000000 that RFC 8785 writes for the float 1e16 passes.
+    """
+    return canonical(json.loads(data)).encode("utf-8") == data
+
+
+def endpoint_json(endpoint: Endpoint) -> dict:
+    """The documented serialized form of one endpoint in the header's `time` object."""
+    out = {"instant": endpoint.instant.text, "applied_offset": endpoint.applied_offset,
+           "local_date": endpoint.local_date.isoformat(), "attribution": endpoint.attribution}
+    if endpoint.source_offset is not None:
+        out["source_offset"] = endpoint.source_offset
+    if endpoint.policy_id is not None:
+        out["policy_id"] = endpoint.policy_id
+    return out
+
+
+def time_json(temporal: TemporalHeader) -> dict:
+    """The documented serialized form of the temporal header: `end` is present only for an interval."""
+    out = {"shape": temporal.shape, "explicit_time": temporal.explicit_time, "start": endpoint_json(temporal.start)}
+    if temporal.end is not None:
+        out["end"] = endpoint_json(temporal.end)
+    return out
 
 
 def json_values(value):
@@ -354,6 +375,8 @@ def scenario_summary() -> str:
         (weight("2026-01-15T18:20:00.123456789Z", offset=None), SyntheticProcessor("weight"),
          (policy("policy-kathmandu", None, "Asia/Kathmandu"),)),
         (weight(offset=None), SyntheticProcessor("weight"), ()),
+        (weight("1800-01-02T04:56:01Z", offset=None), SyntheticProcessor("weight"), (policy("policy-new-york", None, "America/New_York"),)),
+        (weight("9999-12-31T23:00:00Z", offset="+01:00"), SyntheticProcessor("weight"), ()),
         (sleep(), None, ()),
         (steps(count="4321"), None, ()),
     ]
@@ -388,6 +411,7 @@ class Checks(unittest.TestCase):
     def revision(self, projection, processor=None, policies=(), **overrides) -> CanonicalRevision:
         outcome = run(projection, processor if processor is not None else steps_processor(), policies, **overrides)
         self.assertIsInstance(outcome, CanonicalRevision, repr(outcome))
+        self.assertEqual(json.loads(outcome.header_bytes)["time"], time_json(outcome.header.time))
         return outcome
 
     def assert_health_free(self, text: str) -> None:
@@ -462,8 +486,11 @@ class R2PureAndDeterministic(Checks):
     def test_interpret_has_no_store_or_clock_dependency(self) -> None:
         code = r"""
 import json, os, sys, time, zoneinfo
-import activity_tracker_portal.interpret_source_projection as module
-import test_interpret_source_projection_1 as t
+# Modules the suite itself, or an implementation, commonly needs are imported first, so that only the
+# implementation module's own import and its calls run under observation.
+import jsonschema, tzdata, logging, decimal, fractions, hashlib, re, importlib.resources, pathlib, dataclasses
+import typing, collections, functools, itertools, calendar, math, unicodedata, copy, enum, struct, base64, datetime
+import string, operator, bisect, heapq, io, traceback, unittest, subprocess, tempfile, shutil, random, uuid, types
 host = [os.path.realpath(p) for p in zoneinfo.TZPATH] + [os.path.realpath("/etc/localtime"), "/etc/localtime"]
 events = []
 WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
@@ -483,10 +510,24 @@ def hook(event, args):
         events.append([event])
 def forbidden(*args, **kwargs):
     raise AssertionError("clock read")
+def explicit(original, index):
+    # A pure conversion or formatting call is allowed only with an explicit time argument.
+    def guard(*args):
+        if len(args) <= index or args[index] is None:
+            raise AssertionError("clock read")
+        return original(*args)
+    return guard
 sys.addaudithook(hook)
-for name in ("time", "time_ns", "monotonic", "monotonic_ns", "perf_counter", "perf_counter_ns",
-             "localtime", "gmtime", "ctime", "asctime", "strftime", "mktime"):
-    setattr(time, name, forbidden)
+for name in ("time", "time_ns", "monotonic", "monotonic_ns", "perf_counter", "perf_counter_ns", "process_time",
+             "process_time_ns", "thread_time", "thread_time_ns", "clock_gettime", "clock_gettime_ns",
+             "localtime", "ctime", "mktime"):
+    if hasattr(time, name):
+        setattr(time, name, forbidden)
+time.gmtime = explicit(time.gmtime, 0)
+time.asctime = explicit(time.asctime, 0)
+time.strftime = explicit(time.strftime, 1)
+import activity_tracker_portal.interpret_source_projection as module
+import test_interpret_source_projection_1 as t
 t.scenario_summary()
 print(json.dumps({"store": "activity_tracker_portal.operational_store" in sys.modules, "events": events}))
 """
@@ -825,11 +866,20 @@ class R5ClosedSchemaValidation(Checks):
                     self.assertEqual(processor.calls, [], name)
 
     def test_schema_pointer_follows_traversal_order(self) -> None:
+        def reversed_keys(value):
+            if isinstance(value, dict):
+                return {key: reversed_keys(value[key]) for key in reversed(list(value))}
+            if isinstance(value, list):
+                return [reversed_keys(item) for item in value]
+            return value
+
         def faulted(base: dict, *changes) -> dict:
             projection = copy.deepcopy(base)
             for path, value in changes:
                 at(projection, path[:-1])[path[-1]] = value
-            return projection
+            # Every object, nested ones included, is serialized in reverse model order, so input order
+            # and model order disagree; `record` also precedes `metadata`.
+            return reversed_keys(projection)
 
         cases = [
             # metadata before record
@@ -850,6 +900,15 @@ class R5ClosedSchemaValidation(Checks):
             (faulted(vector("exercise-session-maximal"), (("record", "segments", 1, "segment_type"), 9999),
                      (("record", "segments", 0, "repetitions"), "x")),
              "/record/segments/0/repetitions"),
+            # model order within a list element, not input order
+            (faulted(vector("heart-rate-maximal"), (("record", "samples", 0, "beats_per_minute"), "x"),
+                     (("record", "samples", 0, "time"), "x")),
+             "/record/samples/0/time"),
+            (faulted(vector("exercise-session-maximal"), (("record", "segments", 0, "repetitions"), "x"),
+                     (("record", "segments", 0, "segment_type"), 9999)),
+             "/record/segments/0/segment_type"),
+            (faulted(vector("steps-maximal"), (("metadata", "device", "model"), 5), (("metadata", "device", "type"), 99)),
+             "/metadata/device/type"),
             # depth first: a nested fault in an earlier field precedes a shallow fault in a later one
             (faulted(vector("exercise-session-maximal"), (("record", "planned_exercise_session_id"), 5),
                      (("record", "segments", 0, "segment_type"), 9999)),
@@ -859,6 +918,7 @@ class R5ClosedSchemaValidation(Checks):
         ]
         for projection, pointer in cases:
             with self.subTest(pointer):
+                self.assertEqual(list(projection)[0], "record")
                 self.assertEqual(run(projection), Quarantine("projection-schema-invalid", pointer))
 
     def test_validator_agrees_with_jsonschema_on_every_vector(self) -> None:
@@ -1038,6 +1098,77 @@ class R7TemporalHeader(Checks):
         self.assertGreater(across.header.time.end.instant.epoch_ns, across.header.time.start.instant.epoch_ns)
 
 
+    def test_out_of_range_instants_are_quarantined(self) -> None:
+        """Operator decision, 2026-11-24: instants and derived local dates stay within years 1 to 9999."""
+        out = "instant-out-of-range"
+        weigh = SyntheticProcessor("weight")
+        # A header instant in year 0000 is out of range before Unmodeled, whatever its offset.
+        for text, offset in (("0000-02-29T07:30:00Z", "+05:30"), ("0000-12-31T20:00:00Z", "+05:30"), ("0000-01-01T00:00:00Z", None)):
+            with self.subTest(text=text, offset=offset):
+                self.assertEqual(run(weight(text, offset=offset), weigh, UTC_ALWAYS), Quarantine(out, "/record/time", PROCESSOR_VERSION, "none"))
+                self.assertEqual(run(weight(text, offset=offset)), Quarantine(out, "/record/time"))
+        self.assertEqual(run(steps("0000-12-31T23:00:00Z", "0001-01-01T01:00:00Z")), Quarantine(out, "/record/start_time"))
+        # It precedes interval-reversed.
+        self.assertEqual(run(steps("0001-01-01T00:00:00Z", "0000-12-31T23:00:00Z"), steps_processor()),
+                         Quarantine(out, "/record/end_time", PROCESSOR_VERSION, "none"))
+        # A derived local date outside years 1 to 9999, experienced or inferred.
+        experienced = [
+            ("0001-01-01T00:00:00Z", "-00:01", None),
+            ("0001-01-01T00:00:59.999999999Z", "-00:01", None),
+            ("0001-01-01T00:01:00Z", "-00:01", date(1, 1, 1)),
+            ("0001-01-01T00:00:00Z", "+00:00", date(1, 1, 1)),
+            ("9999-12-31T23:00:00Z", "+01:00", None),
+            ("9999-12-31T22:59:59.999999999Z", "+01:00", date(9999, 12, 31)),
+            ("9999-12-31T23:59:59.999999999Z", "-00:01", date(9999, 12, 31)),
+            ("9999-12-31T23:59:59.999999999Z", "+00:00", date(9999, 12, 31)),
+        ]
+        for text, offset, expected in experienced:
+            with self.subTest(text=text, offset=offset):
+                processor = SyntheticProcessor("weight")
+                if expected is None:
+                    self.assertEqual(run(weight(text, offset=offset), processor), Quarantine(out, "/record/time", PROCESSOR_VERSION, "none"))
+                    self.assertEqual(processor.calls, [])
+                    # Unmodeled derives no local date.
+                    self.assertEqual(run(weight(text, offset=offset)), Unmodeled("record-type-not-modeled"))
+                else:
+                    outcome = self.revision(weight(text, offset=offset), processor)
+                    self.assertEqual(outcome.header.time.start, Endpoint(instant(text), offset, offset, expected, "experienced", None))
+        inferred = [
+            ("0001-01-01T00:00:00Z", NEW_YORK, None),
+            ("0001-01-01T00:00:00Z", "UTC", date(1, 1, 1)),
+            ("9999-12-31T23:00:00Z", "Asia/Tokyo", None),
+            ("9999-12-31T14:59:59.999999999Z", "Asia/Tokyo", date(9999, 12, 31)),
+            ("9999-12-31T23:00:00Z", "UTC", date(9999, 12, 31)),
+        ]
+        for text, zone, expected in inferred:
+            with self.subTest(text=text, zone=zone):
+                timeline = [policy("policy-alpha", None, zone)]
+                outcome = run(weight(text, offset=None), SyntheticProcessor("weight"), timeline)
+                if expected is None:
+                    self.assertIsInstance(outcome, Quarantine)
+                    self.assertEqual((outcome.reason, outcome.pointer, outcome.processor_version), (out, "/record/time", PROCESSOR_VERSION))
+                else:
+                    self.assertIsInstance(outcome, CanonicalRevision)
+                    self.assertEqual((outcome.header.time.start.local_date, outcome.header.time.start.attribution), (expected, "inferred"))
+        # Per endpoint, and before Policy-Pending.
+        self.assertEqual(run(steps("9999-12-31T20:00:00Z", "9999-12-31T21:00:00Z", start_offset="-05:00", end_offset="+05:30"),
+                             steps_processor()), Quarantine(out, "/record/end_time", PROCESSOR_VERSION, "none"))
+        self.assertEqual(run(steps("9999-12-31T20:00:00Z", "9999-12-31T21:00:00Z", start_offset="+05:30", end_offset=None),
+                             steps_processor()), Quarantine(out, "/record/start_time", PROCESSOR_VERSION, "none"))
+        self.assertEqual(run(steps("9999-12-31T20:00:00Z", "9999-12-31T21:00:00Z", start_offset=None, end_offset="+05:30"),
+                             steps_processor()), Quarantine(out, "/record/end_time", PROCESSOR_VERSION, "none"))
+        # The envelope's modification time: decode_envelope quarantines it, so interpret refuses the identity.
+        for text in ("0000-01-01T00:00:00Z", "0000-02-29T09:00:00.123456789Z"):
+            with self.subTest(last_modified_time=text):
+                self.assertEqual(decode_envelope(encode(steps(lmt=text)), "steps", 1), Quarantine(out, "/metadata/last_modified_time"))
+                self.assertEqual(self.refused(steps(lmt=text)), "projection-identity-mismatch")
+        for text, expected in (("0001-01-01T00:00:00Z", datetime(1, 1, 1, tzinfo=UTC)),
+                               ("9999-12-31T23:59:59.999999999Z", datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=UTC))):
+            with self.subTest(last_modified_time=text):
+                decoded = decode_envelope(encode(steps(lmt=text)), "steps", 1)
+                self.assertEqual((decoded.last_modified_time, decoded.last_modified_instant), (expected, Instant(text, epoch_ns(text))))
+
+
 # ---- R8 ----
 
 NEW_YORK = "America/New_York"
@@ -1070,6 +1201,24 @@ class R8FallbackTimezoneAttribution(Checks):
                          ("-05:00", date(2026, 3, 7)))
         self.assertEqual((interval.header.time.end.applied_offset, interval.header.time.end.local_date),
                          ("-04:00", date(2026, 3, 8)))
+
+    def test_inferred_offset_keeps_seconds(self) -> None:
+        """Operator decision, 2026-11-24: an inferred offset keeps a nonzero seconds part, and the local date uses it."""
+        cases = [
+            ("1800-01-02T04:56:01Z", NEW_YORK, "-04:56:02", date(1800, 1, 1)),
+            ("1800-01-02T04:56:02Z", NEW_YORK, "-04:56:02", date(1800, 1, 2)),
+            ("1800-01-02T04:56:01.999999999Z", NEW_YORK, "-04:56:02", date(1800, 1, 1)),
+            ("1800-01-01T18:06:31Z", "Asia/Kolkata", "+05:53:28", date(1800, 1, 1)),
+            ("1800-01-01T18:06:32Z", "Asia/Kolkata", "+05:53:28", date(1800, 1, 2)),
+            ("1900-01-01T12:00:00Z", "Asia/Kolkata", "+05:21:10", date(1900, 1, 1)),
+            ("2026-01-15T12:00:00Z", NEW_YORK, "-05:00", date(2026, 1, 15)),
+        ]
+        for text, zone, offset, expected in cases:
+            with self.subTest(text=text, zone=zone):
+                outcome = self.revision(weight(text, offset=None), SyntheticProcessor("weight"), [policy("policy-alpha", None, zone)])
+                self.assertEqual(outcome.header.time.start, Endpoint(instant(text), None, offset, expected, "inferred", "policy-alpha"))
+                self.assertEqual(json.loads(outcome.header_bytes)["time"]["start"]["applied_offset"], offset)
+
 
     def test_policy_boundary_is_inclusive(self) -> None:
         boundary = datetime(2026, 6, 1, tzinfo=UTC)
@@ -1226,6 +1375,47 @@ class R9ProcessorPlugIn(Checks):
         self.assertEqual(inferred.policy_identity, revision.policy_identity)
         self.assertNotEqual(inferred.policy_identity, "none")
 
+    def test_processor_pointer_must_name_a_schema_field(self) -> None:
+        """The common layer checks a processor's pointer for grammar and for membership in the source schema."""
+        value_marker = "syntheticvaluemarker"
+
+        def quarantining(record_type, pointer):
+            return SyntheticProcessor(record_type, reasons=("synthetic-refusal",), body=lambda record, temporal: Quarantine(
+                "synthetic-refusal", pointer(record) if callable(pointer) else pointer))
+
+        night = sleep(title=value_marker)
+        accepted = [
+            ("sleep-session", night, ""), ("sleep-session", night, "/record"), ("sleep-session", night, "/record/title"),
+            ("sleep-session", night, "/record/stages/1/stage"), ("sleep-session", night, "/record/stages/0"),
+            ("sleep-session", night, "/metadata/device/model"), ("sleep-session", night, "/record_type"),
+            # declared by the schema though absent from this projection
+            ("steps", steps(device=False), "/metadata/device/manufacturer"),
+            # declared by one variant of a oneOf
+            ("exercise-session", vector("exercise-session-maximal"), "/record/exercise_route_result/kind"),
+        ]
+        for record_type, projection, pointer in accepted:
+            with self.subTest("accepted", pointer=pointer):
+                self.assertEqual(run(projection, quarantining(record_type, pointer)),
+                                 Quarantine("synthetic-refusal", pointer, PROCESSOR_VERSION, "none"))
+        rejected = [
+            lambda record: "/record/" + record["title"],
+            lambda record: "/record/title/" + record["title"],
+            lambda record: "/record/" + record["notes"],
+            "/record/notes/x", "record/title", "/record/stages/01/stage", "/record/stages/-1/stage", "/record/stages/x",
+            "/record/stages/1/", "/record/Title", "/record/title~1", "/record//title", "/records", " /record/title",
+            "/metadata/client_record_id/x", "/record/stage", None, 5,
+        ]
+        for index, pointer in enumerate(rejected):
+            with self.subTest("rejected", case=index):
+                with self.assertRaises(InterpretFailure) as caught:
+                    run(night, quarantining("sleep-session", pointer))
+                failure = caught.exception
+                self.assertEqual(failure.failure, "processor-invariant-violated")
+                for text in (str(failure), repr(failure), repr(vars(failure)), "".join(traceback.format_exception(failure))):
+                    self.assertNotIn(value_marker, text)
+                    self.assert_health_free(text)
+
+
     def test_undeclared_reason_violates_invariant(self) -> None:
         for reasons, returned in (
             ((), "synthetic-count-negative"),
@@ -1234,6 +1424,10 @@ class R9ProcessorPlugIn(Checks):
             (("projection-schema-invalid",), "projection-schema-invalid"),
             (("record-type-not-modeled",), "record-type-not-modeled"),
             (("fallback-timezone-policy-missing",), "fallback-timezone-policy-missing"),
+            (("instant-out-of-range",), "instant-out-of-range"),
+            (("Synthetic Reason",), "Synthetic Reason"),
+            (("synthetic_reason",), "synthetic_reason"),
+            (("",), ""),
         ):
             with self.subTest(returned=returned, declared=reasons):
                 processor = steps_processor(reasons=reasons, body=lambda record, temporal, r=returned: Quarantine(r, "/record/count"))
@@ -1267,20 +1461,31 @@ class R9ProcessorPlugIn(Checks):
         def body(value, kind, unit):
             return body_processor({"v": value}, (NumericField("/v", kind, unit),))
 
+        safe = 2**53 - 1
         accepted = [(5, "integer", "count"), (-0, "integer", "count"), (72500.0, "float", "g"), (0.5, "float", "percent"),
-                    (2, "code", None), (-1.5, "float", "degC")]
+                    (2, "code", None), (-1.5, "float", "degC"), (safe, "integer", "count"), (-safe, "integer", "count"),
+                    (safe, "code", None), (1e16, "float", "g"), (9007199254740994.0, "float", "g"), (-1e300, "float", "g")]
         for value, kind, unit in accepted:
             with self.subTest("accepted", value=value, kind=kind):
                 self.assertIsInstance(run(steps(), body(value, kind, unit)), CanonicalRevision)
         rejected = [(True, "integer", "count"), (5.0, "integer", "count"), (5, "float", "g"), (False, "float", "g"),
                     (math.nan, "float", "g"), (math.inf, "float", "g"), (-math.inf, "float", "g"),
-                    (True, "code", None), (2.0, "code", None), ("5", "integer", "count"), (5, "count", "count")]
+                    (True, "code", None), (2.0, "code", None), ("5", "integer", "count"), (5, "count", "count"),
+                    (safe + 1, "integer", "count"), (safe + 2, "integer", "count"), (-(safe + 1), "integer", "count"),
+                    (-(safe + 2), "integer", "count"), (2**64, "integer", "count"), (safe + 2, "code", None)]
         for value, kind, unit in rejected:
             with self.subTest("rejected", value=value, kind=kind):
                 self.assertEqual(self.refused(steps(), body(value, kind, unit)), "processor-invariant-violated")
         integer = self.revision(steps(), body(72500, "integer", "g"))
         floating = self.revision(steps(), body(72500.0, "float", "g"))
         self.assertEqual((integer.body_bytes, floating.body_bytes), (b'{"v":72500}', b'{"v":72500}'))
+        boundary = self.revision(steps(), body_processor({"v": [safe, -safe]}, (NumericField("/v/*", "integer", "count"),)))
+        self.assertEqual(boundary.body_bytes, b'{"v":[9007199254740991,-9007199254740991]}')
+        wide_float = self.revision(steps(), body(1e16, "float", "g"))
+        self.assertEqual(wide_float.body_bytes, b'{"v":10000000000000000}')
+        self.assertTrue(is_canonical(wide_float.body_bytes))
+        self.assertEqual(self.refused(steps(), body_processor({"v": [1, safe + 2]}, (NumericField("/v/*", "integer", "count"),))),
+                         "processor-invariant-violated")
         self.assertIsInstance(run(steps(), body_processor({"flag": True, "v": 1}, (NumericField("/v", "integer", "count"),))),
                               CanonicalRevision)
 
@@ -1311,6 +1516,8 @@ class R9ProcessorPlugIn(Checks):
         self.assertEqual(canonical(body).encode("utf-8"), expected)
         self.assertEqual(outcome.body_sha256, sha(expected))
         self.assertTrue(is_canonical(outcome.header_bytes))
+        self.assertTrue(is_canonical(outcome.body_bytes))
+        self.assertFalse(is_canonical(b'{"v":9007199254740993}'))
         self.assertFalse(outcome.body_bytes.startswith(b"\xef\xbb\xbf"))
 
     def test_processor_exception_is_an_invariant_violation(self) -> None:
@@ -1357,11 +1564,31 @@ class R10RevisionHeaderAndIdentity(Checks):
             "processor_version": "interpret-steps@4", "body_schema": {"record_type": "steps", "body_version": 3},
             "policy_identity": outcome.policy_identity, "body_sha256": sha(b'{"count":4321}'),
         })
-        time_values = [value for value in json_values(header["time"]) if isinstance(value, str)]
-        for value in ("interval", "2026-01-15T07:30:00.123456789Z", "2026-01-15T08:00:00Z", "+05:30", "+00:00",
-                      "2026-01-15", "experienced", "inferred", "policy-utc"):
-            self.assertIn(value, time_values)
-        self.assertTrue(any(value is True for value in json_values(header["time"])))
+        self.assertEqual(header["time"], {
+            "shape": "interval", "explicit_time": True,
+            "start": {"instant": "2026-01-15T07:30:00.123456789Z", "source_offset": "+05:30", "applied_offset": "+05:30",
+                      "local_date": "2026-01-15", "attribution": "experienced"},
+            "end": {"instant": "2026-01-15T08:00:00Z", "applied_offset": "+00:00", "local_date": "2026-01-15",
+                    "attribution": "inferred", "policy_id": "policy-utc"},
+        })
+        # Endpoints whose instants, dates, offsets, and policies all differ cannot be swapped unnoticed.
+        split = datetime(2026, 3, 8, 12, 0, tzinfo=UTC)
+        apart = self.revision(steps("2026-03-08T04:30:00Z", "2026-03-08T20:00:00Z", start_offset=None, end_offset=None),
+                              steps_processor(), [policy("policy-zulu", None, "America/New_York"),
+                                                  policy("policy-alpha", split, "Asia/Kolkata")])
+        self.assertEqual(json.loads(apart.header_bytes)["time"], {
+            "shape": "interval", "explicit_time": True,
+            "start": {"instant": "2026-03-08T04:30:00Z", "applied_offset": "-05:00", "local_date": "2026-03-07",
+                      "attribution": "inferred", "policy_id": "policy-zulu"},
+            "end": {"instant": "2026-03-08T20:00:00Z", "applied_offset": "+05:30", "local_date": "2026-03-09",
+                    "attribution": "inferred", "policy_id": "policy-alpha"},
+        })
+        point = self.revision(weight(), SyntheticProcessor("weight"))
+        self.assertEqual(json.loads(point.header_bytes)["time"], {
+            "shape": "instant", "explicit_time": True,
+            "start": {"instant": "2026-01-15T07:30:00.250Z", "source_offset": "+05:30", "applied_offset": "+05:30",
+                      "local_date": "2026-01-15", "attribution": "experienced"},
+        })
         self.assertEqual((outcome.processor_version, outcome.policy_identity),
                          ("interpret-steps@4", outcome.header.policy_identity))
         no_device = self.revision(steps(device=False), steps_processor())
