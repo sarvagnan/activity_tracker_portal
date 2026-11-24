@@ -192,3 +192,21 @@ This log records friction encountered while adopting Vouch mk2 in its first exte
 **Friction**: None.
 
 **Decision**: Re-pin in one pull request again. The re-pin procedure is: replace `vouch.lock`, update the digest in `.vouch/config.json`, then run `upgrade`, `python3 vouch.lock refresh-workflow --project .`, and `check --ci`. `vouch.yml` belongs to Vouch: change it only with `refresh-workflow`, never by hand.
+
+## 2026-11-24 — Amending an additive successor invalidates its predecessor's dependents
+
+**Context**: `operational-store@4` adds processing tables to the store and leaves `@3`'s behaviour unchanged. During implementation review, its frozen performance residual turned out to conflict with the pack's own no-backfill and unchanged-`@3` rules. The Operator amended the residual through the deviation flow (DEV-os4-01): `open-deviation`, `adjudicate-amend`, `close-deviation`, then `respecify`.
+
+**Evidence**:
+
+- `respecify` on `operational-store@4` moved seven published units that depend on `operational-store` to `invalidated`:
+  - `accept-capability-acknowledgement@1`, `accept-ingest-batch@1`, `accept-sync-checkpoint@1` and `accept-sync-completion@1`;
+  - `manage-sender-installation@1` and `receipt-bound-delivery@1`;
+  - `reconcile-source-record@1`.
+- None of their code or packs changed. They were bound against `@2` or `@3`, which `@4` leaves unchanged.
+- A re-verified dependent cannot publish again until `operational-store` is published again: `gate.dependency-unsatisfied`.
+- `respecify` also cleared `@4`'s strict-CI exception.
+
+**Friction**: A text-only amendment to a successor version, which changed no test, cost a strict-CI exception and a re-verification for every published dependent of the unit's name. Vouch tracks dependencies by name, not version, so it cannot tell an amendment to an additive successor from one to the pack the dependents were built on.
+
+**Decision**: The Operator chose to keep the amendment and re-verify all seven, rather than undo it and waive the residual. Each invalidated unit has a strict-CI exception until `@4` publishes. Then each gets a fresh GREEN through its own runner and is republished with the approver's acceptance. The upstream question, whether an amendment to an additive successor should invalidate dependents of earlier versions, is for Vouch.
