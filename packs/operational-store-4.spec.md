@@ -28,7 +28,7 @@ The module `activity_tracker_portal.operational_store` adds these frozen datacla
 - `OutcomeEntry(kind, processor_version, policy_identity, reason, pointer, policy_kind, revision)`. `kind` is `"revision"`, `"unmodeled"`, `"policy-pending"`, or `"quarantine"`.
 - `StoredRevision`: a `RevisionEntry` plus the store's `header_sha256` and `body_sha256`.
 - `ProcessingOutcome`: `outcome_id`, `record_id`, `selection_id`, `evidence_id`, `processor_version`, `policy_identity`, `kind`, `reason`, `pointer`, `policy_kind`, `revision` (a `StoredRevision` or `None`), `job_id`, `fence`, and `recorded_at`. A revision's identity is its `outcome_id`.
-- `ProcessingAttempt(fence, owner, claimed_at, expires_at, finished_at, result, reason)`. `result` is `None` while open, or `"completed"`, `"transient-failure"`, `"deterministic-failure"`, `"lease-expired"`, or `"superseded"`.
+- `ProcessingAttempt(fence, owner, claimed_at, expires_at, finished_at, result, reason)`. `result` is `None` while open, or `"completed"`, `"transient-failure"`, `"deterministic-failure"`, or `"lease-expired"`. Supersession is a job state, never an attempt result (Operator, 2026-11-24).
 - `ProcessingJob`: `job_id`, `record_id`, `processor_version`, `selection_id` (its current target), `state`, `max_attempts`, `attempts`, `not_before`, `fence`, `lease_owner`, `lease_expires_at`, `failure`, `enqueued_at`, `closed_at`, and `history` (its attempts in order). `state` is `"queued"`, `"leased"`, `"completed"`, `"failed"`, or `"superseded"`.
 - `Lease(job_id, fence, owner, record_id, selection_id, evidence_id, processor_version, expires_at)`.
 - `ItemQuarantine(position, reason, pointer, recorded_at)`.
@@ -292,7 +292,7 @@ The tests pin these refinements beyond the approved text. None is meant to chang
   - Each claim of a job gives it a strictly higher fence than the last, and renewal keeps the fence. The initial value and the step are unpinned.
   - An attempt's `claimed_at` and `expires_at` are pinned at claim time. `finished_at` is the call's `at` for completed and failed attempts. For `lease-expired` attempts it is only non-`None`.
   - A completed attempt has no reason. A failed attempt carries the caller's reason.
-- **Expiry and supersession together.** A reclaimed expired lease whose record is now retracted closes its attempt as `lease-expired`, then the job is `superseded`. **(escalate)** No rule in R31–R35 produces the `superseded` attempt result. The suite never expects it, and it is still a valid value.
+- **Expiry and supersession together.** A reclaimed expired lease whose record is now retracted closes its attempt as `lease-expired`, then the job is `superseded`. No rule produced a `superseded` attempt result. On 2026-11-24 the Operator removed it from the attempt results, so an attempt records what happened to it, and `superseded` remains a job state only.
 - **Retry bound (R31, R35).**
   - Exhaustion at reclaim means the attempts used equal `max_attempts`. With two attempts, a job whose lease expires twice fails at the third claim with `lease-expired-retries-exhausted`.
   - A reclaim counts toward the bound for transient failures too.

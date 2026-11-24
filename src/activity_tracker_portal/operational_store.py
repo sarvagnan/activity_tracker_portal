@@ -628,7 +628,7 @@ _AWAITING_SELECTION_SQL = (
 Attribution = Literal["experienced", "inferred"]
 OutcomeKind = Literal["revision", "unmodeled", "policy-pending", "quarantine"]
 JobState = Literal["queued", "leased", "completed", "failed", "superseded"]
-AttemptResult = Literal["completed", "transient-failure", "deterministic-failure", "lease-expired", "superseded"]
+AttemptResult = Literal["completed", "transient-failure", "deterministic-failure", "lease-expired"]
 FailureKind = Literal["transient", "deterministic"]
 
 
