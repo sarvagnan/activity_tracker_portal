@@ -34,6 +34,8 @@ jobs:
         run: tests/acceptance/run_operational_store_3.sh
       - name: Run reconcile-source-record@1 acceptance
         run: tests/acceptance/run_reconcile_source_record_1.sh
+      - name: Run interpret-source-projection@1 acceptance
+        run: tests/acceptance/run_interpret_source_projection_1.sh
       - name: Run manage-sender-installation@1 acceptance
         run: tests/acceptance/run_manage_sender_installation_1.sh
       - name: Run accept-ingest-batch@1 acceptance
