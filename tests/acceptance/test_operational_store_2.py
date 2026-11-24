@@ -454,7 +454,7 @@ class R17NoSchemaChange(StoreCase):
             baseline_tables = [row[0] for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
             baseline_columns = {
-                table: [row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')]
+                table: [row[1] for row in connection.execute(f'PRAGMA table_xinfo("{table}")')]
                 for table in baseline_tables
             }
             def baseline_rows(table: str) -> list[tuple[object, ...]]:
@@ -470,9 +470,11 @@ class R17NoSchemaChange(StoreCase):
                 connection.execute(f"PRAGMA user_version = {version}")
                 connection.commit()
             self.assertEqual({table: baseline_rows(table) for table in archive}, archive)
+            # table_xinfo also lists generated columns. A VIRTUAL one (hidden = 2)
+            # stores nothing; an ordinary or STORED one would hold backfilled values.
             for table in baseline_tables:
-                for column in [row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')]:
-                    if column not in baseline_columns[table]:
+                for _cid, column, *_rest, hidden in connection.execute(f'PRAGMA table_xinfo("{table}")'):
+                    if column not in baseline_columns[table] and hidden != 2:
                         filled = connection.execute(
                             f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" IS NOT NULL').fetchone()[0]
                         self.assertEqual(filled, 0, f"{table}.{column}")
