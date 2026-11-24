@@ -1,0 +1,1 @@
+{"actor":"operator","event":"UnitInvalidated","event_format":2,"pack_digest":"","payload":{"name":"accept-sync-checkpoint","trigger_deviation_id":"DEV-os4-01"},"prev":"9de91d9747dc08577405091bc9c0e4201eb8433be3fdbb26a5041d6ccd177bd5","recorded_at":"2026-11-24T15:01:52+00:00","revision":468,"run_id":""}

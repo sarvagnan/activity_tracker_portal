@@ -1,0 +1,1 @@
+{"actor":"operator","event":"UnitInvalidated","event_format":2,"pack_digest":"","payload":{"name":"manage-sender-installation","trigger_deviation_id":"DEV-os4-01"},"prev":"862d811b6fd8b8b0001d32b6efef69215c8443ec3ddc1b53c8f5900ee0461687","recorded_at":"2026-11-24T15:01:52+00:00","revision":470,"run_id":""}

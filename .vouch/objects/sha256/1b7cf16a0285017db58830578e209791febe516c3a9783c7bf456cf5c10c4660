@@ -1,0 +1,1 @@
+{"actor":"operator","event":"UnitInvalidated","event_format":2,"pack_digest":"","payload":{"name":"accept-capability-acknowledgement","trigger_deviation_id":"DEV-os4-01"},"prev":"1fa7038cbe4abb628a11a193ffb45154ec2afd6a8a05e6960c661761e59dbabc","recorded_at":"2026-11-24T15:01:52+00:00","revision":466,"run_id":""}
