@@ -184,15 +184,19 @@ class OperationalStoreHardeningTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), before)
 
     def test_zero_length_file_is_created_at_baseline(self) -> None:
+        # A zero-length file is a new database: every known migration is applied,
+        # starting from the baseline.
         path = self.directory / "empty.sqlite3"
         path.touch()
+        known = tuple(
+            (version, hashlib.sha256(sql.encode("utf-8")).hexdigest()) for version, sql in store_module.MIGRATIONS
+        )
+        self.assertEqual(known[0][0], 1)
         with open_store(path, reserve_bytes=1_000_000, free_bytes=self.free) as store:
-            self.assertEqual(store.settings().schema_migrations, ((
-                1, hashlib.sha256(store_module.MIGRATIONS[0][1].encode("utf-8")).hexdigest(),
-            ),))
+            self.assertEqual(store.settings().schema_migrations, known)
         connection = sqlite3.connect(path)
         try:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], known[-1][0])
         finally:
             connection.close()
 
