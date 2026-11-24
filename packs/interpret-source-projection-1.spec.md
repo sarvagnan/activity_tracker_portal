@@ -220,10 +220,73 @@ Proposed tests: `test_outcomes_are_health_data_free`, `test_failures_are_health_
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_interpret_source_projection_1.py`, covering R1–R11;
+The Operator approved the draft. The executable pack adds:
+- the suite `tests/acceptance/test_interpret_source_projection_1.py`, 50 tests across R1–R11, one per proposed test name;
 - the runner `tests/acceptance/run_interpret_source_projection_1.sh`;
-- the Interface stub `src/activity_tracker_portal/interpret_source_projection.py`: the dataclasses, `Processor`, `InterpretFailure`, `COMMON_VERSION`, and `UNITS`, with `decode_envelope` and `interpret` raising `NotImplementedError`;
-- `tzdata` as a pinned runtime dependency in `pyproject.toml` and `uv.lock`, if Decision 5 is approved.
+- the Interface stub `src/activity_tracker_portal/interpret_source_projection.py`: `COMMON_VERSION`, `UNITS`, `InterpretFailure`, the frozen dataclasses `ProcessingInput`, `FallbackTimezonePolicy`, `Instant`, `Endpoint`, `TemporalHeader`, `NumericField`, `BodySchema`, `Quarantine`, `Unmodeled`, `PolicyPending`, `RevisionHeader`, `CanonicalRevision`, and `Envelope`, and the `Processor` protocol, with `decode_envelope` and `interpret` raising `NotImplementedError`. Every outcome carries `processor_version` and `policy_identity`; on `Quarantine`, `Unmodeled`, and `PolicyPending` they default to `COMMON_VERSION` and `"none"`, so a processor returns `Quarantine(reason, pointer)`. `RevisionHeader` has one field per R10 header entry, with the temporal header as `time`, `last_modified_time` as an `Instant`, and `body_schema` as the processor's `BodySchema`;
+- `tzdata==2026.6` (IANA release `2026f`) as a pinned runtime dependency in `pyproject.toml` and `uv.lock`, per Decision 5. `jsonschema` stays a development dependency.
 
-RED must come from the stubs alone. The implementer then reviews the pack read-only for tests a correct implementation could not pass, and those findings are resolved before freeze.
+RED, against the stub: 47 of the 50 tests fail. Counting subtests, there are 212 errors, each a `NotImplementedError` from the stub, and 2 failures, the subprocess tests of R2 and R8, which fail with `AssertionError` because the subprocess raised the stub's `NotImplementedError`. The three R1 contract tests pass.
+
+A throwaway reference implementation passes all 50 tests. Of 74 incorrect implementations of the high-risk rules, 73 fail at least one test. The survivor accepts a `oneOf` that more than one branch matches; every `oneOf` in `projection/v1` discriminates on a `kind` constant, so no projection can tell it apart.
+
+**Needs Operator escalation.** R5 says every projection in `schema-negatives.json` is quarantined as `projection-schema-invalid`. That cannot hold for 3 of the 18 negatives, whose envelope is unusable: `missing-metadata-id`, `wrong-record-type`, and `instant-non-leap-february-29`. R3 makes `decode_envelope` quarantine them as `projection-envelope-invalid`. R4 step 3 makes `interpret` raise `projection-identity-mismatch` for them before step 4 validates the schema. The suite follows R3 and R4:
+- the other 15 negatives are `projection-schema-invalid` from `interpret`;
+- the 3 are `projection-envelope-invalid` from `decode_envelope`, at `/metadata/id`, `/record_type`, and `/metadata/last_modified_time`, and `interpret` refuses them with `projection-identity-mismatch`.
+
+The tests also pin these refinements:
+- **Envelope (R3).**
+  - Non-JSON bytes are `projection-not-json` with the pointer `""`. These include invalid UTF-8, empty bytes, trailing data, duplicate keys at any depth, `NaN` and `Infinity`, a number that overflows to infinity, and a top-level value that is not an object.
+  - A valid `metadata.last_modified_time` has the `projection/v1` instant form: UTC with `Z`, 0, 3, 6, or 9 fractional digits, and a real date. An RFC 3339 instant with a numeric offset is invalid.
+  - `projection_schema_version` must be a JSON integer, so `true` and `"1"` are invalid.
+  - The pointers for single faults are pinned: `/record_type`, `/projection_schema_version`, `/metadata` when absent or not an object, `/metadata/id`, `/metadata/data_origin` when not an object, `/metadata/data_origin/package_name`, and `/metadata/last_modified_time`. The pointer for several envelope faults at once, and for an absent `data_origin`, is not pinned.
+  - A usable envelope with an invalid body still yields its `Envelope`.
+- **Schema pointers (R5).**
+  - A missing required field is named by its own pointer, and so is an unknown field.
+  - A `oneOf` variant failure is pinned only as a prefix, the variant's pointer.
+  - Where an unknown or missing field falls in the traversal order, relative to present fields, is not pinned.
+  - The `jsonschema` cross-check also covers 7,647 single-field faults derived from every positive vector outside the envelope fields: a field retyped, emptied, or deleted, or an unknown field added. 6,534 of them are invalid. The verdicts must agree, and where `jsonschema` reports one error outside a `oneOf`, the pointer must name the faulted field. A boolean is never an integer or a number.
+- **Versions and policy identity on non-revision outcomes (R4, R6, R8).**
+  - With a processor, a `projection-schema-invalid` or `interval-reversed` Quarantine and a Policy-Pending carry that processor's version. `record-type-not-modeled` carries `COMMON_VERSION`.
+  - Those outcomes, and Policy-Pending when no policy applies to any endpoint, carry the policy identity `"none"`.
+  - A processor's Quarantine carries the policy identity of the temporal header it was given, which equals the identity the revision would have had.
+  - The policy identity of a Policy-Pending with one inferred endpoint is not pinned.
+- **Malformed input (R4).**
+  - The timeline is validated eagerly. A naive `effective_from` is `processing-input-invalid`, and so is a `None` start that is not first, two policies at the same instant in different offsets, or an unknown zone in a policy that would never apply. This holds even when the outcome would otherwise be Unmodeled.
+  - Timeline order and `last_modified_time` are compared as instants, whatever offset they are written in. An input time 1 µs away is `projection-identity-mismatch`, and so is a different source-system kind, origin, Source Identity, record type, or schema version.
+- **Time (R7, R8).**
+  - `Endpoint.applied_offset` is a `±hh:mm` string like `source_offset`; UTC is `+00:00`. `local_date` is a `datetime.date`.
+  - Reversed-interval checks and policy boundaries compare at nanosecond precision, with no rounding. An equal start and end written with different text is accepted, and local wall-clock order is irrelevant.
+  - A zone that exists only on the host's `PYTHONTZPATH` is an unknown zone, and a planted host copy of a real zone is never read.
+- **Policy identity form (R8).** The form is pinned only through its properties:
+  - it starts `fallback-timezone:`;
+  - it names each policy used exactly once, in sorted order, and no unused policy;
+  - it includes `tzdata.IANA_VERSION` (`2026f`), not the package version (`2026.6`);
+  - adding a policy that applies to no endpoint leaves the revision bytes unchanged.
+  The exact form is left to the module's documentation.
+- **Header bytes (R10).**
+  - The top-level keys are exactly the R10 names, with `time` for the temporal header. `device` is omitted when absent, never `null`. `body_schema` is `{"record_type", "body_version"}`. `last_modified_time` is the exact text.
+  - The layout inside `time` is not pinned, but it must carry the shape, the explicit-time boolean, and each endpoint's instant text, applied offset, ISO local date, attribution, and policy identity.
+  - Header and body bytes contain no integer outside ±(2^53 − 1), the range RFC 8785 numbers represent exactly. Epoch nanoseconds therefore cannot appear as JSON numbers.
+- **Body (R9).**
+  - The processor violates the invariant if it returns something other than a mapping, or a body containing `null`, bytes, a date, or a non-string key.
+  - Every value at a declared `NumericField` pointer must be a number of its kind, so a string `"5"` at an integer field is a violation.
+  - `*` matches list indices only, not object keys.
+  - A number matched by two declarations is a violation, including a wildcard and an index that overlap.
+  - Booleans at undeclared paths are allowed.
+  - An unknown `kind`, an empty unit, or a unit in the wrong case is a violation.
+  - `UNITS` is pinned as exactly the 14 units R9 lists.
+- **Processor (R9, R10, R11).**
+  - Returning a common reason is a violation even when the processor declares it. Merely declaring one is not pinned.
+  - Any `Exception` from the processor is `processor-invariant-violated`. The failure has no `__cause__`, and its formatted traceback, including the implicit exception context, carries none of the message.
+  - `processor_version` has the form `<kebab-case scope>@<positive integer>`, and the check is pinned only when the processor returns a body.
+- **Health-data-free outcomes (R11).** An outcome's dataclass fields are exactly those R11 names. The marker checks cover outcome `repr` and `str`, and failure `str`, `repr`, `args`, attributes, and full traceback.
+- **Purity (R2).** All outcome dataclasses are frozen. Three subprocesses vary `TZ`, `LC_ALL`, and `PYTHONHASHSEED`, and their results must be identical. Another subprocess, running under an audit hook with the `time` module's clock functions patched to raise, must observe none of these:
+  - a write-mode open;
+  - a read of the host timezone database;
+  - socket, sqlite3, or subprocess activity;
+  - a clock read through the `time` module;
+  - an import of `operational_store`.
+  This covers part of what the Ground rules list as not mechanically provable. The approver still reviews those items, because a C-level clock read such as `datetime.now()` cannot be intercepted.
+
+The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze.
