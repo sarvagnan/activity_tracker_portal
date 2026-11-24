@@ -192,11 +192,15 @@ class R13GovernedScopeContractVersion2(unittest.TestCase):
         by_outcome: dict[str, set[str]] = {}
         for failure in CONTRACT_2["named_failures"]:
             by_outcome.setdefault(failure["outcome"], set()).add(failure["name"])
-        self.assertEqual(by_outcome, {
+        # Later versions may add failures; version 2's keep their outcome classes.
+        partitions = {
             "startup-refusal": set(store_module.STARTUP_FAILURES),
             "retryable": set(store_module.RETRYABLE_FAILURES),
             "invariant-refusal": set(store_module.INVARIANT_FAILURES),
-        })
+        }
+        self.assertEqual(set(by_outcome), set(partitions))
+        for outcome, members in by_outcome.items():
+            self.assertLessEqual(members, partitions[outcome], outcome)
         owns_1, owns_2 = set(CONTRACT_1["authority"]["owns"]), set(CONTRACT_2["authority"]["owns"])
         self.assertLessEqual(owns_1, owns_2)
         self.assertTrue(any("delivery cycle" in entry for entry in owns_2 - owns_1))
@@ -427,7 +431,9 @@ class R16CoherentDurableAndHealthDataFree(StoreCase):
 
 class R17NoSchemaChange(StoreCase):
     def test_version_2_keeps_the_baseline_schema(self) -> None:
-        self.assertEqual([version for version, _sql in store_module.MIGRATIONS], [1])
+        # Version 2 added no migration. Later versions may append migrations, but
+        # never change the baseline that version 1 databases record.
+        self.assertEqual(store_module.MIGRATIONS[0][0], 1)
         self.assertEqual(digest(store_module.MIGRATIONS[0][1].encode("utf-8")), BASELINE_CHECKSUM)
 
     def test_version_1_database_answers_cycle_reads(self) -> None:
@@ -437,9 +443,48 @@ class R17NoSchemaChange(StoreCase):
             connection.executescript((ROOT / "tests/acceptance/fixtures/operational-store-1-archive.sql").read_text(encoding="utf-8"))
         finally:
             connection.close()
+        self.assertEqual(contents(self.path)["user_version"], 1)
+        self.assertEqual([row[:2] for row in contents(self.path)["tables"]["store_migrations"]], [(1, BASELINE_CHECKSUM)])
+        # Later versions' migrations are applied as an explicit migration would.
+        # None exist while MIGRATIONS is [1]. Whatever they are, they may not
+        # backfill: every version 1 row keeps its version 1 columns, columns they
+        # add to version 1 tables stay NULL, and tables they add stay empty.
+        connection = sqlite3.connect(self.path)
+        try:
+            baseline_tables = [row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+            baseline_columns = {
+                table: [row[1] for row in connection.execute(f'PRAGMA table_xinfo("{table}")')]
+                for table in baseline_tables
+            }
+            def baseline_rows(table: str) -> list[tuple[object, ...]]:
+                columns = ", ".join(f'"{column}"' for column in baseline_columns[table])
+                return list(connection.execute(f'SELECT {columns} FROM "{table}" ORDER BY rowid'))
+            archive = {table: baseline_rows(table) for table in baseline_tables if table != "store_migrations"}
+            for version, sql in store_module.MIGRATIONS[1:]:
+                connection.executescript(sql)
+                connection.execute(
+                    "INSERT INTO store_migrations (version, checksum, applied_at) VALUES (?, ?, ?)",
+                    (version, digest(sql.encode("utf-8")), "2026-10-12T09:00:00.000000Z"),
+                )
+                connection.execute(f"PRAGMA user_version = {version}")
+                connection.commit()
+            self.assertEqual({table: baseline_rows(table) for table in archive}, archive)
+            # table_xinfo also lists generated columns. A VIRTUAL one (hidden = 2)
+            # stores nothing; an ordinary or STORED one would hold backfilled values.
+            for table in baseline_tables:
+                for _cid, column, *_rest, hidden in connection.execute(f'PRAGMA table_xinfo("{table}")'):
+                    if column not in baseline_columns[table] and hidden != 2:
+                        filled = connection.execute(
+                            f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" IS NOT NULL').fetchone()[0]
+                        self.assertEqual(filled, 0, f"{table}.{column}")
+            for (table,) in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
+                if table not in baseline_columns:
+                    self.assertEqual(connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0], 0, table)
+        finally:
+            connection.close()
         before = contents(self.path)
-        self.assertEqual(before["user_version"], 1)
-        self.assertEqual([row[:2] for row in before["tables"]["store_migrations"]], [(1, BASELINE_CHECKSUM)])
         store = self.open()
         self.assertEqual(self.cycle(store, INSTALLATION, CYCLE), DeliveryCycle(
             installation_id=INSTALLATION,
@@ -473,7 +518,7 @@ class R17NoSchemaChange(StoreCase):
         ))
         self.assertIsNone(self.cycle(store, INSTALLATION, "00000000-0000-4000-8000-00000000dead"))
         store.close()
-        # Opening and reading under @2 changed nothing: schema, version, migration records, and every row.
+        # Opening and reading changed nothing: schema, version, migration records, and every row.
         self.assertEqual(contents(self.path), before)
 
 if __name__ == "__main__":

@@ -235,15 +235,21 @@ class R1GovernedScopeContract(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         for failure in CONTRACT["named_failures"]:
             by_outcome.setdefault(failure["outcome"], set()).add(failure["name"])
-        self.assertEqual(
-            by_outcome,
-            {
-                "startup-refusal": set(store_module.STARTUP_FAILURES),
-                "retryable": set(store_module.RETRYABLE_FAILURES),
-                "invariant-refusal": set(store_module.INVARIANT_FAILURES),
-            },
-        )
-        self.assertEqual(set(names), set(store_module.FAILURES))
+        # Later versions may add failures; each of these keeps its outcome class.
+        partitions = {
+            "startup-refusal": set(store_module.STARTUP_FAILURES),
+            "retryable": set(store_module.RETRYABLE_FAILURES),
+            "invariant-refusal": set(store_module.INVARIANT_FAILURES),
+        }
+        self.assertEqual(set(by_outcome), set(partitions))
+        for outcome, members in by_outcome.items():
+            self.assertLessEqual(members, partitions[outcome], outcome)
+        groups = list(partitions.values())
+        for index, members in enumerate(groups):
+            for other in groups[index + 1:]:
+                self.assertEqual(members & other, set())
+        self.assertEqual(set(store_module.FAILURES), set().union(*groups))
+        self.assertLessEqual(set(names), set(store_module.FAILURES))
 
     def test_scope_map_row_does_not_contradict_contract(self) -> None:
         scope_map = (ROOT / "docs/governance/scope-map.md").read_text(encoding="utf-8")
@@ -308,16 +314,19 @@ class R3BaselineSchemaAndMigrations(StoreCase):
         return [tuple(row) for row in self.external().execute("SELECT version, checksum FROM store_migrations ORDER BY version")]
 
     def test_new_database_records_baseline_migration_checksum(self) -> None:
+        # Later operational-store versions append migrations; the baseline stays
+        # migration 1, and a new database records every known migration in order.
         store = self.open()
         migrations = store.settings().schema_migrations
-        self.assertEqual(len(migrations), 1)
+        known = [(number, digest(sql.encode("utf-8"))) for number, sql in store_module.MIGRATIONS]
+        self.assertEqual([number for number, _ in known], list(range(1, len(known) + 1)))
         version, checksum = migrations[0]
-        self.assertEqual([number for number, _ in store_module.MIGRATIONS], [1])
         self.assertEqual(version, 1)
         self.assertIsNotNone(HEX.fullmatch(checksum))
         self.assertEqual(checksum, digest(store_module.MIGRATIONS[0][1].encode("utf-8")))
-        self.assertEqual(self.migration_rows(), [(1, checksum)])
-        self.assertEqual(self.external().execute("PRAGMA user_version").fetchone()[0], 1)
+        self.assertEqual(list(migrations), known)
+        self.assertEqual(self.migration_rows(), known)
+        self.assertEqual(self.external().execute("PRAGMA user_version").fetchone()[0], known[-1][0])
 
     def test_reopen_preserves_committed_state(self) -> None:
         store = open_store(self.path, reserve_bytes=RESERVE, free_bytes=self.free)
@@ -345,9 +354,10 @@ class R3BaselineSchemaAndMigrations(StoreCase):
         self.assertEqual(before[1], 0)
 
     def test_unknown_later_schema_is_unsupported(self) -> None:
+        later = store_module.MIGRATIONS[-1][0] + 1
         self.prepared(
-            "INSERT INTO store_migrations (version, checksum, applied_at) VALUES (2, '%s', '2026-10-12T09:00:00.000000Z')" % ("f" * 64),
-            "PRAGMA user_version = 2",
+            "INSERT INTO store_migrations (version, checksum, applied_at) VALUES (%d, '%s', '2026-10-12T09:00:00.000000Z')" % (later, "f" * 64),
+            "PRAGMA user_version = %d" % later,
         )
         before = self.persistent_state()
         self.assertRefused("store-schema-unsupported", open_store, self.path, reserve_bytes=RESERVE, free_bytes=self.free)
