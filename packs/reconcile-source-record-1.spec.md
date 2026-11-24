@@ -14,7 +14,7 @@ The module `activity_tracker_portal.reconcile_source_record` provides:
 - `Decision(outcome, evidence_ids)`: a frozen dataclass.
   - `outcome` is `"projection"`, `"retraction"`, or `"conflict"`.
   - `evidence_ids` is a tuple of `operational-store@3` evidence identities, in the delivery order of the record's evidence.
-- `decide(record: SourceRecord) -> Decision`: a pure function of one `operational-store@3` `SourceRecord`.
+- `decide(record: SourceRecord) -> Decision`: a pure function of one `operational-store@3` `SourceRecord`, or an equivalent constructed value. A store-derived record always has at least one projection, because only a projection creates a Source Record; retractions indexed earlier join it.
 - `ReconcileResult(record_id, decision, selection, unchanged)`: a frozen dataclass.
   - `selection` is the `operational-store@3` `Selection` recorded or returned.
   - `unchanged` says whether the decision equals the record's previous selection.
@@ -55,13 +55,13 @@ A retraction carries no modification time. It supersedes every projection delive
 - A projection delivered after a retraction makes the record current again only if its modification time is strictly newer than that retraction's effective time.
 - A retraction never erases or hides evidence. It only takes part in the decision (Decision 2).
 
-Proposed tests: `test_retraction_after_projection_retracts`, `test_reprojection_after_retraction_with_newer_time_wins`, `test_stale_projection_after_retraction_does_not_revive`, `test_projection_after_an_earlier_retraction_wins`, `test_latest_effective_retraction_is_named`, `test_retraction_supersedes_a_conflict_it_follows`.
+Proposed tests: `test_retraction_after_projection_retracts`, `test_reprojection_after_retraction_with_newer_time_wins`, `test_stale_projection_after_retraction_does_not_revive`, `test_projection_after_an_earlier_retraction_wins`, `test_latest_effective_retraction_is_named`, `test_effective_time_is_the_newest_preceding_projection`, `test_stale_projection_between_retractions_keeps_the_earliest_named`, `test_retraction_supersedes_a_conflict_it_follows`.
 
 ### R6 — `decide` is pure and deterministic
 
 `decide` reads only the given `SourceRecord`. Its result depends only on each evidence row's kind, modification time, digest, and place in the record's evidence, which `operational-store@3` lists in delivery order. It does not depend on evidence identities, installation identities, positions, cycle identities, selections, or wall-clock time. `decide` never reads projection bytes, and has no `clientRecordId` to use.
 
-Proposed tests: `test_decide_ignores_installation_cycle_and_selection`, `test_decide_uses_delivery_order_not_identities`, `test_decide_has_no_store_or_clock_dependency`.
+Proposed tests: `test_decide_ignores_installation_cycle_and_selection`, `test_decide_uses_delivery_order_not_identities`, `test_decide_ignores_positions_out_of_delivery_order`, `test_decide_has_no_store_or_clock_dependency`.
 
 ### R7 — Recording and unchanged state
 
@@ -71,7 +71,7 @@ Proposed tests: `test_decide_ignores_installation_cycle_and_selection`, `test_de
 - At an unchanged head, an identical decision writes nothing and returns the existing selection.
 - `reconcile` never changes evidence, and never writes anything other than the one selection.
 
-Proposed tests: `test_reconcile_records_the_decision`, `test_reconcile_reports_unchanged_and_still_advances`, `test_identical_reconcile_writes_nothing`, `test_reconcile_writes_only_one_selection`.
+Proposed tests: `test_reconcile_records_the_decision`, `test_reconcile_reports_unchanged_and_still_advances`, `test_same_outcome_with_different_evidence_is_changed`, `test_identical_reconcile_writes_nothing`, `test_reconcile_writes_only_one_selection`.
 
 ### R8 — Failures
 
@@ -79,7 +79,7 @@ Proposed tests: `test_reconcile_records_the_decision`, `test_reconcile_reports_u
 - Evidence indexed between the read and the write is `evidence-moved`, a retryable failure the caller retries; `reconcile` does not retry by itself (Decision 6).
 - The store's `storage-reserve-exhausted` and `store-busy` pass through as retryable failures.
 
-Each failure leaves the whole database unchanged, and its text carries no health data or Source Identity.
+A failure records nothing: `reconcile` itself writes nothing, though independent concurrent writes, such as the indexing that caused `evidence-moved`, remain. Its text carries no health data or Source Identity.
 
 Proposed tests: `test_unknown_record_is_refused`, `test_evidence_moved_is_retryable_and_writes_nothing`, `test_reserve_and_busy_are_retryable`, `test_failures_are_health_data_free`.
 
@@ -106,16 +106,24 @@ Proposed tests: `test_unknown_record_is_refused`, `test_evidence_moved_is_retrya
 ## Freeze prerequisites
 
 The Operator approved the draft. The executable pack adds:
-- the suite `tests/acceptance/test_reconcile_source_record_1.py`, 30 tests across R1–R8;
+- the suite `tests/acceptance/test_reconcile_source_record_1.py`, 34 tests across R1–R8;
 - the runner `tests/acceptance/run_reconcile_source_record_1.sh`;
 - the Interface stub `src/activity_tracker_portal/reconcile_source_record.py`: the dataclasses and exceptions, and `decide` and `reconcile` raising `NotImplementedError`.
 
-RED, against the stub: 27 of the 30 tests fail with `NotImplementedError`, 31 errors counting subtests. The three contract tests pass.
+RED, against the stub: 31 of the 34 tests fail with `NotImplementedError`, 35 errors counting subtests. The three contract tests pass.
 
 The tests pin these refinements:
 - R6 originally also said that shuffling the rows the store returned never changes the decision. That cannot hold, because delivery order is the order `operational-store@3` returns, and positions alone cannot reconstruct it across installations. R6 now says `decide` relies on that order and not on identities or positions. The delivery-order rules of R3–R5 are unchanged.
 - Older conflicting content is not a conflict once a newer projection exists (R4).
 - Equal-time content after a retraction, even different content, does not revive the record (R5, Decision 2: "strictly newer").
 - `evidence-moved` is the store's `selection-stale`; a test injects new evidence between `reconcile`'s read and its write through a delegating store (R8).
+- Sol's read-only review (2026-11-24) found one test defect and four weak oracles, now resolved:
+  - one selection write may add rows to more than one store table, so the test now requires only added rows, unchanged evidence, and one more selection (R7);
+  - a retraction's effective time is the newest preceding time, not the last delivered one, including with a stale projection between two retractions (R5);
+  - positions out of delivery order never change the decision (R6);
+  - the same outcome with different evidence is changed, and an idempotent repeat is unchanged (R7);
+  - `store-busy` and `evidence-moved` are checked for whole-database effects and health-data-free text (R8).
+
+  Sol's throwaway implementation passes all 34 tests, and all five of Sol's incorrect implementations now fail.
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze.

@@ -82,18 +82,18 @@ class Builder:
         self.rows: list[Evidence] = []
 
     def projection(self, minute: float, label: str, *, installation: str = INSTALLATION, zone: timezone = UTC,
-                   cycle: str = CYCLE) -> "Builder":
+                   cycle: str = CYCLE, sequence: int | None = None) -> "Builder":
         index = len(self.rows)
         self.rows.append(Evidence(
-            evidence_id=index + 1, kind="projection", position=ItemPosition(installation, index + 1, 0),
+            evidence_id=index + 1, kind="projection", position=ItemPosition(installation, sequence or index + 1, 0),
             cycle_kind="initial-snapshot", cycle_id=cycle, last_modified_time=at(minute, zone),
             projection_sha256=content(label), indexed_at=at(500 + index)))
         return self
 
-    def retraction(self, *, installation: str = INSTALLATION) -> "Builder":
+    def retraction(self, *, installation: str = INSTALLATION, sequence: int | None = None) -> "Builder":
         index = len(self.rows)
         self.rows.append(Evidence(
-            evidence_id=index + 1, kind="retraction", position=ItemPosition(installation, index + 1, 0),
+            evidence_id=index + 1, kind="retraction", position=ItemPosition(installation, sequence or index + 1, 0),
             cycle_kind="change-cycle", cycle_id=CHANGES, last_modified_time=None, projection_sha256=None,
             indexed_at=at(500 + index)))
         return self
@@ -212,6 +212,17 @@ class R5Retractions(unittest.TestCase):
         superseded = Builder().projection(5, "a").retraction().projection(7, "b").record()
         self.assertEqual(decide(superseded), Decision("projection", ids(superseded, 2)))
 
+    def test_effective_time_is_the_newest_preceding_projection(self) -> None:
+        # The newest preceding time, not the last delivered one.
+        record = Builder().projection(9, "a").projection(2, "b").retraction().record()
+        self.assertEqual(decide(record), Decision("retraction", ids(record, 2)))
+        record = Builder().projection(9, "a").projection(2, "b").retraction().projection(5, "c").record()
+        self.assertEqual(decide(record), Decision("retraction", ids(record, 2)))
+
+    def test_stale_projection_between_retractions_keeps_the_earliest_named(self) -> None:
+        record = Builder().projection(5, "a").retraction().projection(3, "b").retraction().record()
+        self.assertEqual(decide(record), Decision("retraction", ids(record, 1)))
+
     def test_retraction_supersedes_a_conflict_it_follows(self) -> None:
         record = Builder().projection(5, "a").projection(5, "b").retraction().record()
         self.assertEqual(decide(record), Decision("retraction", ids(record, 2)))
@@ -233,6 +244,15 @@ class R6DecideIsPureAndDeterministic(unittest.TestCase):
         self.assertEqual(decide(record), Decision("retraction", (10,)))
         record = Builder().projection(5, "a").projection(5, "b").record(ids=[9, 3])
         self.assertEqual(decide(record), Decision("conflict", (9, 3)))
+
+    def test_decide_ignores_positions_out_of_delivery_order(self) -> None:
+        # Installation A delivered at sequence 20, then installation B at sequence 1.
+        record = Builder().projection(5, "a", sequence=20).projection(5, "b", installation=OTHER, sequence=1).record()
+        self.assertEqual(decide(record), Decision("conflict", ids(record, 0, 1)))
+        record = Builder().projection(5, "a", sequence=20).retraction(installation=OTHER, sequence=1).record()
+        self.assertEqual(decide(record), Decision("retraction", ids(record, 1)))
+        record = Builder().retraction(sequence=30).projection(1, "a", installation=OTHER, sequence=2).record()
+        self.assertEqual(decide(record), Decision("projection", ids(record, 1)))
 
     def test_decide_has_no_store_or_clock_dependency(self) -> None:
         record = Builder().projection(5, "a").retraction().projection(6, "b").record()
@@ -358,12 +378,23 @@ class R7RecordingAndUnchangedState(StoreCase):
         self.assertFalse(third.unchanged)
         self.assertEqual(third.decision.outcome, "retraction")
 
+    def test_same_outcome_with_different_evidence_is_changed(self) -> None:
+        self.deliver(("p", 5, "a"))
+        record_id = self.record().record_id
+        first = reconcile(self.store, record_id, at(200))
+        self.deliver(("p", 6, "b"), cycle_kind="change-cycle")
+        second = reconcile(self.store, record_id, at(201))
+        self.assertEqual((first.decision.outcome, second.decision.outcome), ("projection", "projection"))
+        self.assertNotEqual(second.decision.evidence_ids, first.decision.evidence_ids)
+        self.assertFalse(second.unchanged)
+
     def test_identical_reconcile_writes_nothing(self) -> None:
         self.deliver(("p", 5, "a"), ("p", 5, "b"))
         record = self.record()
         first = reconcile(self.store, record.record_id, at(200))
         before = contents(self.path)
         again = reconcile(self.store, record.record_id, at(300))
+        self.assertTrue(again.unchanged)
         self.assertEqual(again.selection, first.selection)
         self.assertEqual(again.decision, first.decision)
         self.assertEqual(contents(self.path), before)
@@ -372,18 +403,27 @@ class R7RecordingAndUnchangedState(StoreCase):
         self.deliver(("p", 5, "a"))
         self.deliver("r", cycle_kind="change-cycle")
         record = self.record()
+        with self.store.read() as view:
+            counts = view.index_counts()
         before = contents(self.path)
         reconcile(self.store, record.record_id, at(200))
         after = contents(self.path)
         self.assertEqual((after["user_version"], after["schema"]), (before["user_version"], before["schema"]))
-        changed = [name for name in after["tables"] if after["tables"][name] != before["tables"][name]]  # type: ignore[index]
-        self.assertEqual(len(changed), 1, changed)
-        (name,) = changed
-        self.assertEqual(len(after["tables"][name]), len(before["tables"][name]) + 1)  # type: ignore[index]
-        self.assertLessEqual(set(before["tables"][name]), set(after["tables"][name]))  # type: ignore[index]
+        # The store's one selection write only adds rows: nothing is removed or changed anywhere.
+        grew = []
+        for name, rows in before["tables"].items():  # type: ignore[union-attr]
+            added = list(after["tables"][name])  # type: ignore[index]
+            for row in rows:
+                self.assertIn(row, added, name)
+                added.remove(row)
+            if added:
+                grew.append(name)
+        self.assertTrue(grew)
         found = self.record()
         self.assertEqual(found.evidence, record.evidence)
         self.assertEqual(len(found.selections), 1)
+        with self.store.read() as view:
+            self.assertEqual(view.index_counts(), replace(counts, records_awaiting_selection=counts.records_awaiting_selection - 1))
 
 
 class MovingStore:
@@ -409,10 +449,21 @@ class R8Failures(StoreCase):
     def test_evidence_moved_is_retryable_and_writes_nothing(self) -> None:
         self.deliver(("p", 5, "a"))
         record = self.record()
-        moving = MovingStore(self.store, lambda: self.deliver(("p", 9, "b"), cycle_kind="change-cycle"))
+        expected: dict[str, object] = {}
+
+        def inject() -> None:
+            self.deliver(("p", 9, "b"), cycle_kind="change-cycle")
+            expected.update(contents(self.path))
+
+        moving = MovingStore(self.store, inject)
         with self.assertRaises(ReconcileRetryable) as caught:
             reconcile(moving, record.record_id, at(200))  # type: ignore[arg-type]
         self.assertEqual(caught.exception.failure, "evidence-moved")
+        # The failed reconcile wrote nothing; only the concurrent indexing is present.
+        self.assertEqual(contents(self.path), expected)
+        for text in (str(caught.exception), repr(caught.exception)):
+            self.assertNotIn(HEALTH_MARKER, text)
+            self.assertNotIn(IDENTITY, text)
         found = self.record()
         self.assertEqual(found.selections, ())
         self.assertEqual(len(found.evidence), 2)
@@ -425,6 +476,7 @@ class R8Failures(StoreCase):
         self.free = RESERVE - 1
         self.assertNothingRecorded(ReconcileRetryable, "storage-reserve-exhausted", lambda: reconcile(self.store, record_id, at(200)))
         self.free = PLENTY
+        before = contents(self.path)
         blocker = sqlite3.connect(self.path, isolation_level=None)
         self.addCleanup(blocker.close)
         blocker.execute("BEGIN IMMEDIATE")
@@ -434,6 +486,10 @@ class R8Failures(StoreCase):
             self.assertEqual(caught.exception.failure, "store-busy")
         finally:
             blocker.execute("ROLLBACK")
+        self.assertEqual(contents(self.path), before)
+        for text in (str(caught.exception), repr(caught.exception)):
+            self.assertNotIn(HEALTH_MARKER, text)
+            self.assertNotIn(IDENTITY, text)
         self.assertEqual(self.record().selections, ())
 
     def test_failures_are_health_data_free(self) -> None:
