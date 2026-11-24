@@ -244,9 +244,11 @@ class R1GovernedScopeContract(unittest.TestCase):
         self.assertEqual(set(by_outcome), set(partitions))
         for outcome, members in by_outcome.items():
             self.assertLessEqual(members, partitions[outcome], outcome)
-        self.assertEqual(
-            sum(len(members) for members in partitions.values()), len(set(store_module.FAILURES))
-        )
+        groups = list(partitions.values())
+        for index, members in enumerate(groups):
+            for other in groups[index + 1:]:
+                self.assertEqual(members & other, set())
+        self.assertEqual(set(store_module.FAILURES), set().union(*groups))
         self.assertLessEqual(set(names), set(store_module.FAILURES))
 
     def test_scope_map_row_does_not_contradict_contract(self) -> None:

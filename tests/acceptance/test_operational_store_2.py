@@ -445,10 +445,22 @@ class R17NoSchemaChange(StoreCase):
             connection.close()
         self.assertEqual(contents(self.path)["user_version"], 1)
         self.assertEqual([row[:2] for row in contents(self.path)["tables"]["store_migrations"]], [(1, BASELINE_CHECKSUM)])
-        # Later versions' migrations are applied as an explicit migration would,
-        # with no backfill of version 1 rows; none exist while MIGRATIONS is [1].
+        # Later versions' migrations are applied as an explicit migration would.
+        # None exist while MIGRATIONS is [1]. Whatever they are, they may not
+        # backfill: every version 1 row keeps its version 1 columns, columns they
+        # add to version 1 tables stay NULL, and tables they add stay empty.
         connection = sqlite3.connect(self.path)
         try:
+            baseline_tables = [row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+            baseline_columns = {
+                table: [row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')]
+                for table in baseline_tables
+            }
+            def baseline_rows(table: str) -> list[tuple[object, ...]]:
+                columns = ", ".join(f'"{column}"' for column in baseline_columns[table])
+                return list(connection.execute(f'SELECT {columns} FROM "{table}" ORDER BY rowid'))
+            archive = {table: baseline_rows(table) for table in baseline_tables if table != "store_migrations"}
             for version, sql in store_module.MIGRATIONS[1:]:
                 connection.executescript(sql)
                 connection.execute(
@@ -457,6 +469,17 @@ class R17NoSchemaChange(StoreCase):
                 )
                 connection.execute(f"PRAGMA user_version = {version}")
                 connection.commit()
+            self.assertEqual({table: baseline_rows(table) for table in archive}, archive)
+            for table in baseline_tables:
+                for column in [row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')]:
+                    if column not in baseline_columns[table]:
+                        filled = connection.execute(
+                            f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" IS NOT NULL').fetchone()[0]
+                        self.assertEqual(filled, 0, f"{table}.{column}")
+            for (table,) in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
+                if table not in baseline_columns:
+                    self.assertEqual(connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0], 0, table)
         finally:
             connection.close()
         before = contents(self.path)
