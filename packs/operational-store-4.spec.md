@@ -256,6 +256,7 @@ Unbound inputs, reviewed rather than frozen:
 - `docs/governance/scope-map.md`, which R28's scope-map test reads;
 - the execution environment (`.python-version`, `pyproject.toml`, `uv.lock`, and the managed Python and SQLite runtime), which CI pins;
 - `tests/governance/test_operational_store_4_contract.py`, which runs in the governance suite, not in this pack's runner.
+- `tests/unit/test_operational_store_hardening.py`, which CI's unit job runs and which checks that a new database records every known migration, migration 3 included. Its startup and migration checks are supplementary validation of the implementation, outside this pack's runner. A passing result there is not bound acceptance evidence.
 
 Not mechanically provable here; the approver confirms these in implementation review:
 - migration 3 only creates tables and indexes;
