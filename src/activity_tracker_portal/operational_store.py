@@ -8,7 +8,7 @@ callers behave, inside one SQLite transaction per operation.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -442,6 +442,114 @@ def _sample_free_bytes(probe: Callable[[str | PathLike[str]], int], path: str | 
     raise failure from None
 
 
+# operational-store@3: the Source Record index (packs/operational-store-3.spec.md).
+
+
+@dataclass(frozen=True)
+class ItemPosition:
+    """One archived Ingest Batch item."""
+
+    installation_id: str
+    sequence: int
+    item_index: int
+
+
+@dataclass(frozen=True)
+class PendingItem:
+    """An archived item that has no evidence row yet; exactly one of projection or retracted_identity is set."""
+
+    position: ItemPosition
+    record_type: str
+    projection_schema_version: int
+    cycle_kind: Literal["initial-snapshot", "reconciliation-snapshot", "change-cycle"]
+    cycle_id: str
+    projection: bytes | None
+    retracted_identity: str | None
+
+
+@dataclass(frozen=True)
+class ProjectionEntry:
+    """The caller's extraction from one archived projection (Decision 1)."""
+
+    position: ItemPosition
+    source_system_kind: str
+    origin: str
+    source_identity: str
+    last_modified_time: datetime
+
+
+@dataclass(frozen=True)
+class RetractionEntry:
+    """One archived retraction; its record type and Source Identity are the archived ones."""
+
+    position: ItemPosition
+
+
+@dataclass(frozen=True)
+class SourceKey:
+    """A Source Record's identity, independent of Sender Installation (ADR 0050)."""
+
+    source_system_kind: str
+    origin: str
+    record_type: str
+    source_identity: str
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """One indexed projection or retraction belonging to a Source Record."""
+
+    evidence_id: int
+    kind: Literal["projection", "retraction"]
+    position: ItemPosition
+    cycle_kind: Literal["initial-snapshot", "reconciliation-snapshot", "change-cycle"]
+    cycle_id: str
+    last_modified_time: datetime | None
+    projection_sha256: str | None
+    indexed_at: datetime
+
+
+@dataclass(frozen=True)
+class Selection:
+    """One append-only reconciled selection, recorded against the evidence head it was computed from."""
+
+    selection_id: int
+    outcome: Literal["projection", "retraction", "conflict"]
+    evidence_ids: tuple[int, ...]
+    evidence_head: int
+    recorded_at: datetime
+
+
+@dataclass(frozen=True)
+class SourceRecord:
+    """A Source Record with its evidence in evidence_id order and its selections in recording order."""
+
+    record_id: int
+    key: SourceKey
+    evidence: tuple[Evidence, ...]
+    evidence_head: int | None
+    observing_installations: tuple[str, ...]
+    selections: tuple[Selection, ...]
+
+
+@dataclass(frozen=True)
+class IndexResult:
+    """How many Source Records and evidence rows one index call created."""
+
+    created_records: int
+    created_evidence: int
+
+
+@dataclass(frozen=True)
+class IndexCounts:
+    """Health-data-free index counts."""
+
+    unindexed_items: int
+    source_records: int
+    evidence_items: int
+    records_awaiting_selection: int
+
+
 class StoreView:
     """Reads bound to one SQLite read transaction."""
 
@@ -679,6 +787,21 @@ class StoreView:
             record_count=counts["record_count"],
             completion_sequence=None if completion is None else completion["sequence"],
         )
+
+    def pending_items(self, limit: int) -> tuple[PendingItem, ...]:
+        raise NotImplementedError("operational-store@3")
+
+    def source_record_id(self, key: SourceKey) -> int | None:
+        raise NotImplementedError("operational-store@3")
+
+    def source_record(self, record_id: int) -> SourceRecord | None:
+        raise NotImplementedError("operational-store@3")
+
+    def records_awaiting_selection(self, limit: int) -> tuple[int, ...]:
+        raise NotImplementedError("operational-store@3")
+
+    def index_counts(self) -> IndexCounts:
+        raise NotImplementedError("operational-store@3")
 
     def storage_reserve(self) -> ReserveStatus:
         free = _sample_free_bytes(self._free_bytes, self._path)
@@ -973,6 +1096,14 @@ class OperationalStore:
                 "VALUES (?, ?, ?, ?, ?, ?, 1) ON CONFLICT DO UPDATE SET last_seen_at = excluded.last_seen_at, count = count + 1",
                 (installation_id, sequence, message_sha256, failure, timestamp, timestamp),
             )
+
+    def index_items(self, entries: Sequence[ProjectionEntry | RetractionEntry], at: datetime) -> IndexResult:
+        raise NotImplementedError("operational-store@3")
+
+    def record_selection(
+        self, record_id: int, outcome: str, evidence_ids: Sequence[int], evidence_head: int, at: datetime
+    ) -> Selection:
+        raise NotImplementedError("operational-store@3")
 
     def read(self) -> AbstractContextManager[StoreView]:
         return self._read_view()

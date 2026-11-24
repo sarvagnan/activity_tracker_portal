@@ -156,10 +156,21 @@ Not mechanically provable here; the approver confirms these in implementation re
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the new suite `tests/acceptance/test_operational_store_3.py`, with the tests above;
-- the runner `tests/acceptance/run_operational_store_3.sh`, which runs `@2`'s bound runner unchanged and then the new suite;
-- the Interface stub, appended to the published module: the dataclasses, `FAILURES` entries, migration 2's SQL, and operations that raise `NotImplementedError`;
-- `packs/operational-store-3.effects.json`, declaring the one confirmed database-write action.
+The Operator approved the draft. The executable pack adds:
+- the new suite `tests/acceptance/test_operational_store_3.py`, 39 tests across R18–R27;
+- the runner `tests/acceptance/run_operational_store_3.sh`, which runs `@2`'s bound runner unchanged (it runs `@1`'s) and then the new suite;
+- the Interface stub, appended to the published module: the ten dataclasses and seven operations, each raising `NotImplementedError`. The stub adds no `FAILURES` entries and no migration; the implementer adds both.
 
-RED must come entirely from the stubs, and the reviewer's read-only findings must be resolved before freeze.
+RED, against the stub: 37 of the 39 new tests fail. 33 raise `NotImplementedError`. Three expect the new failure names or migration 2, and the atomicity test never completes an index call. The two pure contract tests pass. `@1` and `@2`'s 68 bound tests still pass.
+
+The tests pin these refinements:
+- `pending_items` follows message archival order across installations, not installation and sequence order (R20).
+- Evidence lists every row in delivery position, however the entries of one call are ordered (R22).
+- A repeated position within one call is refused as `index-entry-conflict` when its entries differ, and counts once when they are identical (R21, R23).
+- An empty index call returns zero counts and writes nothing (R21).
+- Index refusals apply across the whole call in R23's order. For example, an unknown position outranks a mismatch in another entry.
+- A selection of an unknown outcome is `selection-evidence-invalid` (R25).
+- `record_selection` checks the timestamp, then the record, then the shape, then staleness, then the reserve; the suite pins only single-cause refusals for it.
+- Modification times are returned in UTC, equal to the given instant (R21).
+
+The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze.
