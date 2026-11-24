@@ -65,7 +65,7 @@
     },
     {
       "name": "processing_outcome",
-      "description": "An immutable outcome recorded atomically with the job's completion: a Canonical Revision, Unmodeled, Policy-Pending, or Quarantine for one selection, processor version, and policy identity; an identical repeat writes nothing."
+      "description": "An immutable outcome recorded atomically with the job's completion: a Canonical Revision, Unmodeled, Policy-Pending, or Quarantine for one selection, processor version, and policy identity; an identical repeat does not append or alter an outcome, and completion still updates its held job and attempt."
     },
     {
       "name": "item_quarantine",

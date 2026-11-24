@@ -686,6 +686,41 @@ class R31ClaimingAndExpiringLeases(StoreCase):
         self.assertEqual(self.job(store, job.job_id).selection_id, third_selection)
         self.assertEqual(len(self.jobs(store, record_id)), 1)
 
+    def test_retargeting_keeps_the_retry_budget(self) -> None:
+        store = self.ready()
+        record_id, _, first = self.leased(store, max_attempts=2, when=at(10))
+        _, second_selection = self.project(store, "id-a")
+        # The reclaim re-targets the job and still uses its second and last attempt;
+        # only completion against a newer projection resets attempts (R33).
+        second = store.claim_processing_job(OTHER_OWNER, LEASE, at(20))
+        assert second is not None
+        self.assertEqual((second.job_id, second.selection_id), (first.job_id, second_selection))
+        self.assertGreater(second.fence, first.fence)
+        job = self.job(store, first.job_id)
+        self.assertEqual((job.attempts, job.selection_id), (2, second_selection))
+        self.assertEqual([(attempt.fence, attempt.result) for attempt in job.history],
+                         [(first.fence, "lease-expired"), (second.fence, None)])
+        # Newer evidence does not refresh an exhausted budget. The expired job fails
+        # before any re-targeting, so it last targeted the selection it was leased for.
+        _, third_selection = self.project(store, "id-a")
+        self.assertIsNone(store.claim_processing_job(OWNER, LEASE, at(30)))
+        failed = self.job(store, first.job_id)
+        self.assertEqual((failed.state, failed.failure, failed.attempts, failed.closed_at, failed.selection_id),
+                         ("failed", "lease-expired-retries-exhausted", 2, at(30), second_selection))
+        self.assertEqual([attempt.result for attempt in failed.history], ["lease-expired", "lease-expired"])
+        self.assertEqual(len(self.jobs(store, record_id)), 1)
+        self.assertEqual(self.awaiting(store, {"steps": PV}), (AwaitingProcessing(record_id, third_selection, PV),))
+        # A transient retry re-targeted at claim uses the same budget.
+        _, _, lease = self.leased(store, "id-b", max_attempts=2, when=at(40))
+        store.fail_processing_job(lease.job_id, lease.fence, "transient", "synthetic-timeout", at(41), at(40))
+        _, b_newer = self.project(store, "id-b")
+        retried = store.claim_processing_job(OWNER, LEASE, at(41))
+        assert retried is not None
+        self.assertEqual((retried.job_id, retried.selection_id), (lease.job_id, b_newer))
+        self.assertEqual(self.job(store, lease.job_id).attempts, 2)
+        exhausted = store.fail_processing_job(retried.job_id, retried.fence, "transient", "synthetic-timeout", at(42), at(41))
+        self.assertEqual((exhausted.state, exhausted.failure, exhausted.attempts), ("failed", "retries-exhausted", 2))
+
     def test_retracted_or_conflicted_record_supersedes_the_job(self) -> None:
         store = self.ready()
         made = {}
@@ -739,14 +774,15 @@ class R31ClaimingAndExpiringLeases(StoreCase):
         self.assertGreater(second.fence, first.fence)
         self.assertRefused("lease-not-held", store.complete_processing_job, first.job_id, first.fence, revision(), at(31))
         other.complete_processing_job(second.job_id, second.fence, revision(), at(31))
-        # Concurrent workers on separate handles never claim the same job.
+        # Stress, not a forced interleaving: two workers on separate handles race to
+        # claim twelve jobs, and no job is ever claimed twice. Either may claim all.
         jobs = set()
         for index in range(12):
             r, s = self.project(store, f"id-many-{index}")
             jobs.add(store.enqueue_processing(r, s, PV, 3, at(40)).job_id)
         claims: dict[str, list[int]] = {"left": [], "right": []}
         errors: list[BaseException] = []
-        start = threading.Barrier(2)
+        start = threading.Barrier(2, timeout=30)
 
         def work(name: str) -> None:
             try:
@@ -759,12 +795,15 @@ class R31ClaimingAndExpiringLeases(StoreCase):
                     handle.close()
             except BaseException as error:  # pragma: no cover - reported below
                 errors.append(error)
+                # Release the peer so that neither worker can wait forever.
+                start.abort()
 
-        threads = [threading.Thread(target=work, args=(name,)) for name in claims]
+        threads = [threading.Thread(target=work, args=(name,), daemon=True) for name in claims]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join(60)
+        self.assertEqual([thread.is_alive() for thread in threads], [False, False], "a claim worker did not finish")
         self.assertEqual(errors, [])
         self.assertEqual(set(claims["left"]) & set(claims["right"]), set())
         self.assertEqual(sorted(claims["left"] + claims["right"]), sorted(jobs))
@@ -781,6 +820,7 @@ class R32RenewingALease(StoreCase):
                                         after(at(10), 330)))
         job = self.job(store, lease.job_id)
         self.assertEqual((job.state, job.fence, job.lease_expires_at, job.attempts), ("leased", lease.fence, after(at(10), 330), 1))
+        self.assertEqual(job.history[-1].expires_at, after(at(10), LEASE))
         self.assertIsNone(store.claim_processing_job(OTHER_OWNER, LEASE, after(at(10), 329)))
         self.assertRefused("processing-job-unknown", store.renew_processing_lease, 999_999, lease.fence, LEASE, at(11))
         for fence in (lease.fence - 1, lease.fence + 1):
@@ -811,6 +851,32 @@ class R32RenewingALease(StoreCase):
         self.assertEqual((renewed.fence, renewed.expires_at), (lease.fence, after(at(20), LEASE)))
         self.assertIsNone(store.claim_processing_job(OTHER_OWNER, LEASE, after(at(20), LEASE - 1)))
         self.assertEqual(self.job(store, lease.job_id).history[-1].result, None)
+
+
+class R32AttemptExpiryIsFixedAtClaim(StoreCase):
+    def test_attempt_keeps_its_claim_time_expiry(self) -> None:
+        store = self.ready()
+        _, _, first = self.leased(store, max_attempts=3, when=at(10))
+        renewed = store.renew_processing_lease(first.job_id, first.fence, 300, at(10.5))
+        job = self.job(store, first.job_id)
+        # The live lease is renewed; the attempt keeps the expiry it was claimed with.
+        self.assertEqual((job.lease_expires_at, job.history[-1].expires_at), (renewed.expires_at, after(at(10), LEASE)))
+        second = store.claim_processing_job(OTHER_OWNER, LEASE, at(20))
+        assert second is not None
+        store.renew_processing_lease(second.job_id, second.fence, 600, at(20.5))
+        store.fail_processing_job(second.job_id, second.fence, "transient", "synthetic-timeout", at(21), at(21))
+        third = store.claim_processing_job(OWNER, LEASE, at(21))
+        assert third is not None
+        store.renew_processing_lease(third.job_id, third.fence, 900, at(21.5))
+        store.complete_processing_job(third.job_id, third.fence, revision(), at(22))
+        expected = [after(at(10), LEASE), after(at(20), LEASE), after(at(21), LEASE)]
+        self.assertEqual([attempt.expires_at for attempt in self.job(store, first.job_id).history], expected)
+        store.close()
+        reopened = self.open()
+        with reopened.read() as view:
+            found = view.processing_job(first.job_id)
+        assert found is not None
+        self.assertEqual([attempt.expires_at for attempt in found.history], expected)
 
 
 class R33CompletingAJobWithItsOutcome(StoreCase):
@@ -1584,6 +1650,43 @@ class R38HealthDataFreeCountsAndRefusals(StoreCase):
         self.assertEqual(recorded.revision.header_bytes, marked.revision.header_bytes)  # type: ignore[union-attr]
 
 
+class R38CounterPopulations(StoreCase):
+    def test_processing_counts_count_history(self) -> None:
+        # Outcome counters count every recorded outcome; job counters count jobs by
+        # their current state, with `at` splitting only queued and leased jobs;
+        # quarantined_items counts every item quarantine, including items indexed later.
+        store = self.ready()
+        record_id, selection_id, lease = self.leased(store, when=at(10))
+        store.complete_processing_job(lease.job_id, lease.fence, revision(), at(10))
+        for entry in (unmodeled(policy=OTHER_POLICY), policy_pending(pv=PV2)):
+            store.enqueue_processing(record_id, selection_id, entry.processor_version, 3, at(11))
+            again = store.claim_processing_job(OWNER, LEASE, at(11))
+            assert again is not None and again.record_id == record_id
+            store.complete_processing_job(again.job_id, again.fence, entry, at(11))
+        _, newer = self.project(store, "id-a")
+        store.enqueue_processing(record_id, newer, PV, 3, at(12))
+        latest = store.claim_processing_job(OWNER, LEASE, at(12))
+        assert latest is not None
+        store.complete_processing_job(latest.job_id, latest.fence, quarantine(), at(12))
+        self.retract(store, "id-a")
+        b, b_selection, b_lease = self.leased(store, "id-b", when=at(13))
+        store.fail_processing_job(b_lease.job_id, b_lease.fence, "deterministic", "synthetic-defect", None, at(13))
+        store.enqueue_processing(b, b_selection, PV, 3, at(14))
+        retry = store.claim_processing_job(OWNER, LEASE, at(14))
+        assert retry is not None
+        store.complete_processing_job(retry.job_id, retry.fence, revision(b"b"), at(14))
+        sequence = self.archive(store, BatchItem(projection=b"\xff"), BatchItem(projection=b"{}"))
+        store.quarantine_item(position(sequence, 0), "synthetic-not-json", "", at(15))
+        store.index_items((ProjectionEntry(position(sequence, 0), HC, ORIGIN, "id-corrected", at(1)),), at(16))
+        self.assertEqual(len(self.outcomes(store, record_id)), 4)
+        expected = {"jobs_ready": 0, "jobs_delayed": 0, "jobs_leased": 0, "jobs_lease_expired": 0, "jobs_completed": 5,
+                    "jobs_failed": 1, "jobs_superseded": 0, "revisions": 2, "unmodeled": 1, "policy_pending": 1,
+                    "quarantined": 1, "quarantined_items": 1, "items_awaiting_index": 1}
+        with store.read() as view:
+            for when in (at(0), at(100)):
+                self.assertEqual(counts(view.processing_counts(when)), expected, when)
+
+
 class R39AtomicAndDurable(StoreCase):
     def install_fault_triggers(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, isolation_level=None)
@@ -1814,7 +1917,7 @@ class R30R39ReserveGating(StoreCase):
         self.assertRetryable("storage-reserve-exhausted", store.complete_processing_job, lease.job_id, lease.fence, revision(), at(11))
         self.assertRetryable("storage-reserve-exhausted", store.fail_processing_job, lease.job_id, lease.fence, "transient",
                              "synthetic-timeout", at(12), at(11))
-        # A claim that would only record an expiry is a write too.
+        # A claim that would reclaim an expired lease is a write too.
         self.assertRetryable("storage-reserve-exhausted", store.claim_processing_job, OWNER, LEASE, at(200))
         # Free space equal to the reserve is enough.
         self.free = RESERVE
@@ -1829,6 +1932,30 @@ class R30R39ReserveGating(StoreCase):
         assert claimed is not None
         self.assertEqual(claimed.job_id, queued.job_id)
         self.assertEqual(store.fail_processing_job(claimed.job_id, claimed.fence, "transient", "synthetic-timeout", at(14), at(13)).state, "queued")
+
+
+    def test_bookkeeping_only_claims_are_gated_by_the_reserve(self) -> None:
+        store = self.ready()
+        _, _, lease = self.leased(store, max_attempts=1, when=at(10))
+        # Only an exhausted expired lease is eligible: failing it is a write.
+        self.free = RESERVE - 1
+        self.assertRetryable("storage-reserve-exhausted", store.claim_processing_job, OWNER, LEASE, at(20))
+        self.free = RESERVE
+        self.assertIsNone(store.claim_processing_job(OWNER, LEASE, at(20)))
+        self.assertEqual((self.job(store, lease.job_id).state, self.job(store, lease.job_id).failure),
+                         ("failed", "lease-expired-retries-exhausted"))
+        # Only a queued job whose record was retracted or conflicted is eligible: superseding it is a write.
+        for identity, change in (("id-r", self.retract), ("id-c", self.conflict)):
+            with self.subTest(identity):
+                self.free = PLENTY
+                record_id, selection_id = self.project(store, identity)
+                job = store.enqueue_processing(record_id, selection_id, PV, 3, at(30))
+                change(store, identity)
+                self.free = RESERVE - 1
+                self.assertRetryable("storage-reserve-exhausted", store.claim_processing_job, OWNER, LEASE, at(31))
+                self.free = RESERVE
+                self.assertIsNone(store.claim_processing_job(OWNER, LEASE, at(31)))
+                self.assertEqual(self.job(store, job.job_id).state, "superseded")
 
 
 if __name__ == "__main__":
