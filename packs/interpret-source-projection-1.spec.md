@@ -103,7 +103,7 @@ Proposed tests: `test_check_order`, `test_each_failure_is_raised_not_returned`, 
 
 - Every projection is validated against the `projection/v1` closed schema for its record type and schema version, including the 37 types with no processor (Decision 3).
 - Every positive vector in `projection/v1/vectors/positive.json` passes.
-- Every projection in `projection/v1/vectors/schema-negatives.json` is quarantined as `projection-schema-invalid`.
+- Every projection in `projection/v1/vectors/schema-negatives.json` whose envelope is usable is quarantined as `projection-schema-invalid`. The three whose envelope is unusable (`missing-metadata-id`, `wrong-record-type`, `instant-non-leap-february-29`) are handled earlier: `decode_envelope` quarantines them as `projection-envelope-invalid` (R3), and a mismatched identity reaching `interpret` raises `projection-identity-mismatch` (R4). The Operator chose this on 2026-11-24, when the executable pack found that the approved text contradicted R3 and R4.
 - The pointer names the first offending field in the traversal order of `project-source-record@1` R12: `metadata` before `record`; fields in `projection/v1/model.json` order; list elements by index; depth first.
 - The validator is standard-library code. The suite cross-checks it with the `jsonschema` development dependency on every vector (Decision 2).
 
@@ -230,7 +230,7 @@ RED, against the stub: 47 of the 50 tests fail. Counting subtests, there are 212
 
 A throwaway reference implementation passes all 50 tests. Of 74 incorrect implementations of the high-risk rules, 73 fail at least one test. The survivor accepts a `oneOf` that more than one branch matches; every `oneOf` in `projection/v1` discriminates on a `kind` constant, so no projection can tell it apart.
 
-**Needs Operator escalation.** R5 says every projection in `schema-negatives.json` is quarantined as `projection-schema-invalid`. That cannot hold for 3 of the 18 negatives, whose envelope is unusable: `missing-metadata-id`, `wrong-record-type`, and `instant-non-leap-february-29`. R3 makes `decode_envelope` quarantine them as `projection-envelope-invalid`. R4 step 3 makes `interpret` raise `projection-identity-mismatch` for them before step 4 validates the schema. The suite follows R3 and R4:
+**Resolved by the Operator on 2026-11-24 (R5 now follows R3 and R4).** R5 said every projection in `schema-negatives.json` is quarantined as `projection-schema-invalid`. That cannot hold for 3 of the 18 negatives, whose envelope is unusable: `missing-metadata-id`, `wrong-record-type`, and `instant-non-leap-february-29`. R3 makes `decode_envelope` quarantine them as `projection-envelope-invalid`. R4 step 3 makes `interpret` raise `projection-identity-mismatch` for them before step 4 validates the schema. The suite follows R3 and R4:
 - the other 15 negatives are `projection-schema-invalid` from `interpret`;
 - the 3 are `projection-envelope-invalid` from `decode_envelope`, at `/metadata/id`, `/record_type`, and `/metadata/last_modified_time`, and `interpret` refuses them with `projection-identity-mismatch`.
 
