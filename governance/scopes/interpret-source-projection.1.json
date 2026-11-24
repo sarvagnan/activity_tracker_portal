@@ -1,0 +1,115 @@
+{
+  "contract_schema": 1,
+  "scope": "interpret-source-projection",
+  "version": "1",
+  "kind": "shared",
+  "purpose": "Define the common deterministic processor interface through which one reconciled current Source Projection becomes exactly one Canonical Revision, Unmodeled, Policy-Pending, or Quarantine outcome: strict envelope decoding shared with indexing, integrity checks against the reconciled evidence, closed-schema validation of every record type, the shared identity, provenance, and temporal header with experienced or policy-inferred local-date attribution, and the versioned record-type-specific body a concrete processor contributes, without any persistence effect.",
+  "inputs": [
+    {
+      "name": "processing_input",
+      "mode": "pure",
+      "description": "One current projection as reconciled through operational-store@3 and reconcile-source-record@1: the Source Record key (source-system kind, origin, record type, Source Identity), the record, selection, and evidence identities, the evidence's projection SHA-256 and source modification time, the Ingest Batch's projection-schema version, and the exact archived projection bytes."
+    },
+    {
+      "name": "closed_projection_schemas",
+      "mode": "pure",
+      "description": "The published project-source-record@1 closed Source Projection schemas under projection/v1/schemas, one per record type and schema version."
+    },
+    {
+      "name": "concrete_processor",
+      "mode": "pure",
+      "description": "The concrete processor the caller maps to the record type, or none: its record type, processor version, supported projection-schema versions, body schema with every numeric field's kind and canonical unit, declared quarantine reasons, and a deterministic body function."
+    },
+    {
+      "name": "fallback_timezone_policies",
+      "mode": "pure",
+      "description": "The effective-dated Fallback Timezone Policy timeline the caller supplies, possibly empty: each policy's identity, effective instant, and IANA timezone, in strictly increasing effective order."
+    },
+    {
+      "name": "timezone_database",
+      "mode": "pure",
+      "description": "The IANA timezone data of the pinned tzdata package, never the host's timezone database, identified by its IANA release version."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "decoded_envelope",
+      "description": "The source-system kind, origin, Source Identity, and source modification time decoded strictly from one archived projection for indexing, or a Quarantine outcome when the bytes cannot yield them."
+    },
+    {
+      "name": "canonical_revision",
+      "description": "An immutable Canonical Revision: canonical header bytes carrying identity, provenance, temporal shape with exact instants, experienced offsets, local dates and their experienced or inferred attribution, processor version, body schema, and policy identity, plus the concrete processor's canonical type-specific body bytes and their digests."
+    },
+    {
+      "name": "unmodeled_outcome",
+      "description": "A valid projection with no canonical interpretation, because no processor is mapped to its record type or the processor does not model its schema version, with a health-data-free reason."
+    },
+    {
+      "name": "policy_pending_outcome",
+      "description": "A valid, modeled projection whose local-date attribution needs a Fallback Timezone Policy that does not cover one of its instants, naming the policy kind and a health-data-free reason."
+    },
+    {
+      "name": "quarantine_outcome",
+      "description": "A projection that cannot be interpreted safely, with an allowlisted health-data-free reason and the JSON pointer of the offending field but no field value."
+    },
+    {
+      "name": "interpret_failure",
+      "description": "A named failure raised instead of an outcome when the input contradicts its reconciled evidence or a concrete processor breaks the common invariants; it carries no projection bytes, field values, or Source Identity."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "processing-input-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "projection-digest-mismatch",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "projection-identity-mismatch",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "processor-invariant-violated",
+      "outcome": "invariant-refusal"
+    }
+  ],
+  "observable_effects": [],
+  "authority": {
+    "owns": [
+      "the common processor interface: its input, its four outcomes, and the order in which a projection reaches exactly one of them",
+      "strict decoding of a projection's envelope into the source-system kind, origin, Source Identity, and source modification time used both for indexing and for interpretation",
+      "integrity checks that a projection matches the reconciled evidence and Source Record it was selected as",
+      "closed-schema validation of every record type's projection before it is called Unmodeled or interpreted",
+      "the Canonical Revision header: identity, provenance, exact instants, experienced offsets, local dates, experienced or policy-inferred attribution, explicit-time flag, processor version, body schema, and policy identity",
+      "evaluating an effective-dated Fallback Timezone Policy timeline against the pinned timezone database, and the Policy-Pending outcome when it does not apply",
+      "the body contract every concrete processor meets: declared numeric kinds and canonical units, no conversion, canonical bytes, and declared quarantine reasons",
+      "the health-data-free outcome reason and failure vocabulary"
+    ],
+    "does_not_own": [
+      "persisting outcomes, Processing Jobs, leases, retries, or attempt history",
+      "selecting current evidence, or interpreting retractions and Source Conflicts",
+      "the type-specific body, semantic validity rules, or quarantine reasons of a concrete record type",
+      "which processor version is mapped to a record type, or Processor Generations and their activation",
+      "recording, superseding, or activating Fallback Timezone Policies, or Source Selection Policies",
+      "summaries, duplicate grouping, or display units"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "reconcile-source-record",
+      "version": "1"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/interpret-source-projection-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_interpret_source_projection_1.py"
+    },
+    "runner": "tests/acceptance/run_interpret_source_projection_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}
