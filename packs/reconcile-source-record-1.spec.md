@@ -99,6 +99,13 @@ Proposed tests: `test_unknown_record_is_refused`, `test_evidence_moved_is_retrya
 - **Data.** Python only, standard library only. Tests use real temporary `operational-store@3` databases, built through the store's own operations with synthetic projections and hand-written index entries. `decide` tests may construct `SourceRecord` values directly.
 - **Database checks.** Every "writes nothing" and failure assertion compares the whole database, including migration records and every row.
 - **Synthetic markers.** Synthetic modification times use several time zones, to show ordering is by instant. A health-data marker and an identity marker appear in projection bytes and identities, to show results and failures carry neither.
+- **Unbound inputs, reviewed rather than frozen.** The binding is the contract, the spec, the suite, the runner, and the effects declaration. These inputs stay outside it:
+  - `docs/governance/scope-map.md`, read directly by R1's scope-map test;
+  - the published `operational-store@3` code, migrations, contract, and pack, which every store test exercises and which its own binding freezes;
+  - the execution environment: `uv`, `pyproject.toml`, `uv.lock`, the managed Python and SQLite, the shell, and installed dependencies, which CI pins;
+  - `tests/governance/test_reconcile_source_record_contract.py`, which the governance suite runs and this runner does not.
+
+  Upstream assurance, real test execution, transaction counts, purity, and health-data leakage beyond the marker cases remain review responsibilities.
 - **Not mechanically provable here**, so the approver confirms these in implementation review:
   - `reconcile` uses one read transaction and one store write;
   - `decide` reads no store and no clock.
@@ -113,12 +120,12 @@ The Operator approved the draft. The executable pack adds:
 RED, against the stub: 31 of the 34 tests fail with `NotImplementedError`, 35 errors counting subtests. The three contract tests pass.
 
 The tests pin these refinements:
-- R6 originally also said that shuffling the rows the store returned never changes the decision. That cannot hold, because delivery order is the order `operational-store@3` returns, and positions alone cannot reconstruct it across installations. R6 now says `decide` relies on that order and not on identities or positions. The delivery-order rules of R3–R5 are unchanged.
+- R6 originally also said that shuffling the rows the store returned never changes the decision. That cannot hold, because delivery order is the order `operational-store@3` returns, and positions alone cannot reconstruct it across installations. On 2026-11-24 the Operator approved the replacement at Gate B, on GPT 6 Astra's escalation: `decide` relies on the store's delivery-ordered evidence, and not on evidence identities, positions, installations, cycles, or selections. The delivery-order rules of R3–R5 are unchanged.
 - Older conflicting content is not a conflict once a newer projection exists (R4).
 - Equal-time content after a retraction, even different content, does not revive the record (R5, Decision 2: "strictly newer").
 - `evidence-moved` is the store's `selection-stale`; a test injects new evidence between `reconcile`'s read and its write through a delegating store (R8).
 - Sol's read-only review (2026-11-24) found one test defect and four weak oracles, now resolved:
-  - one selection write may add rows to more than one store table, so the test now requires only added rows, unchanged evidence, and one more selection (R7);
+  - one selection write may add rows to more than one store table. The test now replays the same `record_selection` on a copy of the database taken before `reconcile`, and requires the two databases to be identical. That forbids any other write without naming the store's tables, as GPT 6 Astra required at Gate B (R7);
   - a retraction's effective time is the newest preceding time, not the last delivered one, including with a stale projection between two retractions (R5);
   - positions out of delivery order never change the decision (R6);
   - the same outcome with different evidence is changed, and an idempotent repeat is unchanged (R7);

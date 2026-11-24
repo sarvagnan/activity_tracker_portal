@@ -403,28 +403,27 @@ class R7RecordingAndUnchangedState(StoreCase):
         self.deliver(("p", 5, "a"))
         self.deliver("r", cycle_kind="change-cycle")
         record = self.record()
-        with self.store.read() as view:
-            counts = view.index_counts()
-        before = contents(self.path)
-        reconcile(self.store, record.record_id, at(200))
-        after = contents(self.path)
-        self.assertEqual((after["user_version"], after["schema"]), (before["user_version"], before["schema"]))
-        # The store's one selection write only adds rows: nothing is removed or changed anywhere.
-        grew = []
-        for name, rows in before["tables"].items():  # type: ignore[union-attr]
-            added = list(after["tables"][name])  # type: ignore[index]
-            for row in rows:
-                self.assertIn(row, added, name)
-                added.remove(row)
-            if added:
-                grew.append(name)
-        self.assertTrue(grew)
+        # A control copy of the database, taken before reconcile.
+        control_path = self.path.with_name("control.sqlite3")
+        source = sqlite3.connect(self.path)
+        target = sqlite3.connect(control_path)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        result = reconcile(self.store, record.record_id, at(200))
+        # Reconcile's whole effect equals the one selection write, made directly on the control copy.
+        control = open_store(control_path, reserve_bytes=RESERVE, free_bytes=lambda _path: PLENTY)
+        try:
+            control.record_selection(record.record_id, result.decision.outcome, result.decision.evidence_ids,
+                                     record.evidence_head, at(200))
+        finally:
+            control.close()
+        self.assertEqual(contents(self.path), contents(control_path))
         found = self.record()
         self.assertEqual(found.evidence, record.evidence)
-        self.assertEqual(len(found.selections), 1)
-        with self.store.read() as view:
-            self.assertEqual(view.index_counts(), replace(counts, records_awaiting_selection=counts.records_awaiting_selection - 1))
-
+        self.assertEqual(found.selections, (result.selection,))
 
 class MovingStore:
     """Delegates to a real store, but indexes newer evidence just before the selection is written."""
