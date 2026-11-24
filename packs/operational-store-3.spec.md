@@ -22,7 +22,7 @@ The module `activity_tracker_portal.operational_store` adds these frozen datacla
 - `SourceKey(source_system_kind, origin, record_type, source_identity)`.
 - `Evidence`: `evidence_id` (an integer that increases with every indexed item), `kind` (`"projection"` or `"retraction"`), `position`, `cycle_kind`, `cycle_id`, `last_modified_time` and `projection_sha256` (both `None` for a retraction), and `indexed_at`.
 - `Selection`: `selection_id`, `outcome` (`"projection"`, `"retraction"`, or `"conflict"`), `evidence_ids`, `evidence_head` (the head it was computed from), and `recorded_at`.
-- `SourceRecord`: `record_id`, `key`, `evidence` (in `evidence_id` order), `evidence_head` (the highest `evidence_id` in `evidence`, or `None`), `observing_installations` (sorted), and `selections` (in recording order).
+- `SourceRecord`: `record_id`, `key`, `evidence` (in delivery order: message archival order, then item index), `evidence_head` (the highest `evidence_id` in `evidence`, or `None`), `observing_installations` (sorted), and `selections` (in recording order).
 - `IndexResult(created_records, created_evidence)` and `IndexCounts(unindexed_items, source_records, evidence_items, records_awaiting_selection)`.
 
 It adds these operations:
@@ -67,7 +67,7 @@ Proposed tests: `test_pending_items_are_every_unindexed_item_in_archival_order`,
   - The entry has no `client_record_id`, so it can never contribute to identity.
 - **Evidence.** The evidence row keeps the position, the batch's cycle kind and identity, the modification time, and the SHA-256 of the archived projection bytes. Nothing is overwritten, and no evidence is erased.
 - **Idempotence.** Re-indexing a position with an identical entry writes nothing and returns zero counts, and the whole database stays unchanged. Repeating an entry within one call counts once. An empty call returns zero counts.
-- **Order.** Evidence identities increase in indexing order. Within one call, rows are recorded in archival order (their messages' archival order, then item index, as `pending_items` returns them), whatever the order of the entries. Across calls, a later call's rows come after an earlier call's, even when they were delivered earlier. Every row keeps its position, so a consumer that needs delivery order sorts by position (Decision 4). The `portal-worker` indexes `pending_items` in the order returned, so in normal operation indexing order is delivery order. Because identities only increase, new evidence always advances a record's head.
+- **Order.** Evidence identities increase in indexing order, so new evidence always advances a record's head (the highest identity among its evidence). A Source Record's evidence is always listed in delivery order, whatever order it was indexed in: by the archival order of its messages, then by item index, as `pending_items` returns items. Indexing an earlier-delivered item after a later one therefore inserts it earlier in the list while still advancing the head. On 2026-11-24 the Operator chose this, at Gate B, over listing evidence in identity order. The approved draft promised delivery order, increasing identities, and identity-order listing, which cannot all hold when older items are indexed later.
 
 Proposed tests: `test_new_key_creates_a_source_record`, `test_another_installation_joins_the_same_source_record`, `test_each_key_part_separates_source_records`, `test_evidence_keeps_position_cycle_time_and_digest`, `test_identical_reindex_writes_nothing`, `test_repeated_entry_in_one_call_counts_once`.
 
@@ -75,7 +75,7 @@ Proposed tests: `test_new_key_creates_a_source_record`, `test_another_installati
 
 A retraction's evidence row takes its record type and Source Identity from the archived item. It is part of every Source Record with that record type and Source Identity, whatever their origin (Decision 2).
 - A retraction indexed before any matching projection still belongs to Source Records created later.
-- Indexed in one call, a retraction and a later re-projection of the same identity keep delivery order. Indexed in separate calls, they follow R21's order rule, and each keeps its position.
+- A retraction and a later re-projection of the same identity are listed in delivery order, whether they were indexed in one call or in separate calls, and in either order.
 - A retraction never belongs to a Source Record of another record type, even one with the same Source Identity.
 - A retraction that matches no Source Record yet is still counted as evidence.
 - A retraction never deletes, hides, or changes any projection evidence.
@@ -153,6 +153,8 @@ Proposed tests: `test_index_and_selection_change_no_version_1_table`.
 
 These are `@1` and `@2`'s ground rules, and the trusted boundary is unchanged: standard-library SQLite only, synthetic values only, real databases in temporary directories, and whole-database snapshots for every "writes nothing" and refusal assertion. Index entries are synthetic: the suite archives synthetic Ingest Batches through the store's own operations and passes hand-written extractions. The store never checks them against the projection bytes (Decision 1).
 
+Unbound inputs, reviewed rather than frozen: `docs/governance/scope-map.md`, which R18's scope-map test reads, as `@2`'s suite does, so that later scope-map edits do not require rebinding; and the execution environment (`.python-version`, `pyproject.toml`, `uv.lock`, and the managed Python and SQLite runtime), which CI pins. `tests/governance/test_operational_store_3_contract.py` runs in the governance suite, not in this pack's runner, and is not bound.
+
 Not mechanically provable here; the approver confirms these in implementation review:
 - migration 2 only creates tables and indexes;
 - no `@1` or `@2` code path changes behaviour;
@@ -169,7 +171,7 @@ RED, against the stub: 43 of the 45 new tests fail. 39 raise `NotImplementedErro
 
 The tests pin these refinements:
 - `pending_items` follows message archival order across installations, not installation and sequence order (R20).
-- Evidence lists every row in delivery position, however the entries of one call are ordered (R22).
+- Evidence is listed in delivery order, however and whenever its entries were indexed (R21, R22).
 - A repeated position within one call is refused as `index-entry-conflict` when its entries differ, and counts once when they are identical (R21, R23).
 - An empty index call returns zero counts and writes nothing (R21).
 - Index refusals apply across the whole call in R23's order. For example, an unknown position outranks a mismatch in another entry.
@@ -177,7 +179,7 @@ The tests pin these refinements:
 - `record_selection` checks the timestamp, then the record, then the shape, then staleness, then the reserve; the suite pins only single-cause refusals for it.
 - Modification times are returned in UTC, equal to the given instant (R21).
 - Sol's read-only review (2026-11-24) found five gaps, now resolved:
-  - evidence order across calls is indexing order, with positions kept (R21, R22);
+  - evidence order across calls: at Gate B the Operator kept delivery-order listing, with identities increasing in indexing order and the head the highest identity (R21, R22);
   - a retraction never crosses record types, and an orphan retraction counts as evidence (R22);
   - only the latest selection is a repeat, and staleness is checked first (R25);
   - calls that write nothing succeed below the reserve, and free space equal to the reserve is enough (R23, R25);

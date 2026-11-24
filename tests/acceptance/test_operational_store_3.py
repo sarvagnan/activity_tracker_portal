@@ -513,8 +513,7 @@ class R22IndexingRetractions(StoreCase):
         found = self.record(store, key("id-a"))
         self.assertEqual([(item.kind, item.position) for item in found.evidence],
                          [("projection", position(1, 0)), ("retraction", position(2, 0)), ("projection", position(2, 1))])
-        ids = [item.evidence_id for item in found.evidence]
-        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(found.evidence_head, max(item.evidence_id for item in found.evidence))
 
     def test_retraction_changes_no_projection_evidence(self) -> None:
         store = self.ready()
@@ -617,7 +616,7 @@ class R23IndexRefusals(StoreCase):
             faults, lambda: store.index_items((entry(1, 0, "id-a"), entry(1, 1, "id-b"), gone(1, 2)), at(5)))
         found = self.record(store, key("id-a"))
         self.assertEqual(len(found.evidence), 2)
-        self.assertEqual(found.evidence_head, found.evidence[-1].evidence_id)
+        self.assertEqual(found.evidence_head, max(item.evidence_id for item in found.evidence))
         self.assert_every_partial_failure_commits_nothing(
             faults, lambda: store.record_selection(found.record_id, "retraction", (found.evidence[1].evidence_id,), found.evidence_head, at(6)))
 
@@ -838,11 +837,13 @@ class R21R22OrderAcrossCalls(StoreCase):
         store.index_items((gone(2, 0),), at(7))
         found = self.record(store, key("id-a"))
         heads.append(found.evidence_head)
-        # Indexing order across calls; every row keeps its delivery position.
+        # Listed in delivery order although indexed out of it; the late-indexed retraction
+        # still advances the head, because identities increase in indexing order.
         self.assertEqual([(item.kind, item.position) for item in found.evidence],
-                         [("projection", position(1, 0)), ("projection", position(3, 0)), ("retraction", position(2, 0))])
+                         [("projection", position(1, 0)), ("retraction", position(2, 0)), ("projection", position(3, 0))])
         self.assertEqual(heads, sorted(set(heads)))
-        self.assertEqual(found.evidence_head, found.evidence[-1].evidence_id)
+        self.assertEqual(found.evidence_head, max(item.evidence_id for item in found.evidence))
+        self.assertEqual(found.evidence_head, found.evidence[1].evidence_id)
 
     def test_retraction_never_crosses_record_types(self) -> None:
         store = self.ready()
