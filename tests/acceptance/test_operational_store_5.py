@@ -43,6 +43,7 @@ from activity_tracker_portal.operational_store import (
     MessageHeader,
     OriginKey,
     OutcomeEntry,
+    ProcessingAttempt,
     ProcessingJob,
     ProcessingOutcome,
     ProjectionEntry,
@@ -96,6 +97,8 @@ START_NS = 1_790_000_000_000_000_000
 MARCH = datetime(2026, 3, 1, tzinfo=UTC)
 JUNE = datetime(2026, 6, 1, tzinfo=UTC)
 SEPTEMBER = datetime(2026, 9, 1, tzinfo=UTC)
+# Supersession lists in other containers than a tuple (review finding 7).
+BAD_CONTAINERS = ([], [1], {1}, set(), 1, None)
 NEW_FAILURES = (
     "policy-request-invalid",
     "policy-unknown",
@@ -542,7 +545,10 @@ class R43RecordingAFallbackTimezonePolicy(StoreCase):
             ("timestamp-invalid", dict(start=NAIVE)),
             *[("policy-request-invalid", dict(zone=zone, start=MARCH)) for zone in (
                 "", "Europe//London", "/Europe/London", "Europe/London/", "../etc", "Europe/../London", "Europe/./London",
-                "Europe\\London", " UTC", "UTC ", "Europe/Lon don", "Europe/Lon\x00don", "Europe/Londón", None, 5)],
+                "Europe\\London", " UTC", "UTC ", "Europe/Lon don", "Europe/Lon\x00don", "Europe/Londón", None, 5,
+                "UTC\n", "UTC\r\n", "Europe/London\r", "\nUTC", "UTC\t", "Europe/Lon\tdon", "UTC\x7f")],
+            *[("policy-request-invalid", dict(supersedes=container, start=MARCH)) for container in (
+                *BAD_CONTAINERS, [existing.policy_id])],
             *[("policy-request-invalid", dict(supersedes=supersedes, start=MARCH)) for supersedes in (
                 (0,), (-1,), ("1",), (1.0,), (existing.policy_id, existing.policy_id), (None,))],
             ("policy-request-invalid", dict(mapping={"": PV}, start=MARCH)),
@@ -607,6 +613,14 @@ class R44RecordingASourceSelectionPolicy(StoreCase):
             *[("policy-request-invalid", dict(origins=origins)) for origins in (
                 (), (OA, OA), ((HC, ORIGIN_A),), (ORIGIN_A,), (OriginKey(5, ORIGIN_A),),  # type: ignore[arg-type]
                 (OriginKey(HC, None),))],  # type: ignore[arg-type]
+            ("policy-request-invalid", dict(origins=[OA])),
+            *[("policy-request-invalid", dict(supersedes=container)) for container in BAD_CONTAINERS],
+            # A datetime is not a local date (Decision 6), aware or naive, in either bound.
+            ("policy-request-invalid", dict(first=datetime(2026, 1, 1, tzinfo=UTC))),
+            ("policy-request-invalid", dict(first=datetime(2026, 1, 1))),
+            ("policy-request-invalid", dict(last=datetime(2026, 1, 31, tzinfo=IST))),
+            ("policy-request-invalid", dict(last=datetime(2026, 1, 31))),
+            ("policy-request-invalid", dict(first=date(2026, 1, 1), last=datetime(2026, 1, 31, tzinfo=UTC))),
             ("policy-request-invalid", dict(first="2026-01-01")),
             ("policy-request-invalid", dict(last="2026-01-31")),
             ("policy-request-invalid", dict(first=date(2026, 2, 1), last=date(2026, 1, 31))),
@@ -691,6 +705,15 @@ class R45SupersessionAndOverlap(StoreCase):
             ("policy-supersession-invalid", lambda: self.ftz(store, "UTC", MARCH, (f2.policy_id, f1.policy_id))),
             ("policy-supersession-invalid", lambda: self.ssp(store, (OB,), supersedes=(s1.policy_id, s_weight.policy_id))),
             ("policy-supersession-invalid", lambda: self.ssp(store, (OB,), supersedes=(s1.policy_id, s_other.policy_id))),
+            # In a well-formed tuple, policy-unknown wins over policy-supersession-invalid, in either order.
+            ("policy-unknown", lambda: self.ftz(store, "UTC", MARCH, (999_999, f1.policy_id))),
+            ("policy-unknown", lambda: self.ftz(store, "UTC", MARCH, (f1.policy_id, 999_999))),
+            ("policy-unknown", lambda: self.ftz(store, "UTC", MARCH, (999_999, s1.policy_id))),
+            ("policy-unknown", lambda: self.ftz(store, "UTC", MARCH, (s1.policy_id, 999_999))),
+            ("policy-unknown", lambda: self.ssp(store, (OB,), supersedes=(999_999, f2.policy_id))),
+            ("policy-unknown", lambda: self.ssp(store, (OB,), supersedes=(f2.policy_id, 999_999))),
+            ("policy-unknown", lambda: self.ssp(store, (OB,), supersedes=(999_999, s_weight.policy_id))),
+            ("policy-unknown", lambda: self.ssp(store, (OB,), supersedes=(s_weight.policy_id, 999_999))),
         ]
         for failure, operation in refusals:
             with self.subTest(failure=failure):
@@ -977,12 +1000,14 @@ class R48LeasedJobsRunAgain(StoreCase):
         store = self.ready()
         record = self.project(store, "held")
         lease = self.lease(store, record, max_attempts=2)
+        claimed_at = lease.expires_at - timedelta(seconds=3600)
         recording = self.ftz(store)
         self.assertEqual((recording.jobs_enqueued, recording.jobs_rearmed), (0, 1))
         self.assertEqual(self.job(store, lease.job_id).state, "leased")
         # Renewal keeps the fence and the mark.
         renewed = store.renew_processing_lease(lease.job_id, lease.fence, 3600, self.tick())
         self.assertEqual(renewed.fence, lease.fence)
+        self.assertGreater(renewed.expires_at, lease.expires_at)
         done = self.tick()
         outcome = store.complete_processing_job(lease.job_id, lease.fence, revision(policy=INFERRED), done)
         self.assertEqual((outcome.job_id, outcome.fence, outcome.selection_id), (lease.job_id, lease.fence, record[1]))
@@ -991,9 +1016,9 @@ class R48LeasedJobsRunAgain(StoreCase):
             (job.state, job.selection_id, job.max_attempts, job.attempts, job.not_before, job.fence, job.lease_owner,
              job.lease_expires_at, job.failure, job.closed_at),
             ("queued", record[1], 2, 0, done, lease.fence, None, None, None, None))
-        (attempt,) = job.history
-        self.assertEqual((attempt.fence, attempt.owner, attempt.result, attempt.finished_at, attempt.reason),
-                         (lease.fence, OWNER, "completed", done, None))
+        # The attempt keeps the claim's times; renewal moved only the job's expiry (@4 R32).
+        first_attempt = ProcessingAttempt(lease.fence, OWNER, claimed_at, lease.expires_at, done, "completed", None)
+        self.assertEqual(job.history, (first_attempt,))
         with store.read() as view:
             counts = view.processing_counts(done)
         self.assertEqual((counts.jobs_ready, counts.jobs_leased, counts.jobs_completed), (1, 0, 0))
@@ -1010,6 +1035,63 @@ class R48LeasedJobsRunAgain(StoreCase):
         self.assertEqual([(item.fence, item.owner, item.result) for item in job.history],
                          [(lease.fence, OWNER, "completed"), (again.fence, OTHER_OWNER, "completed")])
         self.assertRefused("lease-not-held", store.complete_processing_job, lease.job_id, lease.fence, revision(), self.tick())
+        store.close()
+        reopened = self.open()
+        self.assertEqual(self.job(reopened, lease.job_id).history[0], first_attempt)
+
+    def test_marked_completion_reusing_an_outcome_is_requeued(self) -> None:
+        store = self.ready()
+        record = self.project(store, "reused")
+        first = self.process(store, record, revision(policy=INFERRED))
+        lease = self.lease(store, record)
+        self.assertEqual(self.ftz(store, mapping={}).jobs_rearmed, 1)
+        done = self.tick()
+        # The identical outcome is reused, but the marked job must still run again.
+        self.assertEqual(store.complete_processing_job(lease.job_id, lease.fence, revision(policy=INFERRED), done), first)
+        self.assertEqual(self.view(store, "processing_outcomes", record[0]), (first,))
+        job = self.job(store, lease.job_id)
+        self.assertEqual((job.state, job.selection_id, job.attempts, job.not_before, job.lease_owner, job.closed_at),
+                         ("queued", record[1], 0, done, None, None))
+        self.assertEqual(job.history, (ProcessingAttempt(lease.fence, OWNER, lease.expires_at - timedelta(seconds=3600),
+                                                         lease.expires_at, done, "completed", None),))
+
+    def test_refused_marked_completion_keeps_its_mark(self) -> None:
+        store = self.ready()
+        record = self.project(store, "refused")
+        self.process(store, record, revision(b"kept", policy=INFERRED))
+        lease = self.lease(store, record)
+        self.ftz(store, mapping={})
+        complete = store.complete_processing_job
+        self.free = RESERVE - 1
+        self.assertRetryable("storage-reserve-exhausted", complete, lease.job_id, lease.fence,
+                             revision(b"new", policy=OTHER_INFERRED), self.tick())
+        self.free = PLENTY
+        self.assertRefused("outcome-invalid", complete, lease.job_id, lease.fence,
+                           OutcomeEntry("revision", PV, INFERRED, None, None, None, None), self.tick())
+        self.assertRefused("outcome-conflict", complete, lease.job_id, lease.fence,
+                           revision(b"different", policy=INFERRED), self.tick())
+        # Each refusal wrote nothing, so the mark is intact and a valid completion re-queues.
+        done = self.tick()
+        complete(lease.job_id, lease.fence, revision(b"new", policy=OTHER_INFERRED), done)
+        job = self.job(store, lease.job_id)
+        self.assertEqual((job.state, job.attempts, job.not_before), ("queued", 0, done))
+
+    def test_each_policy_write_counts_every_held_lease(self) -> None:
+        store = self.ready()
+        lease = self.lease(store, self.project(store, "held"))
+        self.assertEqual(self.ftz(store, "Asia/Kolkata", None, mapping={}).jobs_rearmed, 1)
+        # A distinct policy counts the same fence again, although it is already marked.
+        self.assertEqual(self.ftz(store, "Europe/London", JUNE, mapping={}).jobs_rearmed, 1)
+        # An identical repeat counts nothing.
+        self.assertEqual(self.ftz(store, "Europe/London", JUNE, mapping={}).jobs_rearmed, 0)
+        other = self.lease(store, self.project(store, "held-later"))
+        self.assertEqual(self.ftz(store, "Europe/Paris", SEPTEMBER, mapping={}).jobs_rearmed, 2)
+        # However many times it was counted, the lease runs again exactly once.
+        store.complete_processing_job(lease.job_id, lease.fence, revision(), self.tick())
+        self.assertEqual(self.job(store, lease.job_id).state, "queued")
+        store.complete_processing_job(other.job_id, other.fence, revision(), self.tick())
+        self.drain(store)
+        self.assertEqual({self.job(store, job_id).state for job_id in (lease.job_id, other.job_id)}, {"completed"})
 
     def test_every_held_lease_is_marked(self) -> None:
         store = self.ready()
@@ -1356,13 +1438,11 @@ class R52AtomicDurableAndSerialized(StoreCase):
         s2 = self.ssp(store, (OB,), date(2026, 2, 1), date(2026, 2, 28))
         faults = self.install_fault_triggers()
         check = self.assert_every_partial_failure_commits_nothing
-        (recording, failures) = check(faults, lambda: self.ftz(store, "UTC", None, (old.policy_id,), when=at(500)))
+        # Every partial write rolls back; the number of physical row writes is not prescribed.
+        (recording, _) = check(faults, lambda: self.ftz(store, "UTC", None, (old.policy_id,), when=at(500)))
         self.assertEqual((recording.jobs_enqueued, recording.jobs_rearmed), (3, 2))
-        # The policy, three jobs, and two marks: at least six row writes.
-        self.assertGreaterEqual(failures, 6)
-        (selection, failures) = check(faults, lambda: self.ssp(store, (OA, OB), date(2026, 1, 1), date(2026, 2, 28),
-                                                               (s1.policy_id, s2.policy_id), when=at(501)))
-        self.assertGreaterEqual(failures, 3)
+        (selection, _) = check(faults, lambda: self.ssp(store, (OA, OB), date(2026, 1, 1), date(2026, 2, 28),
+                                                        (s1.policy_id, s2.policy_id), when=at(501)))
         with store.read() as view:
             self.assertEqual(view.source_selection_timeline(MEASURE, "steps"), (selection,))
             self.assertEqual(view.fallback_timezone_timeline(), (recording.policy,))
