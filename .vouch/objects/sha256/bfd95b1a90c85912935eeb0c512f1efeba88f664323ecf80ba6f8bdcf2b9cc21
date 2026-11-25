@@ -1,0 +1,1 @@
+{"actor":"claude","event":"UnitSpecified","event_format":2,"pack_digest":"","payload":{"depends_on":["interpret-source-projection"],"name":"interpret-heart-rate","version":"1"},"prev":"9c6069178138e2d8451a94a359c8c0993c616b092352aa67fe2f5da6f5346e28","recorded_at":"2026-11-25T07:37:01+00:00","revision":545,"run_id":""}

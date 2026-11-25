@@ -1,0 +1,1 @@
+{"command_line":"bash tests/acceptance/run_interpret_heart_rate_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"4baf5ecadb173bf49000a07cae4e95f2196830347414e0608bb11ba508c99bc2","parent":"GENESIS","recorded_at":"2026-11-25T09:51:38+00:00","sequence":1,"unit":{"name":"interpret-heart-rate","version":"1"}}

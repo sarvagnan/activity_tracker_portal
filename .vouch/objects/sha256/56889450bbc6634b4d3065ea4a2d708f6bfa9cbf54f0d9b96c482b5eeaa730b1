@@ -1,0 +1,1 @@
+{"actor":"claude","event":"UnitSpecified","event_format":2,"pack_digest":"","payload":{"depends_on":["interpret-source-projection"],"name":"interpret-weight","version":"1"},"prev":"072ac5d55053a7dc23af825d4559e6b3fa7286c63dd328a7d6ddaa79caac46b3","recorded_at":"2026-11-25T07:37:01+00:00","revision":547,"run_id":""}

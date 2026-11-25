@@ -1,0 +1,1 @@
+{"actor":"claude","event":"OpenInCiMarked","event_format":2,"pack_digest":"","payload":{"name":"interpret-steps@1","reason":"interpret-steps@1 is frozen and in implementation; it stays open in CI until Gate C publishes it."},"prev":"333bdb25851d266aa672d6dab0b0c883657a695b7192a127f9d1fe47df87a1c1","recorded_at":"2026-11-25T09:50:24+00:00","revision":551,"run_id":""}

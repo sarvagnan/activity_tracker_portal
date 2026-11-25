@@ -1,0 +1,66 @@
+{
+  "contract_schema": 1,
+  "scope": "interpret-weight",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Interpret one schema-valid instantaneous Weight projection, schema version 1, into the type-specific body of a Canonical Revision through the interpret-source-projection@1 processor interface: the source mass as a float in its canonical gram unit, exactly as projected, checked against the pinned Health Connect SDK's bounds, without smoothing, latest-value selection, tie-breaking, derived measures, or unit conversion.",
+  "inputs": [
+    {
+      "name": "weight_record",
+      "mode": "pure",
+      "description": "The decoded record object of one Weight projection, schema version 1, as interpret-source-projection@1 passes it after closed-schema validation, the year-range check, and time attribution: the instant with its optional offset, and the mass in grams, which arrives as a Python int when its canonical JSON number has no fraction."
+    },
+    {
+      "name": "temporal_header",
+      "mode": "pure",
+      "description": "The instant temporal header interpret-source-projection@1 built for the projection, with its exact instant, applied offset, local date, and attribution."
+    },
+    {
+      "name": "sdk_bounds",
+      "mode": "pure",
+      "description": "The mass bounds that the pinned Health Connect SDK 1.1.0 WeightRecord constructor enforces, recorded in this unit's pack."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "weight_body",
+      "description": "The Weight body, version 1: the source mass as a finite float in the canonical unit g, numerically equal to the projected value, with no average, trend, BMI, latest-value judgment, or copy of the header."
+    },
+    {
+      "name": "quarantine_outcome",
+      "description": "A Quarantine with this processor's declared health-data-free reason weight-out-of-range and the JSON pointer of the mass field, never a value."
+    }
+  ],
+  "named_failures": [],
+  "observable_effects": [],
+  "authority": {
+    "owns": [
+      "the Weight body, version 1, and its declared numeric field",
+      "the exact float representation of a mass whose canonical JSON number has no fraction",
+      "the Weight validity rule beyond the closed schema: the pinned SDK's mass bounds",
+      "the Weight quarantine reason and the source field it names"
+    ],
+    "does_not_own": [
+      "envelope decoding, schema validation, the revision header, time attribution, Policy-Pending, or canonical bytes, which interpret-source-projection@1 owns",
+      "persisting outcomes, Processing Jobs, or Processor Generations",
+      "latest-local-day selection, equal-time duplicate grouping, unresolved ties, point series, source selection, or summaries, which Phase 5 owns",
+      "display units or presentation"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "interpret-source-projection",
+      "version": "1"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/interpret-weight-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_interpret_weight_1.py"
+    },
+    "runner": "tests/acceptance/run_interpret_weight_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}

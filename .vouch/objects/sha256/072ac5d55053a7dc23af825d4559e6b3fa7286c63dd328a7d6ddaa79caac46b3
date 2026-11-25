@@ -1,0 +1,1 @@
+{"actor":"claude","event":"UnitSpecified","event_format":2,"pack_digest":"","payload":{"depends_on":["interpret-source-projection"],"name":"interpret-sleep-session","version":"1"},"prev":"bfd95b1a90c85912935eeb0c512f1efeba88f664323ecf80ba6f8bdcf2b9cc21","recorded_at":"2026-11-25T07:37:01+00:00","revision":546,"run_id":""}
