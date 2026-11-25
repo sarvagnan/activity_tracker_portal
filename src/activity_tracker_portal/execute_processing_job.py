@@ -257,6 +257,8 @@ def execute_processing_job(
     now = clock()
     if now.tzinfo is None or now.utcoffset() is None:
         raise StoreRefusal("timestamp-invalid")
+    # Backoff is an elapsed duration, including inside a local DST fold.
+    now = now.astimezone(timezone.utc)
     retry_at = now + retry.delay(job.attempts) if kind == "transient" else None
     lease_lost = False
     if entry is not None:
