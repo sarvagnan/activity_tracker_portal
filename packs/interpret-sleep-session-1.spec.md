@@ -147,10 +147,52 @@ Proposed tests: `test_schema_valid_edges_never_raise`, `test_processor_is_pure`,
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_interpret_sleep_session_1.py`, with the tests above;
+The Operator approved the draft on 2026-11-24. The executable pack adds:
+- the suite `tests/acceptance/test_interpret_sleep_session_1.py`: 27 tests across R1–R6, one per proposed test name, with no additions;
 - the runner `tests/acceptance/run_interpret_sleep_session_1.sh`;
-- the Interface stub `src/activity_tracker_portal/interpret_sleep_session.py`: `PROCESSOR` with its real identity attributes and an `interpret_body` that raises `NotImplementedError`;
-- the confirmed SDK rules, citing the `SleepSessionRecord` source in connect-client 1.1.0.
+- the Interface stub `src/activity_tracker_portal/interpret_sleep_session.py`:
+  - `PROCESSOR`, an instance of a frozen dataclass with the Interface's real `record_type`, `processor_version`, `supported_schema_versions`, `body_schema`, and `quarantine_reasons`;
+  - `interpret_body`, which raises `NotImplementedError("interpret-sleep-session@1")`;
+  - a module docstring citing the SDK source below;
+- the confirmed SDK rules: `SleepSessionRecord.kt` in connect-client-1.1.0-sources.jar (SHA-256 `f80f4869872d8480e0e55aa76dd7a8bd6de556cc21d77cb483aae0fa42e00da2`), line 51 for the session's start before its end, line 180 for each stage's start before its end, and lines 58–59 for stages inside the session, both ends inclusive. Lines 53–56 reject overlapping stages; this pack keeps them (Decision 3).
 
-RED must come entirely from the stub. The parent turns any processor exception into `processor-invariant-violated`, so tests that run through `interpret` fail with that failure. The approver confirms at Gate B that each such failure traces to the stub. The implementer's read-only findings must be resolved before freeze.
+The shared helper `_interpret_nested_time` is not part of this pack. The stub does not create it, and no test imports it. Every test runs through the published `interpret`; none calls `interpret_body` directly.
+
+**RED, against the stub.** 22 of the 27 tests fail. The five R1 and R2 tests pass, because they read only the contract, scope map, effects declaration, and identity attributes. Counting subtests, there are 574 reports:
+- 164 errors, each `InterpretFailure("processor-invariant-violated")` from `interpret`;
+- 409 failures in `test_schema_valid_edges_never_raise`, where the test turns that same refusal into an assertion failure, `interpret raised processor-invariant-violated`;
+- 1 failure in `test_outcomes_are_health_data_free`, whose final check that all four reasons were seen fails because every case was refused.
+
+A trace around `interpret_body` records 573 calls, each raising the stub's `NotImplementedError("interpret-sleep-session@1")`, one for each of the 164 + 409 refusals. In `test_common_outcomes_take_precedence` the precedence cases pass, because the parent decides them before it calls the processor; the test fails on its controls, which reach the processor.
+
+**Passability.** A throwaway reference implementation, kept outside the repository with its own private nested-instant helper, passes all 27 tests. Of 53 incorrect implementations, 52 fail at least one test:
+- validity: an empty stage or session accepted; either session bound off by one in either check; the stage start's upper bound unchecked; an end before the session start reported as outside; an empty stage reported as reversed; the reversed check before the start check; the session check after the stages; a stage end clipped to the session;
+- overlaps and gaps: overlaps quarantined, in source order or after an SDK-style sort; same-code overlaps merged; duplicates removed; stages sorted by instant or by text; gaps filled with code 0; code 0 stages dropped;
+- instants: compared without the fraction, at whole seconds, truncated or rounded to microseconds, through float seconds, as text, or parsed through `datetime`; the session compared by text; year 0000 raising in the helper;
+- traversal and pointers: all starts before all ends; reverse index order; time order; the index off by one; reversed, empty, or session faults at the wrong field; a stage pointer without its field; the fault chosen by key order in the projection bytes;
+- body: header instants or an offset copied in; `null` or `""` for an absent title or notes; an empty title dropped; title stripped or NFC-normalized; notes dropped; stage instants rewritten to nine digits, trimmed, or cut to milliseconds; a float code passed through; a class or duration added;
+- complexity: a quadratic scan.
+
+The survivor builds the stage list by copying it on every append, which is quadratic. It takes about 20 s for 100,000 stages against the reference's 2.6–3.1 s, so it stays under the limit below. The approver confirms linear work in review.
+
+**What the tests pin beyond the approved text.** None of these changes approved semantics.
+- **Identity (R2).** `PROCESSOR` is immutable: assigning any identity attribute raises `AttributeError`. `supported_schema_versions` and `quarantine_reasons` are `frozenset`s, and `numeric_fields` is a tuple.
+- **Codes (R3, R6).** The parent's schema accepts an integral JSON number written with a fraction or exponent, such as `5.0`, `-0.0`, `7e0`, or `30E-1`, so it reaches the processor as a Python `float`. The body holds the `int` code. Passing the float through would raise `processor-invariant-violated` on a schema-valid record.
+- **Exact bytes (R3, R5).** Every body is compared with the RFC 8785 bytes of an independently built expected body.
+- **Title and notes (R3).** Empty strings stay `""`. Whitespace, NUL and other controls, and unnormalized Unicode stay as written. Absent fields are omitted. This holds whatever the key order in the projection bytes.
+- **Bounds (R4).** Each bound is tested one nanosecond inside and outside, with nine-digit session fractions, and with equal instants written with 0, 3, 6, or 9 fractional digits. A stage that starts at the session end is outside at its `end_time` if it ends later, and empty if it ends there.
+- **Session fault (R4).** A session whose start and end are the same instant in different texts is empty. The empty-session fault wins even when every stage is also faulty.
+- **Stage faults (R4).** A stage whose start is outside the session is reported at `start_time`, even when its end is also outside, reversed, or empty. A reversed stage that also ends before the session start is reversed, not outside.
+- **Traversal (R4).** Every multi-fault fixture runs with its keys in model order and reversed at every depth. Fixtures cover stages listed out of time order and indices 10 and 12.
+- **Precedence (R4).** Besides `interval-reversed` and Policy-Pending, a schema-invalid stage code and an `instant-out-of-range` session start come before stage faults. Each has a control that reaches the processor.
+- **Policy identity (R4, R6).** A processor Quarantine carries the policy identity the parent assigns: `"none"` when both endpoints are experienced, and the policies used otherwise.
+- **Totality (R6).** Besides fixed edges near years 0000, 1, and 9999, 400 seeded sessions with stages near every bound are checked against an independent oracle of the R4 rules. Each gives exactly the oracle's body or Quarantine.
+- **Purity (R6).** A subprocess, as in the parent pack, imports the module after installing an audit hook and clock guards, and runs representative outcomes under two `TZ`, `LC_ALL`, and `PYTHONHASHSEED` settings. It must see no clock read, write, host timezone read, socket, store, or subprocess, no `operational_store` import, and the same results as in-process.
+- **Large session (R6).** Two 100,000-stage sessions, one a revision and one quarantined at stage 99,999, must each be interpreted within 60 s. The reference takes 2.6–3.1 s on the drafting machine, and up to 5.5 s under load.
+- **Health-data-free (R6).** Quarantines for all four reasons have exactly the parent's four fields. Their `repr`, `str`, and fields carry no marker, Source Identity, title or notes text, or instant text.
+
+**Choices the approver should check.**
+- **Year 0000 end.** R4's year-0000 bullet says a year-0000 stage instant is `sleep-stage-outside-session`. That holds for a stage start. For a stage whose start is inside the session and whose end is in year 0000, R4's stage-end rules make it `sleep-stage-reversed` at `end_time`, because the end is before the start. The suite pins `sleep-stage-reversed` for that case. The bullet's "it never raises" holds for both.
+- **Instant source.** R4 says instants compare by exact nanoseconds. The tests check this through behavior. Whether the session bounds come from the temporal header or from the record's own text cannot be told apart and remains a review item.
+
+The implementer's read-only findings must be resolved before freeze. The approver confirms at Gate B that each RED failure traces to the stub.

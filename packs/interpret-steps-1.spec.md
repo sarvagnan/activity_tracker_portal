@@ -122,10 +122,43 @@ Proposed tests: `test_schema_valid_edges_never_raise`, `test_processor_is_pure`,
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_interpret_steps_1.py`, with the tests above;
+The Operator approved the draft on 2026-11-24. The executable pack adds:
+- the suite `tests/acceptance/test_interpret_steps_1.py`: 19 tests across R1–R7, one per proposed test name, with no additions;
 - the runner `tests/acceptance/run_interpret_steps_1.sh`;
-- the Interface stub `src/activity_tracker_portal/interpret_steps.py`: `PROCESSOR` with its real identity attributes and an `interpret_body` that raises `NotImplementedError`, and `COUNT_MIN` and `COUNT_MAX`;
-- the confirmed SDK bounds, citing the `StepsRecord` source in connect-client 1.1.0.
+- the Interface stub `src/activity_tracker_portal/interpret_steps.py`:
+  - `COUNT_MIN = 1` and `COUNT_MAX = 1_000_000`;
+  - `PROCESSOR`, an instance of a frozen dataclass with the Interface's real `record_type`, `processor_version`, `supported_schema_versions`, `body_schema`, and `quarantine_reasons`;
+  - `interpret_body`, which raises `NotImplementedError("interpret-steps@1")`;
+  - a module docstring citing the SDK source below;
+- the confirmed SDK rules: `StepsRecord.kt` in connect-client-1.1.0-sources.jar (SHA-256 `f80f4869872d8480e0e55aa76dd7a8bd6de556cc21d77cb483aae0fa42e00da2`), line 49 for start before end and lines 53–54 for the inclusive count bounds 1 and 1,000,000.
 
-RED must come entirely from the stub. The parent turns any processor exception into `processor-invariant-violated`, so tests that run through `interpret` fail with that failure. The approver confirms at Gate B that each such failure traces to the stub. The implementer's read-only findings must be resolved before freeze.
+The shared nested-instant helper is not part of this pack. Steps does not use it, and no test imports it.
+
+**RED, against the stub.** 14 of the 19 tests fail. Counting subtests, there are 263 errors, each `InterpretFailure("processor-invariant-violated")` from `interpret`. A trace around the parent's processor boundary shows 263 processor calls, each raising the stub's `NotImplementedError("interpret-steps@1")`. There are no assertion failures. The five R1 and R2 tests pass, because they read only the contract, scope map, effects declaration, and identity attributes. In `test_common_outcomes_take_precedence` the precedence cases pass, because the parent decides them before it calls the processor; the test fails on its controls, which reach the processor.
+
+**Passability.** A throwaway reference implementation, kept outside the repository, passes all 19 tests in about 0.3 s. The spec sets no performance limit, so the suite has no timing test. All 41 incorrect implementations fail at least one test:
+- count bounds: zero accepted, either bound exclusive, the maximum one too high, either constant wrong, bounds applied to the absolute value, out-of-range counts clamped, or raised instead of quarantined;
+- empty interval: not checked, compared by text, by record text, at microsecond or second precision, only when the offsets match, or only when the local dates match;
+- order and pointers: the count checked first, the empty interval at `/record/start_time`, the count at `/record`, the two reasons swapped;
+- body: a copied start time, local date, or offset; a day-crossing flag; a count halved across days; an inferred flag; a `null` member; the count as a float;
+- processor: a mutated record, a `Quarantine` subclass that carries the count, mutable or extra schema versions, a mutable processor, numeric fields as a list, reasons as a tuple, an extra declared reason, version `interpret-steps@2`;
+- purity: a clock read at import or per call, an `operational_store` import, and an import of the nested-instant helper.
+
+**What the tests pin beyond the approved text.** None of these changes approved semantics.
+- **Identity (R2).** `PROCESSOR` is immutable: assigning any identity attribute or `interpret_body` raises `AttributeError` or `TypeError`. `supported_schema_versions` and `quarantine_reasons` are `frozenset`s, `numeric_fields` is a tuple, and `COUNT_MIN` and `COUNT_MAX` are exactly `int`.
+- **Body (R3, R6).** The body bytes are exactly `{"count":<n>}`. They stay the same when the offsets, policies, attribution, local dates, recording method, Device, modification time, Source Identity, provider version, and key order change.
+- **Empty interval (R5).** Equal instants are empty even when their offsets differ, so their local dates differ, and even when one is inferred. Equal instants written with 0, 3, 6, or 9 fractional digits are empty. A one-nanosecond interval is accepted, including across a year boundary.
+- **Traversal (R5).** The empty-interval-first rule holds whatever the key order in the projection bytes.
+- **Precedence (R5).** Besides `interval-reversed` and Policy-Pending, a schema-invalid count (2^53, a string, a fraction) and an `instant-out-of-range` endpoint also come before both processor faults. The processor is not called in any of these cases. This follows from parent R4.
+- **Policy identity (R4, R5).** A processor Quarantine carries the policy identity the parent assigns to the same projection: `"none"` when both endpoints are experienced, and the policies used otherwise.
+- **Totality and purity (R7).**
+  - Over 15 counts from −(2^53 − 1) to 2^53 − 1 and 7 intervals, `interpret_body` never raises, returns exactly `{"count": n}` with an `int`, or a plain `Quarantine` with the expected reason and pointer, and leaves its record unchanged.
+  - A repeated direct call gives an equal result.
+  - In a subprocess, importing the module and running it reads no clock, opens no file for writing, reads no host timezone file, opens no socket, store, or subprocess, and imports neither `operational_store` nor `_interpret_nested_time`. Results match across `TZ`, `LC_ALL`, and `PYTHONHASHSEED`.
+- **Health-data-free (R7).** Quarantines have exactly the parent's four fields. Their `repr` and `str`, both from `interpret` and from a direct call, carry no marker, Source Identity, or distinctive count.
+
+**Choices the approver should check.**
+- R6 names "the leap-day and midnight-crossing vectors". `projection/v1` has one Steps calendar vector, `steps-leap-days`, and with its `+05:30` offsets it does not cross a local midnight. The day-crossing test therefore runs that vector with its offsets removed under a UTC policy, which crosses from 2000-02-29 to 2000-03-01, alongside synthetic crossings: experienced, inferred through `America/New_York`, three days long, and one nanosecond across midnight.
+- R5 says instants compare by `Instant.epoch_ns`. The tests check this through behavior: different texts for one instant, and one-nanosecond intervals. An implementation that parsed the record's text exactly to nanoseconds would also pass. Reading the temporal header remains a review item.
+
+The implementer's read-only findings must be resolved before freeze. The approver confirms at Gate B that each RED failure traces to the stub.

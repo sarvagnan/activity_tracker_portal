@@ -159,10 +159,48 @@ Proposed tests: `test_schema_valid_edges_never_raise`, `test_processor_is_pure`,
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_interpret_heart_rate_1.py`, with the tests above;
+The Operator approved the draft. The executable pack adds:
+- the suite `tests/acceptance/test_interpret_heart_rate_1.py`: 31 tests across R1–R7, one per proposed test name and no others;
 - the runner `tests/acceptance/run_interpret_heart_rate_1.sh`;
-- the Interface stub `src/activity_tracker_portal/interpret_heart_rate.py`: `PROCESSOR` with its real identity attributes and an `interpret_body` that raises `NotImplementedError`, and `BPM_MIN` and `BPM_MAX`;
-- the confirmed SDK bounds, citing the `HeartRateRecord` source in connect-client 1.1.0.
+- the Interface stub `src/activity_tracker_portal/interpret_heart_rate.py`. It defines `BPM_MIN = 1` and `BPM_MAX = 300`, and `PROCESSOR`, a frozen dataclass instance with the Interface's identity attributes, both sets as `frozenset`. Its `interpret_body` raises `NotImplementedError("interpret-heart-rate@1")`. The module docstring cites `HeartRateRecord.kt` lines 35 and 125–126 in connect-client 1.1.0 (SHA-256 above);
+- no fixture files. Inputs are the four Heart Rate positive vectors, read from `projection/v1`, and projections built in the suite.
 
-RED must come entirely from the stub. The parent turns any processor exception into `processor-invariant-violated`, so tests that run through `interpret` fail with that failure. The approver confirms at Gate B that each such failure traces to the stub. The implementer's read-only findings must be resolved before freeze.
+The shared helper `_interpret_nested_time` (Decision 7) is not in the worktree. No test imports it.
+
+**RED, against the stub.** 26 of the 31 tests fail. Counting subtests, there are 390 errors and 18 failures:
+- each error is `InterpretFailure: processor-invariant-violated` raised by `interpret`;
+- each failure is `test_schema_valid_edges_never_raise` reporting `raised processor-invariant-violated`.
+
+An instrumented run wrapped `interpret_body` and the parent's processor boundary. It recorded 408 invariant violations, each right after the stub raised `NotImplementedError("interpret-heart-rate@1")`, and no other exception. The 5 tests that pass are the three R1 contract tests and the two R2 identity tests, which read only the contract and the stub's real attributes. `test_common_outcomes_take_precedence` and `test_processor_is_pure` include a control that runs the processor, so they fail too.
+
+**Passability.** A throwaway reference implementation passes all 31 tests. It uses a private nested-time helper with integer arithmetic and no `datetime`. Its 100,000-sample run takes about 3 s through `interpret` on the drafting machine, so the limit is set at 60 s. 51 incorrect implementations were tried, and 49 fail at least one test:
+- bounds: either BPM bound exclusive, off by one, or the upper bound missing;
+- the interval: either end exclusive, comparison in whole seconds, in microseconds, or as text, and a 3- or 6-digit fraction read as nanoseconds;
+- traversal: `beats_per_minute` before `time`, all times before any value, last fault wins, reverse order, a pointer without `/record`, an index off by one, and the two reasons swapped;
+- order: sorting by text or by instant, and deduplicating identical samples or equal instants;
+- the body: a header field copied in, an endpoint's local date copied in, times rewritten to nine digits, to epoch text, or to microseconds, `null` or `""` for an absent date, and an integral float kept as a float;
+- dates: the start offset alone, the end offset alone, the nearer endpoint's offset, the larger offset, the endpoints' own local dates, no dates when the offset texts differ, and no dates when an endpoint is inferred;
+- offsets: seconds dropped, seconds given the wrong sign, and the record's source offsets used instead of the applied offsets;
+- the range: out-of-range dates clamped, division toward zero for days or for seconds before 1970, year 0000 raising, and year 0000 read as year 1;
+- purity: mutating the record, reading the clock, reading the pinned `tzdata` package, and constructing a `ZoneInfo`.
+
+The 2 survivors are equivalent, so no input can tell them apart:
+- dropping the years 1–9999 clause. The parent keeps both endpoint dates in range, and a sample lies between them. So the date under the start offset is never before year 1, and the date under the end offset is never after 9999. If one date is out of range, the two dates already differ;
+- omitting a date earlier than the start's local date. A sample is never before the start, so this never applies.
+
+**Refinements the tests pin down beyond the approved text.** None changes approved semantics.
+- **Integral numbers (R3, R5, R7).** The closed schema accepts an integral JSON number such as `72.0` or `3e2` as an integer, so it reaches the processor as a Python `float`. The body writes it as the `int` with the same value. Otherwise the parent's integer check would raise `processor-invariant-violated` on a schema-valid record, which R7 forbids. The RFC 8785 bytes are the same either way, so this converts nothing. `0.0`, `-1.0`, `301.0`, and `float(2^53 − 1)` are `heart-rate-bpm-out-of-range`. **The approver should confirm this reading of "unchanged" and "as a Python `int`".**
+- **Dates (R4).** `local_date` is `YYYY-MM-DD` with a four-digit year, such as `0001-01-01`. Offsets are compared as dates, not as text, so `+00:00` and `-00:00` date every sample. Instants before 1970 floor correctly: `1969-12-31T23:59:59.999999999Z` at `+00:00` is 1969-12-31. Dates use the proleptic Gregorian calendar, including 1600, 1900, 2000, 2100, and 2400 leap rules.
+- **Policies (R4).** The same zone under another policy name gives the same body under a different policy identity. A policy that applies but leaves the offsets unchanged, such as `Europe/London` against `UTC` in January, gives the same body. A policy effective 1 ms after the end changes nothing. Chicago instead of New York across 2026-03-08 changes the body.
+- **Quarantines (R5).** The outcome is exactly `Quarantine(reason, pointer, "interpret-heart-rate@1", identity)`. The identity is `"none"` for experienced endpoints and the revision's identity for inferred ones. The pointer index is the sample's list index, at any position, including index 11.
+- **Interval (R5).** Bounds compare at nanosecond precision, whatever the fraction length: `.100`, `.100000`, and `.100000000` are the same instant. A zero-length series whose endpoints disagree on the date gives no sample a date.
+- **Precedence (R5).** The tests also cover a sample `time` with a numeric offset and a value above 2^53 − 1. Both are `projection-schema-invalid` before any processor fault, as is a year-0000 or out-of-range endpoint (`instant-out-of-range`).
+- **Purity (R7).** The suite wraps `PROCESSOR` in a delegating test processor and runs it through `interpret`. The record and temporal header must be unchanged after `interpret_body`, and a second call must return an equal result. A subprocess observes the module's import and calls with an audit hook and clock guards, as the parent's suite does. Without a policy, it must open nothing from the pinned `tzdata` package either, because then the parent loads no zone. The outcomes must match the in-process ones under `TZ=Pacific/Chatham`. A C-level clock read such as `datetime.now()` remains a review item.
+- **Health-data-free (R7).** Quarantine `repr`, `str`, and policy identity carry no marker, no fault time or value (`987654`), and no other sample's time or value.
+
+**Choices made in drafting**, for the approver:
+- `supported_schema_versions` and `quarantine_reasons` are checked to be `frozenset`, since the Interface writes them that way. Immutability is checked as `AttributeError` on assignment to each identity attribute.
+- `interpret_body` is never called directly. The purity test reaches it through a delegating processor passed to `interpret`, so it sees exactly the arguments the parent passes.
+- The seeded random checks, 150 dating series and 150 validity series, compare outcomes with an oracle that uses `datetime` for years 1–9999.
+
+The implementer's read-only findings must be resolved before freeze. The approver confirms at Gate B that each RED failure traces to the stub.
