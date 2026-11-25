@@ -1,0 +1,19 @@
+{
+  "effects_format": 1,
+  "effects": [
+    {
+      "kind": "action",
+      "name": "processing-outcome-write",
+      "system": "Portal Operational Store SQLite database, through operational-store@4",
+      "outcome": "confirmed",
+      "detail": "Completes the held Processing Job with one interpretation outcome, and its Canonical Revision when there is one, under the lease's fence; an identical outcome already recorded under its key is returned, not appended; a refusal or retryable failure commits nothing."
+    },
+    {
+      "kind": "action",
+      "name": "processing-failure-write",
+      "system": "Portal Operational Store SQLite database, through operational-store@4",
+      "outcome": "confirmed",
+      "detail": "Closes the held attempt with one transient or deterministic failure and a health-data-free reason under the lease's fence, re-queuing the job after its backoff or failing it; a refusal or retryable failure commits nothing."
+    }
+  ]
+}

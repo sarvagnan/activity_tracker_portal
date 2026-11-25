@@ -1,0 +1,152 @@
+{
+  "contract_schema": 1,
+  "scope": "execute-processing-job",
+  "version": "1",
+  "kind": "integration",
+  "purpose": "Apply the concrete processor named by one leased Processing Job to the reconciled projection selection it targets, through the published operational-store@4 and interpret-source-projection@1 operations: assemble the interpretation input from the store in one read, interpret it with the processor registered for the job's processor version, and commit exactly one result under the lease's fence: the Canonical Revision, Unmodeled, Policy-Pending, or Quarantine outcome; a bounded transient retry with backoff; or a deterministic failed job with a health-data-free reason. A lost lease or a store that cannot write commits nothing. Processor Generations, policy records, and current-view selection arrive with later store versions; until then each outcome is recorded under the job's processor version only.",
+  "inputs": [
+    {
+      "name": "processing_lease",
+      "mode": "pure",
+      "description": "One operational-store@4 Lease returned by claim_processing_job: the job, its fence and owner, the Source Record, the target selection and its projection evidence, the job's processor version, and the lease expiry."
+    },
+    {
+      "name": "operational_store",
+      "mode": "effectful",
+      "description": "The Operational Store read through operational-store@4 in one read view: the Processing Job and its attempt history, the Source Record key, the leased evidence's source modification time, projection digest and archived position, the archived Ingest Batch's projection-schema version, and the exact projection bytes; and the one outcome or failure written back through complete_processing_job or fail_processing_job."
+    },
+    {
+      "name": "processor_registry",
+      "mode": "pure",
+      "description": "This unit's registry: each published processor version mapped to its concrete processor (interpret-steps@1, interpret-heart-rate@1, interpret-sleep-session@1, interpret-weight@1), interpret-source-projection@1 mapped to no processor, and every projection/v1 record type mapped to the processor version its jobs are enqueued under."
+    },
+    {
+      "name": "fallback_timezone_policies",
+      "mode": "pure",
+      "description": "The Fallback Timezone Policy timeline passed to interpret-source-projection@1. The production handler passes an empty timeline until a later version reads recorded policies from operational-store@5."
+    },
+    {
+      "name": "retry_policy",
+      "mode": "pure",
+      "description": "The backoff for transient failures: a base delay doubled per attempt used and capped. The attempt bound is the job's own max_attempts, fixed at enqueue and enforced by the store."
+    },
+    {
+      "name": "clock",
+      "mode": "volatile",
+      "description": "The caller's timezone-aware Portal time source, read once per execution immediately before the first write attempt."
+    },
+    {
+      "name": "free_space",
+      "mode": "volatile",
+      "description": "Free bytes on the store's filesystem, which the store compares with its reserve before each processing write."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "recorded_outcome",
+      "description": "The interpretation outcome committed with complete_processing_job under the lease's fence: a Canonical Revision with its header and body bytes and indexed header columns, or an Unmodeled, Policy-Pending, or Quarantine outcome with its health-data-free reason, pointer, or policy kind, each keyed by selection, processor version, and policy identity. An identical outcome already recorded under the same key is returned rather than appended. The store then completes, re-queues, or supersedes the job."
+    },
+    {
+      "name": "scheduled_retry",
+      "description": "A transient failure committed with fail_processing_job: the attempt closes with the reason interpretation-unexpected-failure and the job is re-queued for the backoff time, or fails with the store's retries-exhausted once its attempts are used."
+    },
+    {
+      "name": "failed_job",
+      "description": "A deterministic failure committed with fail_processing_job, which closes the job as failed until a manual retry or a corrected processor version enqueues new work. Its reason is one of processor-unavailable, processor-record-type-mismatch, processing-evidence-missing, processing-input-invalid, projection-digest-mismatch, projection-identity-mismatch, processor-invariant-violated, outcome-conflict, or outcome-invalid."
+    },
+    {
+      "name": "execution_result",
+      "description": "A health-data-free account of one execution: the job and fence, and whether an outcome was recorded, a retry scheduled, the job failed, the same lease's result was already recorded, or the lease was lost to a later claim and nothing was written; with the outcome kind, reason, and retry time where they apply."
+    },
+    {
+      "name": "job_handler",
+      "description": "A callable built from the worker's PortalWriter and clock that executes one Lease through the writer, for the portal-worker's handler seam."
+    },
+    {
+      "name": "execute_failure",
+      "description": "The store's own named refusal or retryable failure, passed through unchanged when nothing could be written; it carries no projection bytes, field values, origin, or Source Identity."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "processing-job-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "timestamp-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "store-busy",
+      "outcome": "retryable"
+    },
+    {
+      "name": "storage-reserve-exhausted",
+      "outcome": "retryable"
+    }
+  ],
+  "observable_effects": [
+    {
+      "name": "processing-outcome-write",
+      "description": "One interpretation outcome, with its Canonical Revision when there is one, committed through operational-store@4's complete_processing_job under the lease's fence, closing the attempt as completed; an identical outcome already recorded under its key is not appended again."
+    },
+    {
+      "name": "processing-failure-write",
+      "description": "One transient or deterministic failure committed through operational-store@4's fail_processing_job under the lease's fence, closing the attempt and re-queuing the job after its backoff or failing it."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the registry mapping each published processor version to its concrete processor, and each projection/v1 record type to the processor version its work runs under",
+      "assembling one interpretation input for a leased selection from published operational-store@4 reads",
+      "turning one leased Processing Job into exactly one recorded outcome, scheduled retry, or failed job, or into no write when the lease is lost or the store cannot write",
+      "classifying failures as deterministic or transient, the job-failure reason vocabulary, and the retry backoff",
+      "writing only under the lease's fence, without renewal, and resolving a repeated execution from the durable attempt history",
+      "the job handler the portal-worker calls for each claimed lease"
+    ],
+    "does_not_own": [
+      "interpretation outcomes, the Canonical Revision header and bodies, or quarantine reasons, which interpret-source-projection@1 and the concrete processors own",
+      "Processing Job queues, claim order, lease expiry, the attempt bound, outcome keys, or storage, which operational-store@4 owns",
+      "indexing, reconciling, discovering, enqueueing, claiming, or scheduling work, which the portal-worker and reconcile-source-record@1 own",
+      "Processor Generations, current-view selection, Cutover Targets, Candidate Builds, or activation",
+      "recording, superseding, or activating Fallback Timezone Policies or Source Selection Policies",
+      "manual retry, Operations presentation, or Health Summaries"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "interpret-source-projection",
+      "version": "1"
+    },
+    {
+      "scope": "operational-store",
+      "version": "4"
+    },
+    {
+      "scope": "interpret-steps",
+      "version": "1"
+    },
+    {
+      "scope": "interpret-heart-rate",
+      "version": "1"
+    },
+    {
+      "scope": "interpret-sleep-session",
+      "version": "1"
+    },
+    {
+      "scope": "interpret-weight",
+      "version": "1"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/execute-processing-job-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_execute_processing_job_1.py"
+    },
+    "runner": "tests/acceptance/run_execute_processing_job_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}

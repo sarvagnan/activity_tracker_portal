@@ -1,0 +1,1 @@
+{"command_line":"bash tests/acceptance/run_execute_processing_job_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"fe5134fb584caf0529c9cd625337eaf420768349ee572f1f502951457d507d78","parent":"GENESIS","recorded_at":"2026-11-25T12:49:27+00:00","sequence":1,"unit":{"name":"execute-processing-job","version":"1"}}
