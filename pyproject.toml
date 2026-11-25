@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 portal = "activity_tracker_portal.cli:main"
+portal-worker = "activity_tracker_portal.worker:main"
 
 [tool.uv]
 python-preference = "only-managed"

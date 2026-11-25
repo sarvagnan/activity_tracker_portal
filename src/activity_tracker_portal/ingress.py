@@ -12,10 +12,11 @@ import fcntl
 import json
 import secrets
 import threading
+import time
 import zlib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from os import PathLike
@@ -108,7 +109,7 @@ class PortalSettings:
 
 
 class PortalWriterBusy(RuntimeError):
-    """Another Portal or cooperating writing CLI owns this store's writer."""
+    """Another process already owns this store's ingress or worker role."""
 
     failure = "portal-writer-already-running"
 
@@ -116,35 +117,83 @@ class PortalWriterBusy(RuntimeError):
         super().__init__(self.failure)
 
 
+@contextmanager
+def _store_write_lock(lock_file, timeout: float = 5.0):
+    """Bound cooperative process-lock waits by SQLite's default busy timeout."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise operational_store.StoreRetryable("store-busy") from None
+            time.sleep(min(0.01, remaining))
+    try:
+        yield
+    finally:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+class _SerializedStore:
+    """Serialize individual store mutations, leaving governed computation unlocked."""
+
+    def __init__(self, store: OperationalStore, lock_file) -> None:
+        self._store = store
+        self._lock_file = lock_file
+
+    def __getattr__(self, name):
+        attribute = getattr(self._store, name)
+        if name in {"read", "settings"} or not callable(attribute):
+            return attribute
+
+        def call(*args, **kwargs):
+            with _store_write_lock(self._lock_file):
+                return attribute(*args, **kwargs)
+        return call
+
+
 class PortalWriter:
-    """One serialized writer with process exclusion and a thread-owned store.
+    """One serialized role with process exclusion and a thread-owned store.
 
     SQLite connections are thread-affine. A dedicated thread opens, writes,
-    and closes the store, while one lock encloses each complete check/write
-    operation and its result. Readers can use store.read() on other threads.
-    The advisory lock file stays on disk: unlinking it would split ownership
-    between different inodes. Every writing entry point must cooperate.
+    and closes the store. A thread lock encloses each complete governed call
+    within this process. Ingress and worker have separate lifetime singleton
+    locks and share a bounded process lock around each individual store
+    mutation, never around computation or a batch. Readers can use store.read()
+    on other threads. Lock files stay on disk: unlinking them would split
+    ownership between different inodes. Every writing entry point cooperates.
     """
 
-    def __init__(self, store_path: str | PathLike[str], *, reserve_bytes: int) -> None:
+    def __init__(self, store_path: str | PathLike[str], *, reserve_bytes: int, role: str = "ingress") -> None:
+        if role not in {"ingress", "worker"}:
+            raise ValueError("invalid writer role")
         self._lock = threading.Lock()
         self._closed = False
         path = Path(store_path).resolve()
-        self._lock_file = Path(f"{path}.writer-lock").open("a+b")
+        suffix = "writer-lock" if role == "ingress" else "worker-lock"
+        self._lock_file = Path(f"{path}.{suffix}").open("a+b")
+        self._write_lock_file = None
         try:
             try:
                 fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise PortalWriterBusy() from None
+            self._write_lock_file = Path(f"{path}.store-write-lock").open("a+b")
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="portal-writer")
             try:
-                self.store = self._executor.submit(
-                    operational_store.open_store, path, reserve_bytes=reserve_bytes,
-                ).result()
+                def open_serialized():
+                    with _store_write_lock(self._write_lock_file):
+                        return operational_store.open_store(path, reserve_bytes=reserve_bytes)
+                self.store = self._executor.submit(open_serialized).result()
+                self._serialized_store = _SerializedStore(self.store, self._write_lock_file)
             except BaseException:
                 self._executor.shutdown(wait=True)
                 raise
         except BaseException:
+            if self._write_lock_file is not None:
+                self._write_lock_file.close()
             self._lock_file.close()
             raise
 
@@ -153,7 +202,7 @@ class PortalWriter:
         with self._lock:
             if self._closed:
                 raise RuntimeError("portal-writer-closed")
-            return self._executor.submit(operation, self.store).result()
+            return self._executor.submit(operation, self._serialized_store).result()
 
     def close(self) -> None:
         """Wait for any active operation, close on its owning thread, and release flock."""
@@ -167,6 +216,7 @@ class PortalWriter:
                 try:
                     self._executor.shutdown(wait=True)
                 finally:
+                    self._write_lock_file.close()
                     self._lock_file.close()
 
 
