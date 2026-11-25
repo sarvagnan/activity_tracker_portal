@@ -1,0 +1,1 @@
+{"actor":"claude","event":"OpenInCiMarked","event_format":2,"pack_digest":"","payload":{"name":"execute-processing-job@1","reason":"execute-processing-job@1 is frozen and in implementation; it stays open in CI until Gate C publishes it."},"prev":"9a3e96cf6bc927e0e6f240eac4ecb3a9be20e63b1b972dd8937c8c0e33c152a1","recorded_at":"2026-11-25T12:49:23+00:00","revision":594,"run_id":""}
