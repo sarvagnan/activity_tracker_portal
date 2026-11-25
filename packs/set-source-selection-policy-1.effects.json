@@ -1,0 +1,12 @@
+{
+  "effects_format": 1,
+  "effects": [
+    {
+      "kind": "action",
+      "name": "source-selection-policy-write",
+      "system": "Portal Operational Store SQLite database, through operational-store@5",
+      "outcome": "confirmed",
+      "detail": "Appends one pending Source Selection Policy that supersedes exactly the live policies of its measure and record type that share a date with it; a request identical to a live policy writes nothing, and a refusal or retryable failure commits nothing. It queues no Processing Job and activates nothing."
+    }
+  ]
+}
