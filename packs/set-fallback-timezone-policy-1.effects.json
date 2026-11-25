@@ -1,0 +1,12 @@
+{
+  "effects_format": 1,
+  "effects": [
+    {
+      "kind": "action",
+      "name": "fallback-timezone-policy-write",
+      "system": "Portal Operational Store SQLite database, through operational-store@5",
+      "outcome": "confirmed",
+      "detail": "Appends one pending Fallback Timezone Policy that supersedes exactly the policies in the confirmed plan; in the same transaction the store queues the affected Processing Jobs and marks held leases. A refusal, conflict, retryable failure, or repeat of an already recorded plan commits nothing."
+    }
+  ]
+}

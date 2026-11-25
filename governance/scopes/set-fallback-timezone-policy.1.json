@@ -1,0 +1,154 @@
+{
+  "contract_schema": 1,
+  "scope": "set-fallback-timezone-policy",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Record the Operator's confirmed fallback IANA timezone, the zone used for calendar attribution only when source evidence lacks an experienced offset, as an append-only pending Fallback Timezone Policy through operational-store@5. A read-only plan validates the zone against the pinned tzdata release, checks the effective start, and works out which live policies the new one replaces; confirming that plan records the policy, and the store queues the affected reprocessing in the same transaction. Explicit source offsets stay authoritative. Activation with rebuilt results and a Cutover Record belongs to operational-store@6.",
+  "inputs": [
+    {
+      "name": "operator_request",
+      "mode": "pure",
+      "description": "The zone the Operator confirmed, as an IANA name; its effective start, either a timezone-aware instant no later than the request time or None for all earlier history; and the identities of any later live policies the Operator chose to replace as well."
+    },
+    {
+      "name": "confirmed_plan",
+      "mode": "pure",
+      "description": "The plan the Operator was shown and confirmed: the zone, the start in UTC, the later policies named for replacement, and the full list of policies the new one supersedes."
+    },
+    {
+      "name": "requested_at",
+      "mode": "pure",
+      "description": "The caller's timezone-aware Portal time for the plan or the confirmation, recorded as the policy's requested time."
+    },
+    {
+      "name": "policy_timeline",
+      "mode": "effectful",
+      "description": "The live Fallback Timezone Policies read through operational-store@5's fallback_timezone_timeline in one read view, and the one policy written back through record_fallback_timezone_policy."
+    },
+    {
+      "name": "reprocessing_settings",
+      "mode": "pure",
+      "description": "The record-type-to-processor-version mapping and the attempt bound that the store uses to queue affected Processing Jobs, supplied by the caller from the portal-worker's own settings."
+    },
+    {
+      "name": "pinned_tzdata",
+      "mode": "pure",
+      "description": "The zone list of the pinned tzdata package (tzdata==2026.6, IANA release 2026f), read from the package itself and never from the host timezone database."
+    },
+    {
+      "name": "free_space",
+      "mode": "volatile",
+      "description": "Free bytes on the store's filesystem, which the store compares with its reserve before a policy write."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "allowed_zones",
+      "description": "Every zone name the pinned tzdata package lists, links included, except Factory, in sorted order, for the Portal's zone picker."
+    },
+    {
+      "name": "timezone_plan",
+      "description": "A read-only, health-data-free plan for one request: the validated zone, the start in UTC or None, the later policies named for replacement, and every live policy the new one would supersede, ascending. Planning writes nothing."
+    },
+    {
+      "name": "timezone_result",
+      "description": "The recorded pending policy as operational-store@5 returns it, whether it was already recorded by an earlier attempt of the same plan, and the store's health-data-free counts of Processing Jobs queued and held leases marked; a repeat reports zero for both."
+    },
+    {
+      "name": "timezone_failure",
+      "description": "A named refusal, conflict, or retryable failure that recorded nothing; its text is the failure name only and it carries no zone, time, projection, origin, or Source Identity."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "timestamp-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "timezone-unknown",
+      "outcome": "refusal"
+    },
+    {
+      "name": "effective-time-invalid",
+      "outcome": "refusal"
+    },
+    {
+      "name": "replacement-invalid",
+      "outcome": "refusal"
+    },
+    {
+      "name": "all-history-policy-required",
+      "outcome": "refusal"
+    },
+    {
+      "name": "policy-unchanged",
+      "outcome": "refusal"
+    },
+    {
+      "name": "plan-stale",
+      "outcome": "conflict"
+    },
+    {
+      "name": "policy-request-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "processor-version-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "processing-request-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "store-busy",
+      "outcome": "retryable"
+    },
+    {
+      "name": "storage-reserve-exhausted",
+      "outcome": "retryable"
+    }
+  ],
+  "observable_effects": [
+    {
+      "name": "fallback-timezone-policy-write",
+      "description": "One pending Fallback Timezone Policy appended through operational-store@5's record_fallback_timezone_policy, superseding exactly the policies the confirmed plan names, with the store queuing the affected Processing Jobs and marking held leases in the same transaction; a refusal, conflict, retryable failure, or repeat of an already recorded plan commits nothing."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "which zone names are accepted, checked against the pinned tzdata package and never the host timezone database",
+      "the allowed effective start: all earlier history, or an instant no later than the request time",
+      "the rule that the first policy covers all earlier history",
+      "which live policies a new policy supersedes: the one with the same start automatically, later ones only when the Operator names them, earlier ones never",
+      "refusing a request that would change nothing",
+      "the read-only plan the Operator confirms, and refusing a confirmation whose plan no longer matches the timeline",
+      "recognizing a repeat of an already recorded plan after an uncertain commit"
+    ],
+    "does_not_own": [
+      "proposing a zone from the browser, presenting the plan, or collecting the Operator's confirmation, which the Phase 7 Portal page owns",
+      "storing policies, supersession links, overlap checks, identical-repeat detection by content, choosing the affected records, queuing their jobs, or marking held leases, which operational-store@5 owns",
+      "which timeline ordinary processing reads while a policy is pending, which execute-processing-job@2 and operational-store@6 own",
+      "policy activation, the active timeline, Cutover Targets, Cutover Records, Summary Refresh Jobs, or rebuilt Health Summaries, which operational-store@6 and the summary units own",
+      "the processor-version mapping and attempt bound, which the portal-worker's settings own",
+      "calendar attribution, policy identities, and the tzdata release in them, which interpret-source-projection@1 owns",
+      "withdrawing a policy without a replacement, Source Selection Policies, or privacy deletion of policies"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "operational-store",
+      "version": "5"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/set-fallback-timezone-policy-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_set_fallback_timezone_policy_1.py"
+    },
+    "runner": "tests/acceptance/run_set_fallback_timezone_policy_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}
