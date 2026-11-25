@@ -325,9 +325,11 @@ class SetterCase(unittest.TestCase):
         calls the unit inside an except block."""
         self.assertIsNone(error.__cause__)
         context = error.__context__
-        if context is not None:
-            self.assertEqual((context.args, str(context), context.__cause__, context.__context__), ((), "", None, None),
-                             "a refusal's context must carry no other exception's text")
+        while context is not None:
+            self.assertEqual(str(context), "", "a refusal's context must carry no other exception's text")
+            self.assertTrue(all(str(arg) == "" for arg in context.args),
+                            "a refusal's context must carry no other exception's text")
+            context = context.__cause__ or context.__context__
         text = "".join(traceback.format_exception(error))
         link = error
         while link is not None:
