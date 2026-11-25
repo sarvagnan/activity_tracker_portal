@@ -1,0 +1,1 @@
+{"actor":"claude","event":"OpenInCiMarked","event_format":2,"pack_digest":"","payload":{"name":"interpret-weight@1","reason":"interpret-weight@1 is frozen and in implementation; it stays open in CI until Gate C publishes it."},"prev":"164456159381fd983fa31075566b1794638a5e357497c0852f9eaca053cddfe0","recorded_at":"2026-11-25T09:51:55+00:00","revision":567,"run_id":""}

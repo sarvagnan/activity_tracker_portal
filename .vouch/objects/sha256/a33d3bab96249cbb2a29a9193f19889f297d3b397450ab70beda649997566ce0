@@ -1,0 +1,1 @@
+{"command_line":"bash tests/acceptance/run_interpret_weight_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"4b7700a147cdfa8c7ce22f477d9348180d4a178dbb195e64cf29ee941fb67d59","parent":"GENESIS","recorded_at":"2026-11-25T09:51:59+00:00","sequence":1,"unit":{"name":"interpret-weight","version":"1"}}
