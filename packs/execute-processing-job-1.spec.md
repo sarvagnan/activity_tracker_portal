@@ -251,17 +251,25 @@ Proposed tests: `test_results_are_health_data_free`, `test_recorded_reasons_are_
 
 ## Freeze prerequisites
 
-After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_execute_processing_job_1.py`, one test per proposed name in R1–R14;
+The executable pack adds:
+- the suite `tests/acceptance/test_execute_processing_job_1.py`: 53 tests, one per proposed name in R1–R14, grouped by requirement;
 - the runner `tests/acceptance/run_execute_processing_job_1.sh`, which runs only this suite. Upstream suites run under their own bound runners;
+- no fixture files. Each test builds its store through the published store operations, from the `projection/v1` positive vectors with marker strings put into their values, origin, and Source Identity;
 - the Interface stub `src/activity_tracker_portal/execute_processing_job.py`:
-  - real `PROCESSORS` and `PROCESSOR_VERSIONS`, because they are the registry this draft approves;
-  - real `ExecutionResult` and `RetryPolicy` dataclasses, with `RetryPolicy.delay` raising `NotImplementedError("execute-processing-job@1")`;
-  - `execute_processing_job` and `make_job_handler` raising the same `NotImplementedError`.
+  - real `PROCESSORS` (five keys) and `PROCESSOR_VERSIONS` (all 41 record types), each a `MappingProxyType`, because they are the registry this draft approves;
+  - real frozen `ExecutionResult` and `RetryPolicy` dataclasses, with `RetryPolicy.delay` raising `NotImplementedError("execute-processing-job@1")`;
+  - `execute_processing_job` and `make_job_handler` (default clock: the UTC wall clock) raising the same `NotImplementedError`.
 
-**RED, against the stub.** The three R1 tests and the three R2 tests pass, because they read only the contract, the scope map, the effects declaration, and the registry. Every other test fails, and every failure traces to the stub's `NotImplementedError`, raised directly or seen as a missing outcome or job state after the call. The worker tests fail at `make_job_handler`. Every upstream bound runner still passes.
+**RED, against the stub.** 6 tests pass: the three R1 tests and the three R2 tests, which read only the contract, the scope map, the effects declaration, `projection/v1`, and the registry. 47 tests fail, and each failure is the stub's `NotImplementedError`:
+- 42 at `execute_processing_job`;
+- 4 at `make_job_handler`: `test_production_handler_uses_no_policy` and the three R12 tests;
+- 1 at `RetryPolicy.delay`: `test_backoff_doubles_and_is_capped`.
 
-Before freeze, a throwaway reference implementation, kept out of the repository, passes every test. A set of incorrect implementations covers at least:
+No failure has another cause. unittest prints `FAILED (errors=131)` because it counts subtests separately. `run_operational_store_4.sh`, `run_interpret_source_projection_1.sh`, and the four processor runners pass, as do `tests/unit` and `tests/governance`.
+
+**Reference and mutants.** A throwaway reference implementation, kept out of the repository, passes all 53 tests. 48 incorrect implementations were tried, and each fails at least one test. They include every case in the list below, and also: no cap on the backoff, a fixed delay, and an off-by-one delay; a retry write after a busy store; a write under the job's current fence instead of the lease's; a raise instead of resolving `lease-not-held`; a transient failure written after a database error; a schema version hard-coded to 1; interpreting the evidence head or the latest selection instead of the leased one; a mutable registry; a handler that bypasses `writer.run`; a naive default clock; an interrupt caught as transient; an unknown job reported as `lease-lost`; and a store write made while an interpretation exception is being handled. No mutant survived.
+
+The draft's required list:
 - recording the wrong kind, version, policy identity, or indexed column;
 - a transient where a deterministic failure belongs, and the reverse;
 - a retry after a busy or reserve failure;
@@ -274,6 +282,26 @@ Before freeze, a throwaway reference implementation, kept out of the repository,
 - a clock read per write, or before an execution that writes nothing;
 - exception text carried into a reason.
 
-Each must fail at least one test.
+**Refinements the tests pin beyond the approved text.** The first three fill gaps in the approved text. The approver should confirm them, because each could be read as new semantics:
+1. *Flag.* An exception from a store write that is neither `StoreRefusal` nor `StoreRetryable`, such as a database error raised by a trigger, propagates unchanged and is followed by no other write. R9 allows only a deterministic failure after a refused completion; this is not a refusal. The test is in `test_one_write_per_execution`.
+2. *Flag.* A `"retry-scheduled"` result's `reason` is `interpretation-unexpected-failure`, the reason recorded on the attempt. The job itself records no failure while it is re-queued, so "the job's failure reason" would otherwise be `None`.
+3. *Flag.* `"already-recorded"` and `"lease-lost"` results have `outcome_kind`, `reason`, and `retry_at` all `None`.
+4. A result always carries the lease's `job_id` and `fence`, including `"lease-lost"`.
+5. When the lease's own attempt is already closed, the result is `"already-recorded"` even if a later claim has since taken the job. The closed-attempt check comes before the fence check (R10's order).
+6. A claim that takes the job during interpretation is found at the write, through `lease-not-held`. The result is `"lease-lost"`, after one write attempt.
+7. Raised failures have no `__cause__`. No exception in their `__context__` chain, and no text of their formatted traceback, carries a marker. In practice the unit must not make its write while handling the exception from `interpret`.
+8. `SystemExit` propagates and writes nothing, as `KeyboardInterrupt` does. A `BaseException` during interpretation reads no time.
+9. A job under `COMMON_VERSION`, run with a registry that lacks it, fails with `processor-unavailable`.
+10. The registry mappings raise `TypeError` on item assignment and deletion, and have no mutating methods.
+11. `make_job_handler` makes no call until it is invoked. It then makes one `writer.run` per lease, makes every write inside it, and returns that run's result object. Its default clock is the timezone-aware wall clock.
+12. Inside `Worker`, a `StoreRetryable` from the handler is logged as `worker handler retryable: <name>`, and the next wait is the configured `idle_seconds`.
+13. The R12 worker test configures discovery with `processor_versions=PROCESSOR_VERSIONS`, because `worker.py` stays unchanged until enabling task 64r. It expects every job completed within three cycles, and no worker warning.
 
-The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration matches the contract, and that the residuals above are complete.
+**How faults are injected, for the implementer's review.** The store cannot hold a missing Source Record, evidence row, batch, or projection, or a stored digest that does not match the bytes. Tests therefore replace published reads in a delegating store:
+- `source_record`, for the record, its evidence, and its digest;
+- `archived_message` and `archived_items`, for the batch and its schema version;
+- `projection_bytes`, with the batch's items emptied too, for the bytes.
+
+An implementation that reads this evidence by any other published read would escape these faults. None exists for these values. A transient fault comes from a synthetic processor whose `supported_schema_versions` membership test raises. `interpret` reads that attribute outside its processor boundary, and it turns any exception raised from `interpret_body` into `processor-invariant-violated`.
+
+The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration matches the contract, that the refinements above are acceptable, and that the residuals above are complete.
