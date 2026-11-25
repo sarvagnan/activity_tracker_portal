@@ -167,11 +167,11 @@ The Operator approved the draft. The executable pack adds:
 
 The shared helper `_interpret_nested_time` (Decision 7) is not in the worktree. No test imports it.
 
-**RED, against the stub.** 26 of the 31 tests fail. Counting subtests, there are 390 errors and 18 failures:
+**RED, against the stub.** 26 of the 31 tests fail. Counting subtests, there are 392 errors and 18 failures:
 - each error is `InterpretFailure: processor-invariant-violated` raised by `interpret`;
 - each failure is `test_schema_valid_edges_never_raise` reporting `raised processor-invariant-violated`.
 
-An instrumented run wrapped `interpret_body` and the parent's processor boundary. It recorded 408 invariant violations, each right after the stub raised `NotImplementedError("interpret-heart-rate@1")`, and no other exception. The 5 tests that pass are the three R1 contract tests and the two R2 identity tests, which read only the contract and the stub's real attributes. `test_common_outcomes_take_precedence` and `test_processor_is_pure` include a control that runs the processor, so they fail too.
+An instrumented run wrapped `interpret_body` and the parent's processor boundary. It recorded 410 invariant violations, each right after the stub raised `NotImplementedError("interpret-heart-rate@1")`, and no other exception. The 5 tests that pass are the three R1 contract tests and the two R2 identity tests, which read only the contract and the stub's real attributes. `test_common_outcomes_take_precedence` and `test_processor_is_pure` include a control that runs the processor, so they fail too.
 
 **Passability.** A throwaway reference implementation passes all 31 tests. It uses a private nested-time helper with integer arithmetic and no `datetime`. Its 100,000-sample run takes about 3 s through `interpret` on the drafting machine, so the limit is set at 60 s. 51 incorrect implementations were tried, and 49 fail at least one test:
 - bounds: either BPM bound exclusive, off by one, or the upper bound missing;
@@ -184,6 +184,8 @@ An instrumented run wrapped `interpret_body` and the parent's processor boundary
 - the range: out-of-range dates clamped, division toward zero for days or for seconds before 1970, year 0000 raising, and year 0000 read as year 1;
 - purity: mutating the record, reading the clock, reading the pinned `tzdata` package, and constructing a `ZoneInfo`.
 
+All 51 were rerun against the revised suite, and the same 49 fail. So do the implementer's 15 incorrect variants, and 12 more written against the processor boundary: `supported_schema_versions` as `frozenset({True})` or `frozenset({1.0})`; an assignable `body_schema` or `interpret_body`; a raw Quarantine carrying record text in its version and policy identity; a changed temporal header; a record changed after the body is built; and, on every call, a file read, a pinned `tzdata` read, a `tzdata` read only when an endpoint is inferred, a `ZoneInfo` lookup, or a directory listing. The implementer's independent implementation passes all 31 tests.
+
 The 2 survivors are equivalent, so no input can tell them apart:
 - dropping the years 1–9999 clause. The parent keeps both endpoint dates in range, and a sample lies between them. So the date under the start offset is never before year 1, and the date under the end offset is never after 9999. If one date is out of range, the two dates already differ;
 - omitting a date earlier than the start's local date. A sample is never before the start, so this never applies.
@@ -195,12 +197,21 @@ The 2 survivors are equivalent, so no input can tell them apart:
 - **Quarantines (R5).** The outcome is exactly `Quarantine(reason, pointer, "interpret-heart-rate@1", identity)`. The identity is `"none"` for experienced endpoints and the revision's identity for inferred ones. The pointer index is the sample's list index, at any position, including index 11.
 - **Interval (R5).** Bounds compare at nanosecond precision, whatever the fraction length: `.100`, `.100000`, and `.100000000` are the same instant. A zero-length series whose endpoints disagree on the date gives no sample a date.
 - **Precedence (R5).** The tests also cover a sample `time` with a numeric offset and a value above 2^53 − 1. Both are `projection-schema-invalid` before any processor fault, as is a year-0000 or out-of-range endpoint (`instant-out-of-range`).
-- **Purity (R7).** The suite wraps `PROCESSOR` in a delegating test processor and runs it through `interpret`. The record and temporal header must be unchanged after `interpret_body`, and a second call must return an equal result. A subprocess observes the module's import and calls with an audit hook and clock guards, as the parent's suite does. Without a policy, it must open nothing from the pinned `tzdata` package either, because then the parent loads no zone. The outcomes must match the in-process ones under `TZ=Pacific/Chatham`. A C-level clock read such as `datetime.now()` remains a review item.
-- **Health-data-free (R7).** Quarantine `repr`, `str`, and policy identity carry no marker, no fault time or value (`987654`), and no other sample's time or value.
+- **Purity (R7).** The suite wraps `PROCESSOR` in a delegating test processor and runs it through `interpret`. It deep-copies the exact `record` and `temporal` arguments before each call; both must be unchanged after `interpret_body`, and a second call with the same objects must return an equal result. This holds on revision and Quarantine paths, with and without policies. A subprocess observes the module's import and calls with an audit hook and clock guards, as the parent's suite does. After a warm-up round, the processor's own calls must open no file, list no directory, and read no timezone data, pinned or host, with or without policies. The parent may read pinned `tzdata` for its policies outside those calls. Without a policy, nothing may open the pinned `tzdata` package, because then the parent loads no zone. The outcomes must match the in-process ones under `TZ=Pacific/Chatham`. A C-level clock read such as `datetime.now()` remains a review item.
+- **Health-data-free (R7).** Quarantine `repr`, `str`, and policy identity carry no marker, no fault time or value (`987654`), and no other sample's time or value. The processor's own Quarantine, captured by the delegating processor before the parent rewraps it, is exactly `Quarantine(reason, pointer)`, with the parent's default version and policy identity, and none of its fields carries those values.
 
 **Choices made in drafting**, for the approver:
-- `supported_schema_versions` and `quarantine_reasons` are checked to be `frozenset`, since the Interface writes them that way. Immutability is checked as `AttributeError` on assignment to each identity attribute.
+- `supported_schema_versions` and `quarantine_reasons` are checked to be `frozenset`, since the Interface writes them that way. Both must be exactly `frozenset`; the schema version's only element must be an `int` 1, so `True` and `1.0` fail, and every reason must be a `str`. Immutability is checked as `AttributeError` or `TypeError` on assignment to each identity attribute, `body_schema` and `interpret_body` included.
 - `interpret_body` is never called directly. The purity test reaches it through a delegating processor passed to `interpret`, so it sees exactly the arguments the parent passes.
 - The seeded random checks, 150 dating series and 150 validity series, compare outcomes with an oracle that uses `datetime` for years 1–9999.
 
-The implementer's read-only findings must be resolved before freeze. The approver confirms at Gate B that each RED failure traces to the stub.
+**Implementer review resolved.** GPT 6.1 Sol's read-only review found no blocker. Its findings and their fixes:
+1. *The raw Quarantine was not checked before the parent sanitized it* (should-fix). The health-data test now asserts on the processor's own return, as above. Sol's `leak-raw-quarantine-values` mutant now fails.
+2. *Purity permitted processor file reads, including `tzdata` in inferred cases* (should-fix). The subprocess now observes the processor-call boundary in policy-free and policy-applied scenarios. Sol's `read-tzdata-inferred-only` and `read-other-file` mutants now fail.
+3. *Integral-float BPM normalization* (note). No change; the approver confirms the reading above.
+4. *Bracketed-date oracle and the two equivalent survivors* (note). No change.
+5. *The 60-second budget is not a linearity proof* (note). No change; linear work stays a review item.
+
+The sibling reviews' fixes are applied here too, so the four suites share one boundary helper: the strict identity checks above.
+
+The implementer's read-only findings are resolved. The approver confirms at Gate B that each RED failure traces to the stub.

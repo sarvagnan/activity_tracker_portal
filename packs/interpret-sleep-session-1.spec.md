@@ -72,7 +72,7 @@ The checks follow `projection/v1/model.json` order: the session's `end_time` bef
   - an end equal to the stage's start is `sleep-stage-empty`;
   - an end after the session end is `sleep-stage-outside-session`.
 - **Inclusive bounds.** A stage may start exactly at the session start and end exactly at the session end.
-- **Year 0000.** A stage instant in year 0000 is before any session start the parent accepts, so it is `sleep-stage-outside-session`. It never raises.
+- **Year 0000.** A stage instant in year 0000 is before any session start the parent accepts. A year-0000 stage start is `sleep-stage-outside-session` at `start_time`. A year-0000 stage end after an accepted start is before that start, so it is `sleep-stage-reversed` at `end_time`. Neither case raises.
 - **Common outcomes come first.** A reversed session, a missing policy, or an invalid schema is the parent's outcome, even when a stage is also faulty (parent R4).
 
 Proposed tests: `test_empty_session_is_quarantined`, `test_stage_outside_session_is_quarantined`, `test_reversed_stage_is_quarantined`, `test_empty_stage_is_quarantined`, `test_stage_bounds_are_inclusive`, `test_year_zero_stage_is_outside_the_session`, `test_first_fault_follows_traversal_order`, `test_common_outcomes_take_precedence`.
@@ -158,12 +158,12 @@ The Operator approved the draft on 2026-11-24. The executable pack adds:
 
 The shared helper `_interpret_nested_time` is not part of this pack. The stub does not create it, and no test imports it. Every test runs through the published `interpret`; none calls `interpret_body` directly.
 
-**RED, against the stub.** 22 of the 27 tests fail. The five R1 and R2 tests pass, because they read only the contract, scope map, effects declaration, and identity attributes. Counting subtests, there are 574 reports:
-- 164 errors, each `InterpretFailure("processor-invariant-violated")` from `interpret`;
-- 409 failures in `test_schema_valid_edges_never_raise`, where the test turns that same refusal into an assertion failure, `interpret raised processor-invariant-violated`;
+**RED, against the stub.** 22 of the 27 tests fail. The five R1 and R2 tests pass, because they read only the contract, scope map, effects declaration, and identity attributes. Counting subtests, there are 726 reports:
+- 166 errors, each `InterpretFailure("processor-invariant-violated")` from `interpret`;
+- 559 failures in `test_schema_valid_edges_never_raise`, where the test turns that same refusal into an assertion failure, `interpret raised processor-invariant-violated`;
 - 1 failure in `test_outcomes_are_health_data_free`, whose final check that all four reasons were seen fails because every case was refused.
 
-A trace around `interpret_body` records 573 calls, each raising the stub's `NotImplementedError("interpret-sleep-session@1")`, one for each of the 164 + 409 refusals. In `test_common_outcomes_take_precedence` the precedence cases pass, because the parent decides them before it calls the processor; the test fails on its controls, which reach the processor.
+A trace around `interpret_body` and the parent's processor boundary records 725 calls, each raising the stub's `NotImplementedError("interpret-sleep-session@1")` and each followed by `processor-invariant-violated`, one for each of the 166 + 559 refusals. In `test_common_outcomes_take_precedence` the precedence cases pass, because the parent decides them before it calls the processor; the test fails on its controls, which reach the processor.
 
 **Passability.** A throwaway reference implementation, kept outside the repository with its own private nested-instant helper, passes all 27 tests. Of 53 incorrect implementations, 52 fail at least one test:
 - validity: an empty stage or session accepted; either session bound off by one in either check; the stage start's upper bound unchecked; an end before the session start reported as outside; an empty stage reported as reversed; the reversed check before the start check; the session check after the stages; a stage end clipped to the session;
@@ -173,10 +173,12 @@ A trace around `interpret_body` records 573 calls, each raising the stub's `NotI
 - body: header instants or an offset copied in; `null` or `""` for an absent title or notes; an empty title dropped; title stripped or NFC-normalized; notes dropped; stage instants rewritten to nine digits, trimmed, or cut to milliseconds; a float code passed through; a class or duration added;
 - complexity: a quadratic scan.
 
+That harness was not kept, so the 53 were not rerun. Against the revised suite, the implementer's reference passes, and its 9 incorrect variants, including a pinned `tzdata` read, all fail except the quadratic one below. So do 12 written against the processor boundary: `supported_schema_versions` as `frozenset({True})` or `frozenset({1.0})`; an assignable `body_schema` or `interpret_body`; a raw Quarantine carrying record text in its version and policy identity; a changed temporal header; a record changed after the body is built; and, on every call, a file read, a pinned `tzdata` read, a `tzdata` read only when an endpoint is inferred, a `ZoneInfo` lookup, or a directory listing.
+
 The survivor builds the stage list by copying it on every append, which is quadratic. It takes about 20 s for 100,000 stages against the reference's 2.6–3.1 s, so it stays under the limit below. The approver confirms linear work in review.
 
 **What the tests pin beyond the approved text.** None of these changes approved semantics.
-- **Identity (R2).** `PROCESSOR` is immutable: assigning any identity attribute raises `AttributeError`. `supported_schema_versions` and `quarantine_reasons` are `frozenset`s, and `numeric_fields` is a tuple.
+- **Identity (R2).** `PROCESSOR` is immutable: assigning any identity attribute, `body_schema` and `interpret_body` included, raises `AttributeError` or `TypeError`. `supported_schema_versions` is exactly a `frozenset` whose only element is an `int` 1, so `True` and `1.0` fail. `quarantine_reasons` is exactly a `frozenset` of `str`, and `numeric_fields` is a tuple.
 - **Codes (R3, R6).** The parent's schema accepts an integral JSON number written with a fraction or exponent, such as `5.0`, `-0.0`, `7e0`, or `30E-1`, so it reaches the processor as a Python `float`. The body holds the `int` code. Passing the float through would raise `processor-invariant-violated` on a schema-valid record.
 - **Exact bytes (R3, R5).** Every body is compared with the RFC 8785 bytes of an independently built expected body.
 - **Title and notes (R3).** Empty strings stay `""`. Whitespace, NUL and other controls, and unnormalized Unicode stay as written. Absent fields are omitted. This holds whatever the key order in the projection bytes.
@@ -186,13 +188,22 @@ The survivor builds the stage list by copying it on every append, which is quadr
 - **Traversal (R4).** Every multi-fault fixture runs with its keys in model order and reversed at every depth. Fixtures cover stages listed out of time order and indices 10 and 12.
 - **Precedence (R4).** Besides `interval-reversed` and Policy-Pending, a schema-invalid stage code and an `instant-out-of-range` session start come before stage faults. Each has a control that reaches the processor.
 - **Policy identity (R4, R6).** A processor Quarantine carries the policy identity the parent assigns: `"none"` when both endpoints are experienced, and the policies used otherwise.
-- **Totality (R6).** Besides fixed edges near years 0000, 1, and 9999, 400 seeded sessions with stages near every bound are checked against an independent oracle of the R4 rules. Each gives exactly the oracle's body or Quarantine.
-- **Purity (R6).** A subprocess, as in the parent pack, imports the module after installing an audit hook and clock guards, and runs representative outcomes under two `TZ`, `LC_ALL`, and `PYTHONHASHSEED` settings. It must see no clock read, write, host timezone read, socket, store, or subprocess, no `operational_store` import, and the same results as in-process.
+- **Totality (R6).** Besides fixed edges near years 0000, 1, and 9999, 400 seeded sessions with stages near every bound are checked against an independent oracle of the R4 rules. A further 150 seeded sessions are valid by construction: each has 2 to 8 stages, and each stage after the first overlaps, touches, or leaves a gap after the one before (141, 84, and 80 times). Each session gives exactly the oracle's body or Quarantine.
+- **Purity (R6).** The suite passes `interpret` a delegating test processor that wraps `PROCESSOR`. It deep-copies the exact `record` and `temporal` arguments before each call and compares them afterwards, then calls `interpret_body` again with the same objects and requires an equal result. This holds on revision and Quarantine paths, with and without policies. A subprocess, as in the parent pack, imports the module after installing an audit hook and clock guards, and runs representative outcomes under two `TZ`, `LC_ALL`, and `PYTHONHASHSEED` settings. It must see no clock read, write, host timezone read, socket, store, or subprocess, no `operational_store` import, and the same results as in-process. After a warm-up round, the processor's own calls must open no file, list no directory, and read no timezone data, pinned or host. The parent may read pinned `tzdata` for its policies outside those calls; without a policy, nothing reads it.
 - **Large session (R6).** Two 100,000-stage sessions, one a revision and one quarantined at stage 99,999, must each be interpreted within 60 s. The reference takes 2.6–3.1 s on the drafting machine, and up to 5.5 s under load.
-- **Health-data-free (R6).** Quarantines for all four reasons have exactly the parent's four fields. Their `repr`, `str`, and fields carry no marker, Source Identity, title or notes text, or instant text.
+- **Health-data-free (R6).** Quarantines for all four reasons have exactly the parent's four fields. Their `repr`, `str`, and fields carry no marker, Source Identity, title or notes text, or instant text. The processor's own Quarantine, captured before the parent rewraps it, is exactly `Quarantine(reason, pointer)`, with the parent's default version and policy identity, and none of its fields carries a value.
 
 **Choices the approver should check.**
-- **Year 0000 end.** R4's year-0000 bullet says a year-0000 stage instant is `sleep-stage-outside-session`. That holds for a stage start. For a stage whose start is inside the session and whose end is in year 0000, R4's stage-end rules make it `sleep-stage-reversed` at `end_time`, because the end is before the start. The suite pins `sleep-stage-reversed` for that case. The bullet's "it never raises" holds for both.
+- **Year 0000 end.** For a stage whose start is inside the session and whose end is in year 0000, R4's stage-end rules make it `sleep-stage-reversed` at `end_time`, because the end is before the start. R4's year-0000 bullet now says so; it first named only `sleep-stage-outside-session`. The suite pins `sleep-stage-reversed` for that case, as before.
 - **Instant source.** R4 says instants compare by exact nanoseconds. The tests check this through behavior. Whether the session bounds come from the temporal header or from the record's own text cannot be told apart and remains a review item.
 
-The implementer's read-only findings must be resolved before freeze. The approver confirms at Gate B that each RED failure traces to the stub.
+**Implementer review resolved.** GPT 6.1 Sol's read-only review found no blocker. Its findings and their fixes:
+1. *R4's year-0000 bullet contradicted the stage-end order* (should-fix). The bullet now gives a year-0000 start as outside at `start_time` and a year-0000 end after an accepted start as reversed at `end_time`. This matches the existing test and the choice above; no semantics change.
+2. *Purity ignored ordinary file reads and pinned timezone reads* (should-fix). The purity subprocess now observes the processor-call boundary, in policy-free and policy-applied scenarios. Sol's mutants that read a `/tmp` file or `tzdata.zoneinfo/UTC` on every call now fail.
+3. *No input-preservation or repeat-call check* (should-fix). The delegating test processor now checks both. Sol's mutant that clears `record['stages']` and overwrites `record['title']` after building the body now fails.
+4. *The 60-second test does not prove linear work* (note). No change. The time limit stays, and linear work stays a review item.
+5. *Random cases rarely checked multi-stage bodies* (note). The valid-by-construction sample above now does.
+
+The sibling reviews' fixes are applied here too, so the four suites share one boundary helper: the raw Quarantine check and the strict identity checks above.
+
+The implementer's read-only findings are resolved. The approver confirms at Gate B that each RED failure traces to the stub.

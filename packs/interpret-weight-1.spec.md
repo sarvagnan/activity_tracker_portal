@@ -56,7 +56,7 @@ The projection writes a mass as an RFC 8785 number. A double with no fraction, s
 - every `int` within the bounds of R5 is exactly representable as a float, so nothing rounds;
 - the bounds are checked on the decoded value *before* any conversion. A huge integer is therefore quarantined and never overflows.
 
-Negative zero follows the SDK. SDK 1.1.0 compares masses with Kotlin's `Double.compareTo`, which orders `-0.0` below `0.0` (`units/Mass.kt` line 74 and `records/Utils.kt` `requireNotLess`), so a decoded `-0.0` is quarantined as `weight-out-of-range`. JSON `-0` decodes to the integer 0, which has no sign, and is accepted. An RFC 8785 writer never writes `-0.0`.
+Negative zero follows the SDK. SDK 1.1.0 compares masses with Kotlin's `Double.compareTo`, which orders `-0.0` below `0.0` (`units/Mass.kt` lines 70–74, with `zero()` built from `0.0` at line 93, and `records/Utils.kt` `requireNotLess`), so a decoded `-0.0` is quarantined as `weight-out-of-range`. JSON `-0` decodes to the integer 0, which has no sign, and is accepted. An RFC 8785 writer never writes `-0.0`.
 
 Proposed tests: `test_whole_number_mass_becomes_an_equal_float`, `test_fractional_mass_is_unchanged`, `test_huge_integer_mass_is_quarantined_not_raised`.
 
@@ -131,14 +131,17 @@ The executable pack, drafted on 2026-11-25 against `d8f6ce3`, adds:
 
 Weight reads no nested instant, so it neither uses nor tests the shared `_interpret_nested_time` helper.
 
-**RED on the stub.** 5 tests pass and 14 fail, with 428 failing subtests and no errors. The 5 passing tests are R1's three contract tests and R2's two identity tests, which check the contract, the effects declaration, the scope map, and the stub's real identity. Every failure traces to the stub:
-- 134 run through `interpret`, which turns the stub's exception into `processor-invariant-violated`. The suite reports these as "interpret refused with processor-invariant-violated". One of them is the R7 purity subprocess, whose scenario stops at the same failure.
-- 293 call `interpret_body` directly and report "interpret_body raised NotImplementedError".
-- 1 is R6's count of distinct headers. It is 0 because the stub produces no revision.
+**RED on the stub.** 5 tests pass and 14 fail. Counting subtests, there are 427 reports: 424 failures and 3 errors. The 5 passing tests are R1's three contract tests and R2's two identity tests, which check the contract, the effects declaration, the scope map, and the stub's real identity. Every report traces to the stub:
+- 136 failures run through `interpret`, which turns the stub's exception into `processor-invariant-violated`. The suite reports these as "interpret refused with processor-invariant-violated".
+- 3 errors are the same `InterpretFailure("processor-invariant-violated")`, raised in `test_processor_is_pure` by its in-process scenario runs, which call `interpret` without the failure-to-assertion wrapper. The purity subprocess is not reached.
+- 287 failures call `interpret_body` directly and report "interpret_body raised NotImplementedError".
+- 1 failure is R6's count of distinct headers. It is 0 because the stub produces no revision.
+
+A trace around the stub and the parent's processor boundary records 426 `NotImplementedError("interpret-weight@1")` raises: 139 inside `interpret`, each followed by `processor-invariant-violated`, and 287 from direct calls.
 
 In `test_common_outcomes_take_precedence`, the precedence checks pass on the stub because the parent never calls the processor for them. The test fails on its control, which expects the processor's own Quarantine once the common fault is removed.
 
-**Passability.** A throwaway reference implementation passes all 19 tests in under a second. It checks `0 <= mass <= 1_000_000` on the decoded value and returns `{"weight_grams": float(mass)}`. The suite killed all 40 wrong implementations tried, including:
+**Passability.** A throwaway reference implementation passes all 19 tests in under a second. It checks `0 <= mass <= 1_000_000` on the decoded value, also quarantines a decoded float `-0.0`, and returns `{"weight_grams": float(mass)}`. Without the `-0.0` check, 8 subtests fail. The implementer's independent implementation also passes. The suite killed all 40 wrong implementations tried on the first draft, before the `-0.0` refinement, including:
 - each bound made exclusive or moved by one, or by a tiny tolerance;
 - bounds in kilograms, a positive-mass rule, and comparing `int(mass)`;
 - conversion to kilograms, rounding, truncation, and an `int` body value;
@@ -153,15 +156,26 @@ In `test_common_outcomes_take_precedence`, the precedence checks pass on the stu
 - a body or bound that depends on the offset or attribution;
 - wrong bound constants.
 
+That harness was not kept, so the 40 were not rerun. Against the revised suite, the implementer's 17 incorrect variants and 4 identity variants all fail. So do 12 written against the processor boundary: `supported_schema_versions` as `frozenset({True})` or `frozenset({1.0})`; an assignable `body_schema` or `interpret_body`; a raw Quarantine carrying record text in its version and policy identity; a changed temporal header; a record changed after the body is built; and, on every call, a file read, a pinned `tzdata` read, a `tzdata` read only when the instant is inferred, a `ZoneInfo` lookup, or a directory listing. Five variants pass, as expected: three are correct (integer bound constants, a float copied through its shortest text, explicit `gmtime(0)`/`strftime` calls), and two are the review-only purity gaps (`datetime.now()` per call, a file read once at import).
+
 **Refinements the tests pin down.** None changes the approved semantics.
 - The mass is checked as the common layer decodes it. So `0.0`, `0e0`, `1e6`, and `1000000.0` are inside the bounds, and the body bytes match those of the canonical tokens `0` and `1000000`.
 - Direct calls must return a mapping with exactly the key `weight_grams` whose value is a finite Python `float`, bit-identical to `float` of the decoded mass.
-- A direct Quarantine has reason `weight-out-of-range` and pointer `/record/weight_grams`. Its `repr` carries no part of the mass. This holds even in the fields the common layer later overwrites.
-- `PROCESSOR` rejects attribute assignment. `supported_schema_versions` and `quarantine_reasons` are `frozenset` instances.
+- The processor's own Quarantine, from a direct call or captured through `interpret` before the common layer rewraps it, is exactly `Quarantine("weight-out-of-range", "/record/weight_grams")`, with the common layer's default version and policy identity. Its fields and `repr` carry no part of the mass.
+- `PROCESSOR` is immutable: assigning any identity attribute, `body_schema` and `interpret_body` included, raises `AttributeError` or `TypeError`. `supported_schema_versions` is exactly a `frozenset` whose only element is an `int` 1, so `True` and `1.0` fail. `quarantine_reasons` is exactly a `frozenset` of `str`.
 - `WEIGHT_MIN_GRAMS` and `WEIGHT_MAX_GRAMS` may be `int` or `float`, but not `bool`. They must equal 0 and 1,000,000.
-- `interpret_body` does not change the record it is given. The same record gives equal results.
-- After warm-up calls, `interpret_body` opens no file and lists no directory. It reads no patched clock and never imports `operational_store`.
+- The suite passes `interpret` a delegating test processor that wraps `PROCESSOR`. It deep-copies the exact `record` and `temporal` arguments before each call and compares them afterwards, then calls `interpret_body` again with the same objects and requires an equal result. This holds on revision and Quarantine paths, with and without policies.
+- In a subprocess, importing the module and running it reads no patched clock, writes nothing, opens no host timezone file, socket, store, or subprocess, and never imports `operational_store`. After a warm-up round, the processor's own calls open no file, list no directory, and read no timezone data, pinned or host. The common layer may read pinned `tzdata` for its policies outside those calls; without a policy, nothing reads it.
 - Totality is checked on 52 masses and 5 places. The masses include subnormals, the largest doubles, integers beyond 2^53, 2^1024, and 400-digit integers. The places cover an offset, no offset, years 0001 and 9999, and `-18:00`. Every case is first confirmed schema-valid with `jsonschema`.
 - A decoded `-0.0` (written `-0.0`, `-0e0`, or `-0.000`) is quarantined, because the SDK orders it below 0. This was settled by the pack drafter from the SDK source under Decision 1, not left open. JSON `-0` is the integer 0 and is accepted.
 
-RED must come entirely from the stub. The parent turns any processor exception into `processor-invariant-violated`, so tests that run through `interpret` fail with that failure. The approver confirms at Gate B that each such failure traces to the stub. The implementer's read-only findings must be resolved before freeze.
+**Implementer review resolved.** GPT 6.1 Sol's read-only review found no blocker. Its findings and their fixes:
+1. *Immutability omitted `body_schema` and `interpret_body`* (should-fix). Both are now assigned in R2, and the processor is restored if an assignment is accepted. Sol's two mutable-attribute variants now fail.
+2. *Schema-version element types were unchecked* (should-fix). The only element must be an `int`. Sol's `frozenset({True})` and `frozenset({1.0})` variants now fail.
+3. *Stale RED and passability evidence* (note). The RED counts and the reference description above are refreshed; `-0.0` is quarantined.
+4. *Signed zero and gram bounds verified* (note). The citation now names `units/Mass.kt` lines 70–74 and 93.
+5. *Purity partly review-only* (note). The review obligation stays. The boundary observation above is now shared word for word with the other three processor suites.
+
+The sibling reviews' fixes are applied here too: the raw Quarantine check through `interpret` and the delegating processor's temporal-header and repeat-call checks.
+
+RED must come entirely from the stub. The parent turns any processor exception into `processor-invariant-violated`, so tests that run through `interpret` fail with that failure. The approver confirms at Gate B that each such failure traces to the stub. The implementer's read-only findings are resolved.

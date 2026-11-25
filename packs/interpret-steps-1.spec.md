@@ -134,9 +134,9 @@ The Operator approved the draft on 2026-11-24. The executable pack adds:
 
 The shared nested-instant helper is not part of this pack. Steps does not use it, and no test imports it.
 
-**RED, against the stub.** 14 of the 19 tests fail. Counting subtests, there are 263 errors, each `InterpretFailure("processor-invariant-violated")` from `interpret`. A trace around the parent's processor boundary shows 263 processor calls, each raising the stub's `NotImplementedError("interpret-steps@1")`. There are no assertion failures. The five R1 and R2 tests pass, because they read only the contract, scope map, effects declaration, and identity attributes. In `test_common_outcomes_take_precedence` the precedence cases pass, because the parent decides them before it calls the processor; the test fails on its controls, which reach the processor.
+**RED, against the stub.** 14 of the 19 tests fail. Counting subtests, there are 265 errors, each `InterpretFailure("processor-invariant-violated")` from `interpret`. A trace around the parent's processor boundary shows 265 processor calls, each raising the stub's `NotImplementedError("interpret-steps@1")`. There are no assertion failures. The five R1 and R2 tests pass, because they read only the contract, scope map, effects declaration, and identity attributes. In `test_common_outcomes_take_precedence` the precedence cases pass, because the parent decides them before it calls the processor; the test fails on its controls, which reach the processor.
 
-**Passability.** A throwaway reference implementation, kept outside the repository, passes all 19 tests in about 0.3 s. The spec sets no performance limit, so the suite has no timing test. All 41 incorrect implementations fail at least one test:
+**Passability.** A throwaway reference implementation, kept outside the repository, passes all 19 tests in about 1 s. The implementer's independent implementation passes them too. The spec sets no performance limit, so the suite has no timing test. All 41 incorrect implementations fail at least one test:
 - count bounds: zero accepted, either bound exclusive, the maximum one too high, either constant wrong, bounds applied to the absolute value, out-of-range counts clamped, or raised instead of quarantined;
 - empty interval: not checked, compared by text, by record text, at microsecond or second precision, only when the offsets match, or only when the local dates match;
 - order and pointers: the count checked first, the empty interval at `/record/start_time`, the count at `/record`, the two reasons swapped;
@@ -144,21 +144,31 @@ The shared nested-instant helper is not part of this pack. Steps does not use it
 - processor: a mutated record, a `Quarantine` subclass that carries the count, mutable or extra schema versions, a mutable processor, numeric fields as a list, reasons as a tuple, an extra declared reason, version `interpret-steps@2`;
 - purity: a clock read at import or per call, an `operational_store` import, and an import of the nested-instant helper.
 
+All 41 were rerun against the revised suite and still fail. So do 12 more, written against the processor boundary: `supported_schema_versions` as `frozenset({True})` or `frozenset({1.0})`; an assignable `body_schema` or `interpret_body`; a raw Quarantine carrying record text in its version and policy identity; a changed temporal header; a record changed after the body is built; and, on every call, a file read, a pinned `tzdata` read, a `tzdata` read only when an endpoint is inferred, a `ZoneInfo` lookup, or a directory listing.
+
 **What the tests pin beyond the approved text.** None of these changes approved semantics.
-- **Identity (R2).** `PROCESSOR` is immutable: assigning any identity attribute or `interpret_body` raises `AttributeError` or `TypeError`. `supported_schema_versions` and `quarantine_reasons` are `frozenset`s, `numeric_fields` is a tuple, and `COUNT_MIN` and `COUNT_MAX` are exactly `int`.
+- **Identity (R2).** `PROCESSOR` is immutable: assigning any identity attribute, `body_schema` and `interpret_body` included, raises `AttributeError` or `TypeError`. `supported_schema_versions` is exactly a `frozenset` whose only element is an `int` 1, so `True` and `1.0` fail. `quarantine_reasons` is exactly a `frozenset` of `str`. `numeric_fields` is a tuple, and `COUNT_MIN` and `COUNT_MAX` are exactly `int`.
 - **Body (R3, R6).** The body bytes are exactly `{"count":<n>}`. They stay the same when the offsets, policies, attribution, local dates, recording method, Device, modification time, Source Identity, provider version, and key order change.
 - **Empty interval (R5).** Equal instants are empty even when their offsets differ, so their local dates differ, and even when one is inferred. Equal instants written with 0, 3, 6, or 9 fractional digits are empty. A one-nanosecond interval is accepted, including across a year boundary.
 - **Traversal (R5).** The empty-interval-first rule holds whatever the key order in the projection bytes.
 - **Precedence (R5).** Besides `interval-reversed` and Policy-Pending, a schema-invalid count (2^53, a string, a fraction) and an `instant-out-of-range` endpoint also come before both processor faults. The processor is not called in any of these cases. This follows from parent R4.
 - **Policy identity (R4, R5).** A processor Quarantine carries the policy identity the parent assigns to the same projection: `"none"` when both endpoints are experienced, and the policies used otherwise.
 - **Totality and purity (R7).**
-  - Over 15 counts from −(2^53 − 1) to 2^53 − 1 and 7 intervals, `interpret_body` never raises, returns exactly `{"count": n}` with an `int`, or a plain `Quarantine` with the expected reason and pointer, and leaves its record unchanged.
-  - A repeated direct call gives an equal result.
-  - In a subprocess, importing the module and running it reads no clock, opens no file for writing, reads no host timezone file, opens no socket, store, or subprocess, and imports neither `operational_store` nor `_interpret_nested_time`. Results match across `TZ`, `LC_ALL`, and `PYTHONHASHSEED`.
-- **Health-data-free (R7).** Quarantines have exactly the parent's four fields. Their `repr` and `str`, both from `interpret` and from a direct call, carry no marker, Source Identity, or distinctive count.
+  - The suite passes `interpret` a delegating test processor that wraps `PROCESSOR`. It deep-copies the exact `record` and `temporal` arguments before each call and compares them afterwards, then calls `interpret_body` again with the same objects and requires an equal result. This holds on revision and Quarantine paths, with and without policies.
+  - Over 15 counts from −(2^53 − 1) to 2^53 − 1 and 7 intervals, `interpret_body` never raises and returns exactly `{"count": n}` with an `int`, or a plain `Quarantine` with the expected reason and pointer.
+  - In a subprocess, importing the module and running it reads no clock, opens no file for writing, reads no host timezone file, opens no socket, store, or subprocess, and imports neither `operational_store` nor `_interpret_nested_time`. After a warm-up round, the processor's own calls open no file, list no directory, and read no timezone data, pinned or host. The parent may read pinned `tzdata` for its policies outside those calls; without a policy, nothing reads it. Results match across `TZ`, `LC_ALL`, and `PYTHONHASHSEED`.
+- **Health-data-free (R7).** Quarantines have exactly the parent's four fields. Their `repr` and `str` carry no marker, Source Identity, or distinctive count. The processor's own Quarantine, captured before the parent rewraps it, is exactly `Quarantine(reason, pointer)`, with the parent's default version and policy identity, and none of its fields carries a value.
 
 **Choices the approver should check.**
 - R6 names "the leap-day and midnight-crossing vectors". `projection/v1` has one Steps calendar vector, `steps-leap-days`, and with its `+05:30` offsets it does not cross a local midnight. The day-crossing test therefore runs that vector with its offsets removed under a UTC policy, which crosses from 2000-02-29 to 2000-03-01, alongside synthetic crossings: experienced, inferred through `America/New_York`, three days long, and one nanosecond across midnight.
 - R5 says instants compare by `Instant.epoch_ns`. The tests check this through behavior: different texts for one instant, and one-nanosecond intervals. An implementation that parsed the record's text exactly to nanoseconds would also pass. Reading the temporal header remains a review item.
 
-The implementer's read-only findings must be resolved before freeze. The approver confirms at Gate B that each RED failure traces to the stub.
+**Implementer review resolved.** GPT 6.1 Sol's read-only review found no blocker. Its findings and their fixes:
+1. *Purity ignored ordinary file reads* (should-fix). The purity subprocess now observes the processor-call boundary, as described under Totality and purity. Sol's mutants that read a `/tmp` file or `tzdata.zoneinfo/UTC` on every call now fail.
+2. *Input preservation omitted the temporal header* (should-fix). The delegating test processor now checks the record and the temporal header and repeats the call. Sol's `object.__setattr__(temporal, 'explicit_time', False)` mutant now fails.
+3. *Exact nanosecond equality* (note). No change; reading the temporal header stays a review item.
+4. *Traversal order and the leap-day fixture* (note). No change.
+
+The sibling reviews' fixes are applied here too, so the four suites share one boundary helper: the raw Quarantine check and the strict identity checks above.
+
+The implementer's read-only findings are resolved. The approver confirms at Gate B that each RED failure traces to the stub.

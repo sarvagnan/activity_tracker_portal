@@ -272,8 +272,21 @@ NEW_YORK = policy("policy-synthetic-new-york", None, "America/New_York")
 KOLKATA = policy("policy-synthetic-kolkata", None, "Asia/Kolkata")
 
 
-class Recording:
-    """A test-local processor that delegates to PROCESSOR and records what it saw and returned."""
+# ---- The processor boundary (R2, R7) ----
+# The four processor suites share this block word for word.
+
+# True only while PROCESSOR.interpret_body runs under `Observed`. The purity subprocess reads it, so it
+# can watch the processor's own calls apart from the parent and the suite around them.
+IN_PROCESSOR = [False]
+
+
+class Observed:
+    """A test processor that delegates to PROCESSOR and is passed to `interpret`.
+
+    Before each call it deep-copies the exact `record` and `temporal` arguments, and afterwards it checks
+    that both are unchanged. It then calls `interpret_body` again with the same objects, which must give
+    an equal result. It keeps the processor's own result, before the parent rewraps a Quarantine, and
+    every problem it saw, and returns the first result unchanged."""
 
     def __init__(self) -> None:
         self.record_type = PROCESSOR.record_type
@@ -282,19 +295,168 @@ class Recording:
         self.body_schema = PROCESSOR.body_schema
         self.quarantine_reasons = PROCESSOR.quarantine_reasons
         self.calls: list = []
+        self.problems: list[str] = []
+
+    def _call(self, record, temporal, which: str):
+        IN_PROCESSOR[0] = True
+        try:
+            return PROCESSOR.interpret_body(record, temporal)
+        except Exception as error:
+            self.problems.append(f"{which} call raised {type(error).__name__}")
+            raise
+        finally:
+            IN_PROCESSOR[0] = False
 
     def interpret_body(self, record, temporal):
-        before = copy.deepcopy(record)
-        temporal_before = copy.deepcopy(temporal)
-        result = PROCESSOR.interpret_body(record, temporal)
-        again = PROCESSOR.interpret_body(record, temporal)
-        self.calls.append((before, copy.deepcopy(record), temporal_before, temporal, result, again))
+        record_before, temporal_before = copy.deepcopy(record), copy.deepcopy(temporal)
+        record_text = json.dumps(record)
+        result = self._call(record, temporal, "first")
+        if record != record_before or json.dumps(record) != record_text:
+            self.problems.append("record changed")
+        if temporal != temporal_before or repr(temporal) != repr(temporal_before):
+            self.problems.append("temporal header changed")
+        again = self._call(record, temporal, "repeated")
+        if type(again) is not type(result) or again != result:
+            self.problems.append("repeated call differs")
+        self.calls.append(result)
         return result
 
 
-def scenario_summary(phase: str = "all") -> str:
-    """Representative outcomes, compared in-process and in observed subprocesses (R7)."""
-    experienced = [
+def assert_identity_is_strict(case: unittest.TestCase) -> None:
+    """R2: the identity sets have exact types, and no identity attribute, `interpret_body` included, can be assigned."""
+    versions = PROCESSOR.supported_schema_versions
+    case.assertIs(type(versions), frozenset)
+    case.assertEqual(versions, frozenset({1}))
+    # `frozenset({True})` and `frozenset({1.0})` both equal `frozenset({1})`, so the element type is checked too.
+    case.assertEqual([type(version) for version in versions], [int])
+    case.assertIs(type(PROCESSOR.quarantine_reasons), frozenset)
+    case.assertEqual({type(reason) for reason in PROCESSOR.quarantine_reasons}, {str})
+    replacements = {
+        "record_type": "replaced-type", "processor_version": "replaced@2", "supported_schema_versions": frozenset({1, 2}),
+        "body_schema": BodySchema("replaced-type", 2, ()), "quarantine_reasons": frozenset(),
+        "interpret_body": lambda record, temporal: {},
+    }
+    for name, value in replacements.items():
+        with case.subTest(assign=name):
+            original = getattr(PROCESSOR, name)
+            own = dict(vars(PROCESSOR)) if hasattr(PROCESSOR, "__dict__") else None
+            try:
+                setattr(PROCESSOR, name, value)
+            except (AttributeError, TypeError):
+                case.assertEqual(getattr(PROCESSOR, name), original)
+                continue
+            # Restore before failing, so a mutable processor does not disturb the other tests.
+            try:
+                if own is not None:
+                    vars(PROCESSOR).clear()
+                    vars(PROCESSOR).update(own)
+                else:
+                    object.__setattr__(PROCESSOR, name, original)
+            except Exception:  # noqa: BLE001 - the assignment already failed the test
+                pass
+            case.fail(f"PROCESSOR.{name} can be assigned")
+
+
+def assert_raw_quarantine(case: unittest.TestCase, observed: Observed, reason: str, pointer: str, *values: str) -> None:
+    """R7: the processor's own Quarantine, before the parent rewraps it, is exactly `Quarantine(reason, pointer)`.
+    It keeps the parent's default version and policy identity, and no field, `repr`, or `str` carries a value,
+    a health-data marker, or a Source Identity."""
+    case.assertEqual(observed.problems, [])
+    case.assertEqual(len(observed.calls), 1)
+    raw = observed.calls[0]
+    case.assertIs(type(raw), Quarantine)
+    case.assertEqual(raw, Quarantine(reason, pointer))
+    for text in (repr(raw), str(raw), *(str(getattr(raw, field.name)) for field in dataclasses.fields(raw))):
+        case.assertNotIn(HEALTH_MARKER, text)
+        case.assertNotIn(IDENTITY, text)
+        for value in values:
+            case.assertNotIn(value, text)
+
+
+# The purity subprocess's observer. Each suite fills in its unit module and its own test module.
+PURITY_OBSERVER = r"""
+import json, os, sys, time, zoneinfo
+# Modules the suite or an implementation commonly needs, and the published parent, are imported first,
+# so that only this unit's own import and calls run under observation.
+import jsonschema, tzdata, logging, decimal, fractions, hashlib, re, importlib.resources, pathlib, dataclasses, random
+import glob, typing, collections, functools, itertools, calendar, math, unicodedata, copy, enum, struct, base64, datetime
+import string, operator, bisect, heapq, io, traceback, unittest, subprocess, tempfile, shutil, uuid, types
+import activity_tracker_portal.interpret_source_projection
+host = [os.path.realpath(p) for p in zoneinfo.TZPATH] + [os.path.realpath("/etc/localtime"), "/etc/localtime"]
+timezone_data = os.path.realpath(os.path.dirname(tzdata.__file__)) + os.sep
+WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+LISTING = {"os.listdir", "os.scandir", "glob.glob", "glob.glob/2", "pathlib.Path.glob", "pathlib.Path.rglob"}
+phase = ["import"]
+inside = [False]  # The suite's IN_PROCESSOR once warm-up is over.
+events = []
+def hook(event, args):
+    if inside[0] and (event == "open" or event in LISTING):
+        # During interpret_body nothing is read: no file, directory, or timezone data, pinned or host.
+        events.append(["processor-call", phase[0], event, str(args[0]) if args else ""])
+    if event == "open":
+        path, mode, flags = args
+        if isinstance(path, (str, bytes)):
+            path = os.fsdecode(path)
+            if (mode and any(c in mode for c in "wax+")) or (flags or 0) & WRITE:
+                events.append(["write", path])
+            real = os.path.realpath(path)
+            if any(real == h or real.startswith(h.rstrip("/") + "/") for h in host):
+                events.append(["host-timezone", path])
+            # Without a policy the parent loads no zone, so no pinned timezone data is read at all.
+            if phase[0] == "policy-free" and real.startswith(timezone_data):
+                events.append(["timezone-data", phase[0], path])
+    elif event.split(".")[0] in ("socket", "sqlite3", "subprocess", "ctypes", "webbrowser", "urllib", "http") or event in (
+            "os.system", "os.remove", "os.rename", "os.mkdir", "os.rmdir", "os.chmod", "os.utime", "os.truncate",
+            "os.symlink", "os.link", "os.posix_spawn", "os.exec", "os.fork", "shutil.copyfile", "shutil.rmtree"):
+        events.append([event])
+def forbidden(*args, **kwargs):
+    raise AssertionError("clock read")
+def explicit(original, index):
+    def guard(*args):
+        if len(args) <= index or args[index] is None:
+            raise AssertionError("clock read")
+        return original(*args)
+    return guard
+before = set(sys.modules)
+sys.addaudithook(hook)
+for name in ("time", "time_ns", "monotonic", "monotonic_ns", "perf_counter", "perf_counter_ns", "process_time",
+             "process_time_ns", "thread_time", "thread_time_ns", "clock_gettime", "clock_gettime_ns",
+             "localtime", "ctime", "mktime"):
+    if hasattr(time, name):
+        setattr(time, name, forbidden)
+time.gmtime = explicit(time.gmtime, 0)
+time.asctime = explicit(time.asctime, 0)
+time.strftime = explicit(time.strftime, 1)
+import activity_tracker_portal.@UNIT@
+added = set(sys.modules) - before
+import @SUITE@ as t
+# Warm-up: a first round of calls may finish lazy imports. The parent reads pinned timezone data for
+# its policies outside the processor's calls; the zone cache is then cleared.
+phase[0] = "warm-up"
+warm = t.scenario_summary("all", t.Observed())
+zoneinfo.ZoneInfo.clear_cache()
+inside = t.IN_PROCESSOR
+observed = t.Observed()
+phase[0] = "policy-free"
+policy_free = t.scenario_summary("policy-free", observed)
+phase[0] = "policy-applied"
+policy_applied = t.scenario_summary("policy-applied", observed)
+phase[0] = "done"
+print(json.dumps({"store": "activity_tracker_portal.operational_store" in sys.modules,
+                  "nested_time_helper": "activity_tracker_portal._interpret_nested_time" in added,
+                  "events": events, "problems": observed.problems, "calls": len(observed.calls), "warm": warm,
+                  "policy-free": policy_free, "policy-applied": policy_applied}))
+"""
+
+
+def purity_observer(unit: str, suite: str) -> str:
+    return PURITY_OBSERVER.replace("@UNIT@", unit).replace("@SUITE@", suite)
+
+
+def scenario_summary(phase: str = "all", processor=PROCESSOR) -> str:
+    """Representative outcomes, compared in process and in observed subprocesses (R7). The phase selects the
+    cases without policies ("policy-free"), those with policies ("policy-applied"), or both ("all")."""
+    policy_free = [
         (heart_rate(), ()),
         (heart_rate([("2026-01-15T18:29:59.999999999Z", 61), ("2026-01-15T18:30:00Z", 62)],
                     start="2026-01-15T18:00:00Z", end="2026-01-15T19:00:00Z"), ()),
@@ -302,20 +464,28 @@ def scenario_summary(phase: str = "all") -> str:
                     end="2026-01-15T23:30:00Z", start_offset="+01:00", end_offset="-01:00"), ()),
         (heart_rate([("9999-12-31T18:59:59.999999999Z", 80), ("9999-12-31T23:00:00Z", 81)], start="9999-12-31T18:00:00Z",
                     end="9999-12-31T23:30:00Z", start_offset="+05:00", end_offset="+00:00"), ()),
+        (heart_rate([("2026-01-15T07:35:00Z", 72), ("2026-01-15T07:35:00Z", 72), ("2026-01-15T07:31:00Z", 60)]), ()),
+        (heart_rate([("2026-01-15T07:35:00Z", 72.0), ("2026-01-15T07:36:00Z", 3e2)]), ()),
         (heart_rate([("2026-01-15T07:35:00Z", 72), ("2026-01-15T07:29:59.999999999Z", 73)]), ()),
-        (heart_rate([("2026-01-15T07:35:00Z", 301)]), ()),
+        (heart_rate([("2026-01-15T07:35:00Z", 72), ("2026-01-15T07:20:00Z", 0)]), ()),
+        (heart_rate([("2026-01-15T07:35:00Z", 72.0), ("2026-01-15T07:36:00Z", 301)]), ()),
         (heart_rate([], start=END, end=END), ()),
     ]
-    inferred = [
+    policy_applied = [
         (heart_rate([("1800-01-02T04:56:01Z", 64), ("1800-01-02T04:56:02Z", 65)], start="1800-01-02T04:00:00Z",
                     end="1800-01-02T06:00:00Z", start_offset=None, end_offset=None), (NEW_YORK,)),
-        (heart_rate([("2026-03-08T04:30:00Z", 66), ("2026-03-08T05:00:00Z", 67)], start="2026-03-08T03:00:00Z",
-                    end="2026-03-08T12:00:00Z", start_offset=None, end_offset=None), (NEW_YORK,)),
+        (heart_rate([("2026-03-08T04:30:00Z", 66), ("2026-03-08T05:00:00Z", 67), ("2026-03-08T03:30:00Z", 65)],
+                    start="2026-03-08T03:00:00Z", end="2026-03-08T12:00:00Z", start_offset=None, end_offset=None),
+         (NEW_YORK,)),
+        (heart_rate([("2026-01-15T07:35:00Z", 72)], start_offset=None), (KOLKATA,)),
+        (heart_rate([("2026-01-15T07:35:00Z", 72), ("2026-01-15T07:36:00Z", 0)], start_offset=None, end_offset=None),
+         (KOLKATA,)),
+        (heart_rate([("2026-01-15T08:00:00.000000001Z", 72)], end_offset=None), (UTC_POLICY,)),
     ]
-    cases = {"experienced": experienced, "inferred": inferred, "all": experienced + inferred}[phase]
+    cases = {"policy-free": policy_free, "policy-applied": policy_applied, "all": policy_free + policy_applied}[phase]
     out = []
     for projection, policies in cases:
-        outcome = run(projection, policies)
+        outcome = run(projection, policies, processor)
         if isinstance(outcome, CanonicalRevision):
             out.append([outcome.header_bytes.hex(), outcome.body_bytes.hex(), outcome.revision_sha256])
         else:
@@ -430,9 +600,6 @@ class R2ProcessorIdentity(unittest.TestCase):
         self.assertEqual(PROCESSOR.record_type, "heart-rate")
         self.assertEqual(PROCESSOR.processor_version, VERSION)
         self.assertEqual(PROCESSOR.processor_version, f"{CONTRACT['scope']}@{CONTRACT['version']}")
-        self.assertIsInstance(PROCESSOR.supported_schema_versions, frozenset)
-        self.assertEqual(PROCESSOR.supported_schema_versions, frozenset({1}))
-        self.assertEqual({type(version) for version in PROCESSOR.supported_schema_versions}, {int})
         self.assertIsInstance(PROCESSOR.body_schema, BodySchema)
         self.assertEqual(PROCESSOR.body_schema,
                          BodySchema("heart-rate", 1, (NumericField("/samples/*/beats_per_minute", "integer", "1/min"),)))
@@ -440,9 +607,7 @@ class R2ProcessorIdentity(unittest.TestCase):
         self.assertIsInstance(PROCESSOR.body_schema.numeric_fields, tuple)
         self.assertIn("1/min", UNITS)
         self.assertTrue(callable(PROCESSOR.interpret_body))
-        for name in ("record_type", "processor_version", "supported_schema_versions", "body_schema", "quarantine_reasons"):
-            with self.subTest(name), self.assertRaises(AttributeError):
-                setattr(PROCESSOR, name, getattr(PROCESSOR, name))
+        assert_identity_is_strict(self)
         self.assertEqual(PROCESSOR.processor_version, VERSION)
 
     def test_declared_reasons_are_exact_and_not_common(self) -> None:
@@ -1029,84 +1194,24 @@ class R7TotalPureFastHealthDataFree(Checks):
                 self.assert_oracle(samples, start, end, start_offset, end_offset, policies, applied)
 
     def test_processor_is_pure(self) -> None:
-        recording = Recording()
-        cases = [
-            (heart_rate([("2026-01-15T07:35:00Z", 72), ("2026-01-15T07:35:00Z", 72), ("2026-01-15T07:31:00Z", 60)]), ()),
-            (heart_rate([("2026-03-08T04:30:00Z", 66), ("2026-03-08T05:00:00Z", 67), ("2026-03-08T03:30:00Z", 65)],
-                        start="2026-03-08T03:00:00Z", end="2026-03-08T12:00:00Z", start_offset=None, end_offset=None), (NEW_YORK,)),
-            (heart_rate([("2026-01-15T07:35:00Z", 72), ("2026-01-15T07:20:00Z", 0)]), ()),
-            (heart_rate([("2026-01-15T07:35:00Z", 72.0), ("2026-01-15T07:36:00Z", 301)]), ()),
-        ]
-        for projection, policies in cases:
-            expected = run(projection, policies)
-            self.assertEqual(run(projection, policies, recording), expected)
-        self.assertEqual(len(recording.calls), len(cases))
-        for before, after, temporal_before, temporal, result, again in recording.calls:
-            self.assertEqual(after, before)
-            self.assertEqual(json.dumps(after), json.dumps(before))
-            self.assertEqual(temporal, temporal_before)
-            self.assertEqual(again, result)
-        self.assertEqual(scenario_summary(), scenario_summary())
-        code = r"""
-import json, os, sys, time, zoneinfo
-# Modules the suite or an implementation commonly needs, and the published parent, are imported first,
-# so that only this unit's own import and calls run under observation.
-import tzdata, logging, decimal, fractions, hashlib, re, importlib.resources, pathlib, dataclasses, random
-import typing, collections, functools, itertools, calendar, math, unicodedata, copy, enum, struct, datetime
-import string, operator, bisect, heapq, io, traceback, unittest, subprocess, types
-import activity_tracker_portal.interpret_source_projection
-host = [os.path.realpath(p) for p in zoneinfo.TZPATH] + [os.path.realpath("/etc/localtime"), "/etc/localtime"]
-timezone_data = [os.path.realpath(os.path.dirname(tzdata.__file__))]
-phase = ["import"]
-events = []
-WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
-def hook(event, args):
-    if event == "open":
-        path, mode, flags = args
-        if isinstance(path, (str, bytes)):
-            path = os.fsdecode(path)
-            if (mode and any(c in mode for c in "wax+")) or (flags or 0) & WRITE:
-                events.append(["write", path])
-            real = os.path.realpath(path)
-            if any(real == h or real.startswith(h.rstrip("/") + "/") for h in host):
-                events.append(["host-timezone", path])
-            # Without a policy the parent loads no zone, so any timezone data read is the processor's.
-            if phase[0] != "inferred" and any(real.startswith(d + "/") for d in timezone_data):
-                events.append(["timezone-data", phase[0], path])
-    elif event.split(".")[0] in ("socket", "sqlite3", "subprocess", "ctypes", "webbrowser", "urllib", "http") or event in (
-            "os.system", "os.remove", "os.rename", "os.mkdir", "os.rmdir", "os.chmod", "os.utime", "os.truncate",
-            "os.symlink", "os.link", "os.posix_spawn", "os.exec", "os.fork", "shutil.copyfile", "shutil.rmtree"):
-        events.append([event])
-def forbidden(*args, **kwargs):
-    raise AssertionError("clock read")
-def explicit(original, index):
-    def guard(*args):
-        if len(args) <= index or args[index] is None:
-            raise AssertionError("clock read")
-        return original(*args)
-    return guard
-sys.addaudithook(hook)
-for name in ("time", "time_ns", "monotonic", "monotonic_ns", "perf_counter", "perf_counter_ns", "process_time",
-             "process_time_ns", "thread_time", "thread_time_ns", "clock_gettime", "clock_gettime_ns",
-             "localtime", "ctime", "mktime"):
-    if hasattr(time, name):
-        setattr(time, name, forbidden)
-time.gmtime = explicit(time.gmtime, 0)
-time.asctime = explicit(time.asctime, 0)
-time.strftime = explicit(time.strftime, 1)
-import activity_tracker_portal.interpret_heart_rate
-import test_interpret_heart_rate_1 as t
-phase[0] = "experienced"
-experienced = t.scenario_summary("experienced")
-phase[0] = "inferred"
-inferred = t.scenario_summary("inferred")
-print(json.dumps({"store": "activity_tracker_portal.operational_store" in sys.modules, "events": events,
-                  "experienced": experienced, "inferred": inferred}))
-"""
-        result = json.loads(run_python(code, {"TZ": "Pacific/Chatham", "LC_ALL": "C", "PYTHONHASHSEED": "7"}))
-        self.assertEqual((result["store"], result["events"]), (False, []))
-        self.assertEqual(result["experienced"], scenario_summary("experienced"))
-        self.assertEqual(result["inferred"], scenario_summary("inferred"))
+        # In process, through `interpret`: on revision and Quarantine paths, with and without policies, every
+        # call leaves its exact record and temporal header unchanged, and a repeated call gives an equal result.
+        for phase in ("policy-free", "policy-applied"):
+            with self.subTest(phase=phase):
+                observed = Observed()
+                self.assertEqual(scenario_summary(phase, observed), scenario_summary(phase))
+                self.assertEqual(observed.problems, [])
+                self.assertEqual({type(result) is Quarantine for result in observed.calls}, {True, False})
+        observed = Observed()
+        expected = {phase: scenario_summary(phase) for phase in ("policy-free", "policy-applied")}
+        expected["warm"] = scenario_summary("all", observed)
+        # In a subprocess: importing the module and running it reads no clock, writes nothing, and opens no host
+        # timezone file, socket, store, or subprocess. After warm-up, the processor's own calls open no file, list
+        # no directory, and read no timezone data, pinned or host, with or without policies.
+        result = json.loads(run_python(purity_observer("interpret_heart_rate", "test_interpret_heart_rate_1"),
+                                       {"TZ": "Pacific/Chatham", "LC_ALL": "C", "PYTHONHASHSEED": "7"}))
+        result.pop("nested_time_helper")
+        self.assertEqual(result, {"store": False, "events": [], "problems": [], "calls": len(observed.calls), **expected})
 
     def test_large_series_is_interpreted(self) -> None:
         start_ns = epoch_ns("2026-03-08T00:00:00Z")
@@ -1144,7 +1249,8 @@ print(json.dumps({"store": "activity_tracker_portal.operational_store" in sys.mo
         for projection, policies, reason, pointer in cases:
             with self.subTest(pointer=pointer, policies=bool(policies)):
                 self.assertIn(HEALTH_MARKER.encode(), encode(projection))
-                outcome = run(projection, policies)
+                observed = Observed()
+                outcome = run(projection, policies, observed)
                 self.assertIsInstance(outcome, Quarantine)
                 self.assertEqual({field.name for field in dataclasses.fields(outcome)},
                                  {"reason", "pointer", "processor_version", "policy_identity"})
@@ -1155,6 +1261,9 @@ print(json.dumps({"store": "activity_tracker_portal.operational_store" in sys.mo
                     self.assert_health_free(text)
                     for value in (fault_time, "987654", "06:54:32", "07:35:00", "07:36:00", "72", "73", ORIGIN):
                         self.assertNotIn(value, text)
+                # What the processor itself returned, before the parent rewrapped it.
+                assert_raw_quarantine(self, observed, reason, pointer, fault_time, "987654", "06:54:32", "07:35:00",
+                                      "07:36:00", "72", "73", ORIGIN)
 
 
 if __name__ == "__main__":
