@@ -1,0 +1,12 @@
+{
+  "effects_format": 1,
+  "effects": [
+    {
+      "kind": "action",
+      "name": "operational-database-writes",
+      "system": "Portal Operational Store SQLite database file and its write-ahead log",
+      "outcome": "confirmed",
+      "detail": "Committed SQLite transactions, including migrations 2, 3, and 4 on a new database, the Source Record index and selection writes, Processing Job, lease, attempt, outcome, Canonical Revision, and item-quarantine writes, and policy, supersession, reprocessing-job, and re-queue-mark writes; a refused or failed operation commits nothing."
+    }
+  ]
+}
