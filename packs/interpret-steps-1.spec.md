@@ -52,7 +52,7 @@ Proposed tests: `test_positive_vectors_become_revisions`, `test_body_is_exactly_
 ### R4 — Count bounds
 
 - A count below `COUNT_MIN` or above `COUNT_MAX` is quarantined as `steps-count-out-of-range` with the pointer `/record/count`.
-- The bounds are the pinned Health Connect SDK 1.1.0 `StepsRecord` constructor's bounds, both inclusive (Decision 1). The drafter remembers them as 1 and 1,000,000. These figures are **to be confirmed** from the SDK source in the executable pack.
+- The bounds are the pinned Health Connect SDK 1.1.0 `StepsRecord` constructor's bounds, both inclusive (Decision 1). They are 1 and 1,000,000, confirmed from `androidx/health/connect/client/records/StepsRecord.kt` lines 53–54 in connect-client-1.1.0-sources.jar (SHA-256 `f80f4869872d8480e0e55aa76dd7a8bd6de556cc21d77cb483aae0fa42e00da2`, from Google Maven). On API 34 and later the constructor delegates to the platform record instead, and these are its fallback bounds.
 - Zero follows the SDK. If the SDK's minimum is 1, a count of 0 is quarantined.
 - The tests cover each bound, one beyond each bound, 0, a negative count, and ±(2^53 − 1), which the schema admits.
 
@@ -88,7 +88,7 @@ Proposed tests: `test_schema_valid_edges_never_raise`, `test_processor_is_pure`,
 1. **Validity follows the pinned SDK's bounds exactly (Operator decision, 2026-11-24).** The projection schema pins `sdk_version` to `androidx.health.connect:connect-client:1.1.0`. The Sender reads every record through that SDK's constructors, so real data always lies within their bounds. A value outside them can only come from a defective or forged Sender, and quarantine shows that without passing it on. This includes the lower bound: zero follows the SDK. The alternatives:
    - structural sanity only, such as non-negative counts, which accepts values the source system cannot produce;
    - the schema alone, which admits ±(2^53 − 1).
-2. **An empty interval is quarantined.** The SDK requires a Steps start before its end (remembered; to be confirmed with the bounds). The parent accepts equal endpoints and lets a processor refuse them (parent R7). A step count over no time cannot be placed on a timeline. The alternative, accepting it, would hand `derive-daily-steps` an interval no real record has.
+2. **An empty interval is quarantined.** The SDK requires a Steps start before its end (`StepsRecord.kt` line 49, `require(startTime.isBefore(endTime))`, confirmed). The parent accepts equal endpoints and lets a processor refuse them (parent R7). A step count over no time cannot be placed on a timeline. The alternative, accepting it, would hand `derive-daily-steps` an interval no real record has.
 3. **The body is the count only.** The header already carries the interval, offsets, local dates, and attribution, and the store indexes them for Phase 5 (`operational-store@4` Decision 7). Repeating them in the body would create two sources for one fact.
 4. **Shared conventions for the four processors (Operator decision, 2026-11-24).** These hold for `interpret-steps@1`, `interpret-heart-rate@1`, `interpret-sleep-session@1`, and `interpret-weight@1` alike:
    - **Identity.** The processor version is `interpret-<type>@1`. Supported schema versions are `{1}`. The body version is 1.

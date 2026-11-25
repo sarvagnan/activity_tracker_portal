@@ -63,7 +63,7 @@ Proposed tests: `test_whole_number_mass_becomes_an_equal_float`, `test_fractiona
 ### R5 — Bounds
 
 - A mass below `WEIGHT_MIN_GRAMS` or above `WEIGHT_MAX_GRAMS` is quarantined as `weight-out-of-range` with the pointer `/record/weight_grams`.
-- The bounds are the pinned Health Connect SDK 1.1.0 `WeightRecord` constructor's, both inclusive (Decision 1). The drafter remembers them as 0 kg and 1000 kg, that is 0 g and 1,000,000 g. These figures are **to be confirmed** from the SDK source in the executable pack.
+- The bounds are the pinned Health Connect SDK 1.1.0 `WeightRecord` constructor's, both inclusive (Decision 1). They are 0 kg (`weight.zero()`) and 1000 kg (`MAX_WEIGHT = 1000.kilograms`), that is 0 g and 1,000,000 g, confirmed from `androidx/health/connect/client/records/WeightRecord.kt` lines 48–49 and 86 in connect-client-1.1.0-sources.jar (SHA-256 `f80f4869872d8480e0e55aa76dd7a8bd6de556cc21d77cb483aae0fa42e00da2`, from Google Maven). On API 34 and later the constructor delegates to the platform record instead, and these are its fallback bounds.
 - Zero follows the SDK. If the SDK's minimum is 0 inclusive, a mass of 0 g is accepted.
 - The tests cover each bound, the nearest doubles beyond each bound, a negative mass, and integers beyond 2^53, which the schema admits.
 - Common outcomes come first. A year-0000 instant, an out-of-range local date, a missing policy, or an invalid schema is the parent's outcome, even when the mass is also out of range (parent R4).
