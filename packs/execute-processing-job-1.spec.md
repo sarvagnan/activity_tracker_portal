@@ -48,7 +48,8 @@ The module `activity_tracker_portal.execute_processing_job` provides:
 - `ExecutionResult(job_id, fence, disposition, outcome_kind, reason, retry_at)`: a frozen dataclass.
   - `disposition` is `"outcome-recorded"`, `"retry-scheduled"`, `"job-failed"`, `"already-recorded"`, or `"lease-lost"`.
   - `outcome_kind` is the store's outcome kind for `"outcome-recorded"`, and `None` otherwise.
-  - `reason` is the outcome's reason (`None` for a revision), or the job's failure reason.
+  - `reason` is the outcome's reason (`None` for a revision), the job's failure reason for `"job-failed"`, or the attempt's failure reason for `"retry-scheduled"` (Operator decision, 2026-11-25).
+  - For `"already-recorded"` and `"lease-lost"`, `outcome_kind`, `reason`, and `retry_at` are all `None`.
   - `retry_at` is the time the job may run again for `"retry-scheduled"`, and `None` otherwise.
 
 **Operations.**
@@ -284,8 +285,8 @@ The draft's required list:
 
 **Refinements the tests pin beyond the approved text.** The first three and the last fill gaps in the approved text. The approver should confirm them, because each could be read as new semantics:
 1. *Flag.* An exception from a store write that is neither `StoreRefusal` nor `StoreRetryable`, such as a database error raised by a trigger, propagates unchanged and is followed by no other write. R9 allows only a deterministic failure after a refused completion; this is not a refusal. The test is in `test_one_write_per_execution`.
-2. *Flag.* A `"retry-scheduled"` result's `reason` is `interpretation-unexpected-failure`, the reason recorded on the attempt. The job itself records no failure while it is re-queued, so the Interface's "the job's failure reason" would otherwise be `None`. This departs from that literal text, so it stays flagged here rather than folded into the Interface; on confirmation the Interface can say "or the attempt's failure reason for a retry".
-3. *Flag.* `"already-recorded"` and `"lease-lost"` results have `outcome_kind`, `reason`, and `retry_at` all `None`.
+2. *Operator decision, 2026-11-25.* A `"retry-scheduled"` result's `reason` is `interpretation-unexpected-failure`, the reason recorded on the attempt. The approved Interface said "the job's failure reason", which is `None` while the job is re-queued. The approver escalated this at Gate B, the Operator chose the attempt's reason, and the Interface now says so.
+3. `"already-recorded"` and `"lease-lost"` results have `outcome_kind`, `reason`, and `retry_at` all `None`. The Interface now states this, as the approver asked at Gate B.
 4. A result always carries the lease's `job_id` and `fence`, including `"lease-lost"`.
 5. When the lease's own attempt is already closed, the result is `"already-recorded"` even if a later claim has since taken the job. The closed-attempt check comes before the fence check (R10's order).
 6. A claim that takes the job during interpretation is found at the write, through `lease-not-held`. The result is `"lease-lost"`, after one write attempt.
@@ -313,7 +314,7 @@ An implementation that reads this evidence by any other published read would esc
 5. `test_repeat_after_commit_is_already_recorded` now also closes the same attempt concurrently on the transient and deterministic paths. The result is `"already-recorded"` after one write attempt, and the whole database equals the concurrent writer's state.
 6. R10's gap is filled as refinement 14, flagged above.
 7. Raised failures are captured with an explicit `try`/`except`, and their real traceback is formatted inside the handler. This applies in `test_raised_failures_carry_no_health_data` and in the database-error case of `test_one_write_per_execution`.
-8. The retry reason stays a flagged refinement (item 2) rather than Interface wording.
+8. The retry reason went to the Operator at Gate B and is now Interface wording (refinement 2).
 9. "None exists" now reads "No unpatched alternative exists".
 
 The implementer's three surviving mutants now fail: ignoring expired claims in the delay, using lifetime history in the delay, and skipping the history read after a refused failure write. A fourth, which proceeds past an attempt closed as `lease-expired`, also fails. Its six other mutants still fail. Its correct alternatives pass: keyword calls, a naive time refused before the write, and projection bytes read from the archived batch.
