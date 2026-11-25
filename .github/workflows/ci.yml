@@ -34,6 +34,8 @@ jobs:
         run: tests/acceptance/run_operational_store_3.sh
       - name: Run operational-store@4 acceptance
         run: tests/acceptance/run_operational_store_4.sh
+      - name: Run operational-store@5 acceptance
+        run: tests/acceptance/run_operational_store_5.sh
       - name: Run reconcile-source-record@1 acceptance
         run: tests/acceptance/run_reconcile_source_record_1.sh
       - name: Run interpret-source-projection@1 acceptance
