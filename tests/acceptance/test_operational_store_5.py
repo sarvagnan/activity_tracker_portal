@@ -158,15 +158,31 @@ def quarantined(*, policy: str = NONE, pv: str = PV) -> OutcomeEntry:
     return OutcomeEntry("quarantine", pv, policy, "instant-out-of-range", "/record/time", None, None)
 
 
+def without_rowid(connection: sqlite3.Connection) -> set[str]:
+    """The main schema's WITHOUT ROWID tables, whatever tables a store version defines."""
+    return {name for schema_name, name, _kind, _columns, flag, _strict in connection.execute("PRAGMA table_list")
+            if schema_name == "main" and flag}
+
+
+def table_rows(connection: sqlite3.Connection, table: str, columns: str = "*", rowless: set[str] | None = None):
+    """Every row of one table. A rowid table's rows lead with their rowid, in rowid order, because the
+    rowid is observable state: archival order follows archived_messages.rowid. A WITHOUT ROWID table
+    has no such identity, so its rows are compared as a sorted list."""
+    if table in (without_rowid(connection) if rowless is None else rowless):
+        rows = connection.execute(f'SELECT {columns} FROM "{table}"').fetchall()
+        return sorted(rows, key=lambda row: [(value is None, type(value).__name__, 0 if value is None else value) for value in row])
+    return connection.execute(f'SELECT rowid, {columns} FROM "{table}" ORDER BY rowid').fetchall()
+
+
 def contents(path: Path) -> dict[str, object]:
-    """The whole database: schema version, every schema object, and every row of every table, BLOBs included."""
+    """The whole database: schema version, every schema object, and every row of every table, BLOBs and rowids included."""
     connection = sqlite3.connect(path)
     try:
         schema = connection.execute("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+        rowless = without_rowid(connection)
         tables: dict[str, list[tuple[object, ...]]] = {}
         for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall():
-            rows = connection.execute(f'SELECT * FROM "{name}"').fetchall()
-            tables[name] = sorted(rows, key=lambda row: [(value is None, type(value).__name__, 0 if value is None else value) for value in row])
+            tables[name] = table_rows(connection, name, rowless=rowless)
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
     finally:
         connection.close()
@@ -418,7 +434,12 @@ class R42MigrationFourIsAdditive(StoreCase):
             connection.close()
         self.assertEqual(recorded, known[:3])
         state = contents(self.path)
-        self.assertEqual([row[:2] for row in sorted(state["tables"]["store_migrations"])], known)  # type: ignore[index]
+        connection = sqlite3.connect(self.path)
+        try:
+            recorded = connection.execute("SELECT version, checksum FROM store_migrations ORDER BY version").fetchall()
+        finally:
+            connection.close()
+        self.assertEqual(recorded, known)
         self.assertEqual(state["user_version"], known[-1][0])
         # Migration 4 only creates tables and indexes.
         statements = [statement for statement in store_module.MIGRATIONS[3][1].split(";") if statement.strip()]
@@ -445,9 +466,12 @@ class R42MigrationFourIsAdditive(StoreCase):
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
             columns = {table: [row[1] for row in connection.execute(f'PRAGMA table_xinfo("{table}")')] for table in earlier}
 
+            rowless = without_rowid(connection)
+
             def rows(table: str) -> list[tuple[object, ...]]:
+                # The earlier columns only, with each row's rowid where the table has one.
                 names = ", ".join(f'"{column}"' for column in columns[table])
-                return list(connection.execute(f'SELECT {names} FROM "{table}" ORDER BY rowid'))
+                return table_rows(connection, table, names, rowless)
 
             original = {table: rows(table) for table in earlier if table != "store_migrations"}
             self.assertGreater(len(original["processing_jobs"]), 0)

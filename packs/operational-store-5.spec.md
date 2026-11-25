@@ -236,14 +236,14 @@ Proposed tests: `test_policy_writes_change_no_earlier_table`.
 
 ## Ground rules
 
-These are `@4`'s ground rules. The trusted boundary is unchanged: standard-library SQLite only, synthetic values only, real databases in temporary directories, and whole-database snapshots for every "writes nothing" and refusal assertion. Source Records, selections, and outcomes are built through `@3`'s and `@4`'s own operations, with hand-written outcomes. Zones in tests are real IANA names, but the store never resolves them.
+These are `@4`'s ground rules. The trusted boundary is unchanged: standard-library SQLite only, synthetic values only, real databases in temporary directories, and whole-database snapshots for every "writes nothing" and refusal assertion. In the `@5` suite, a snapshot includes each row's rowid, in rowid order, for every table that has one, because archival order follows `archived_messages.rowid`. A `WITHOUT ROWID` table is compared as a sorted set of rows. Filtered earlier-table assertions use the same snapshot. Source Records, selections, and outcomes are built through `@3`'s and `@4`'s own operations, with hand-written outcomes. Zones in tests are real IANA names, but the store never resolves them.
 
 Unbound inputs, reviewed rather than frozen:
 - `docs/governance/scope-map.md`, which R41's scope-map test reads;
 - the execution environment (`.python-version`, `pyproject.toml`, `uv.lock`, and the managed Python and SQLite runtime), which CI pins;
 - `tests/governance/test_operational_store_5_contract.py`, which runs in the governance suite;
 - `tests/unit/test_operational_store_hardening.py`, which checks that a new database records every known migration. It is supplementary, not bound acceptance evidence.
-- the inputs of R49's integration check, which shows that the timeline is exactly what `interpret` accepts. Each is bound by its own unit:
+- the inputs of R49's integration check, which shows that the timeline is exactly what `interpret` accepts. They are governed implementations and pinned runtime inputs, reviewed rather than byte-bound here. The projection vectors and schemas are bound upstream by `project-source-record`, the interpret modules by their own units, and `tzdata` is pinned in the runtime:
   - `projection/v1/vectors/positive.json`;
   - the published `interpret-source-projection@1` and `interpret-steps@1` modules;
   - the projection schema loader `_interpret_projection_schema.py`, its JSON helper `_interpret_projection_json.py`, and the schema resources it loads from `projection/v1/schemas/`;
@@ -386,6 +386,8 @@ Three gaps were found and closed during this run:
 13. **No backfill.** No change: the no-backfill rule inherited from `@4` stands for later versions.
 
 Sol's eleven mutants, including the five survivors, now all fail. The five former survivors are `list_supersedes_allowed`, `zone_final_newline_allowed`, `marked_identical_outcome_completes`, `marked_refusal_consumes_mark`, and `marked_history_rewrites_expiry`; the last failed through the full runner.
+
+**Approver Gate B round 1 resolved:** snapshots include rowids (archival order); R49 input wording. GPT 6 Astra found that the whole-database snapshot read `SELECT *` and so omitted implicit rowids. Two of its mutants survived the full runner by renumbering `archived_messages` rowids, one in an identical repeat and one in a new Fallback Timezone write. The `@5` snapshot helper now includes each rowid table's rowids, in rowid order, and compares `WITHOUT ROWID` tables as sorted rows. It reads the table kind from `PRAGMA table_list`, so it prescribes no table inventory. Every whole-database and filtered earlier-table assertion uses it, including R42's migration comparison. Both mutants now fail: the repeat one in R46, the new-write one in R53. The reference, Sol's implementation, and Astra's implementation all still pass all 222 tests. The `@1`–`@4` suites are bound and unchanged.
 
 ## Residuals
 
