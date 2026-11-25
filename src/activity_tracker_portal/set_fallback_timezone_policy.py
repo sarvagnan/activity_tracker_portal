@@ -77,11 +77,14 @@ def _utc(value: datetime) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     try:
-        # Rebuild before conversion so datetime subclasses cannot carry caller
-        # state into a plan, or override the conversion itself.
+        # Base descriptors read the stored components without dispatching
+        # subclass properties. Convert only the rebuilt, state-free datetime.
         plain = datetime(
-            value.year, value.month, value.day, value.hour, value.minute,
-            value.second, value.microsecond, tzinfo=value.tzinfo, fold=value.fold,
+            datetime.year.__get__(value), datetime.month.__get__(value),
+            datetime.day.__get__(value), datetime.hour.__get__(value),
+            datetime.minute.__get__(value), datetime.second.__get__(value),
+            datetime.microsecond.__get__(value),
+            tzinfo=datetime.tzinfo.__get__(value), fold=datetime.fold.__get__(value),
         )
         if plain.utcoffset() is not None:
             return plain.astimezone(timezone.utc)
@@ -90,11 +93,23 @@ def _utc(value: datetime) -> datetime | None:
     return None
 
 
-def _valid_policy_ids(value: tuple[int, ...]) -> bool:
+def _policy_ids_snapshot(value: tuple[int, ...]) -> tuple[int, ...] | None:
+    """Copy exact ints from one base-tuple traversal, without caller hooks."""
+    if not isinstance(value, tuple):
+        return None
+    snapshot = tuple(tuple.__iter__(value))
+    # Exact ints are required, including for tuple subclasses. Reject other
+    # elements before any comparisons or hashing could dispatch caller hooks.
+    if any(type(identity) is not int for identity in snapshot):
+        return None
+    return tuple(int.__int__(identity) for identity in snapshot)
+
+
+def _valid_policy_ids(snapshot: tuple[int, ...]) -> bool:
+    # Only normalized storage reaches these comparisons and set operations.
     return (
-        isinstance(value, tuple)
-        and all(type(identity) is int and 0 < identity < 2**63 for identity in value)
-        and len(set(value)) == len(value)
+        all(0 < identity < 2**63 for identity in snapshot)
+        and len(set(snapshot)) == len(snapshot)
     )
 
 
@@ -117,9 +132,10 @@ def _validate_request(
     start = None if effective_from is None else _utc(effective_from)
     if effective_from is not None and (start is None or start > instant):
         raise FallbackTimezoneRefusal("effective-time-invalid")
-    if not _valid_policy_ids(replacing):
+    replacing = _policy_ids_snapshot(replacing)
+    if replacing is None or not _valid_policy_ids(replacing):
         raise FallbackTimezoneRefusal("replacement-invalid")
-    return zone, start, tuple(identity for identity in replacing), instant
+    return zone, start, replacing, instant
 
 
 def _plan_from_timeline(
@@ -168,13 +184,13 @@ def set_fallback_timezone_policy(
     zone, start, replacing, instant = _validate_request(
         plan.zone, plan.effective_from, plan.replacing, at,
     )
-    if not isinstance(plan.supersedes, tuple):
+    supersedes = _policy_ids_snapshot(plan.supersedes)
+    if supersedes is None:
         raise FallbackTimezoneRefusal("plan-stale")
-    if any(identity not in plan.supersedes for identity in replacing):
+    if any(identity not in supersedes for identity in replacing):
         raise FallbackTimezoneRefusal("replacement-invalid")
-    if not _valid_policy_ids(plan.supersedes):
+    if not _valid_policy_ids(supersedes):
         raise FallbackTimezoneRefusal("plan-stale")
-    supersedes = tuple(identity for identity in plan.supersedes)
     confirmed = FallbackTimezonePlan(zone, start, replacing, supersedes)
     with store.read() as view:
         timeline = view.fallback_timezone_timeline()
