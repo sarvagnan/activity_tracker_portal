@@ -210,3 +210,19 @@ This log records friction encountered while adopting Vouch mk2 in its first exte
 **Friction**: A text-only amendment to a successor version, which changed no test, cost a strict-CI exception and a re-verification for every published dependent of the unit's name. Vouch tracks dependencies by name, not version, so it cannot tell an amendment to an additive successor from one to the pack the dependents were built on.
 
 **Decision**: The Operator chose to keep the amendment and re-verify all seven, rather than undo it and waive the residual. Each invalidated unit has a strict-CI exception until `@4` publishes. Then each gets a fresh GREEN through its own runner and is republished with the approver's acceptance. The upstream question, whether an amendment to an additive successor should invalidate dependents of earlier versions, is for Vouch.
+
+## 2026-11-25 — An enabling task's review missed scheduling edge cases
+
+**Context**: The supervised `portal-worker` (PR #67, Beads `y2z`) was an enabling task. It went through implementation, approver review, and merge without Vouch or a frozen acceptance pack. GPT 6 Astra objected once and approved round 2. Codex's pull-request review then found two P2 defects. When several pending items in a row kept failing, discovery re-read the same prefix and never reached a valid item behind them. When a cycle ran past its discovery deadline, a retryable failure was followed by `sleep(0)`, so failures retried immediately.
+
+**Evidence**:
+
+- The round-1 brief asked Astra to confirm that a single bad item cannot wedge progress, and that retryable failures back off. Its verdict accepted "one-item refusal lookahead" and an existing backoff from reading the code. It tested neither several failing items nor an overrunning cycle.
+- Astra's mutants targeted the objection it raised and the governance boundaries: no job semantics, health-data-free logs, and lock correctness.
+- The round-2 brief scoped the review to the handler fix and asked Astra to confirm that cadence and backoff were unchanged. "Unchanged" is a weaker check than "correct".
+- Sol's unit tests covered neither schedule. In a governed unit, a pack drafter, the implementer's read-only review, and approver mutants probe edge cases before the code exists. An enabling task has none of these.
+- The first fix added cursor parameters to published `operational-store` reads. Claude rejected it, because an enabling task cannot change a published unit's Interface outside Vouch. The worker-only fix passed Astra's round-3 review, which ran nine adversarial schedules of its own, and Codex found no further issues.
+
+**Friction**: Two defects reached a pull request after approver approval. They cost two more implementation rounds and one more approver round.
+
+**Decision**: Codex review stays a merge requirement alongside the approver. For scheduling, retry, or concurrency logic in enabling tasks, the implementer must add adversarial schedule tests. Every approver re-review must cover the whole change, not only the latest fix. `docs/governance/delivery-flow.md` now says so. Governed cursor reads for `operational-store` discovery are deferred to a successor unit (Beads `2rs`).
