@@ -152,7 +152,7 @@ Proposed tests: `test_expired_but_held_lease_completes`, `test_reclaimed_lease_i
 
 ### R10 — Repeats and crash recovery
 
-- Before interpreting, the unit checks the job's attempt at the lease's fence. If that attempt is already closed as completed, transient-failure, or deterministic-failure, it writes nothing and returns `"already-recorded"`. If the job's fence is higher than the lease's, it writes nothing and returns `"lease-lost"`.
+- Before interpreting, the unit checks the job's attempt at the lease's fence. If that attempt is already closed as completed, transient-failure, or deterministic-failure, it writes nothing and returns `"already-recorded"`. If the job's fence is higher than the lease's, or the attempt was closed as `lease-expired` by a claim that did not take the job (the job ran out of attempts or was superseded), it writes nothing and returns `"lease-lost"`.
 - A write refused with `lease-not-held` is resolved the same way, from the attempt history, and is never retried.
 - A crash before the write leaves the lease to expire. The reclaim re-interprets, and the identical outcome is not duplicated.
 - A crash after the write leaves the job closed, so nothing is redone.
@@ -243,7 +243,7 @@ Proposed tests: `test_results_are_health_data_free`, `test_recorded_reasons_are_
   - the execution environment: `uv`, `pyproject.toml`, `uv.lock`, the managed Python and SQLite;
   - `tests/governance/test_execute_processing_job_contract.py`, which the governance suite runs and this runner does not.
 - **Not mechanically provable here**, so the approver confirms these in implementation review:
-  - one read view and at most one successful write per execution;
+  - one read view for the job, its attempt history, and the whole interpretation input, taken before interpreting; after a write refused with `lease-not-held`, one fresh read of the job's history to resolve the result (R10); and at most one successful write per execution;
   - only published store operations are used: no SQL, no private store helpers, and never the discovery reads `items_awaiting_index` or `selections_awaiting_processing` (DEV-os4-01);
   - no clock other than the injected one, no host timezone database, no logging;
   - no header or body bytes are parsed; indexed columns come from `interpret`'s returned header;
@@ -265,9 +265,9 @@ The executable pack adds:
 - 4 at `make_job_handler`: `test_production_handler_uses_no_policy` and the three R12 tests;
 - 1 at `RetryPolicy.delay`: `test_backoff_doubles_and_is_capped`.
 
-No failure has another cause. unittest prints `FAILED (errors=131)` because it counts subtests separately. `run_operational_store_4.sh`, `run_interpret_source_projection_1.sh`, and the four processor runners pass, as do `tests/unit` and `tests/governance`.
+No failure has another cause; the suite's own exception probe lets any unexpected exception type propagate, so the stub's error surfaces as itself. unittest prints `FAILED (errors=131)` because it counts subtests separately. `run_operational_store_4.sh`, `run_interpret_source_projection_1.sh`, and the four processor runners pass, as do `tests/unit` and `tests/governance`.
 
-**Reference and mutants.** A throwaway reference implementation, kept out of the repository, passes all 53 tests. 48 incorrect implementations were tried, and each fails at least one test. They include every case in the list below, and also: no cap on the backoff, a fixed delay, and an off-by-one delay; a retry write after a busy store; a write under the job's current fence instead of the lease's; a raise instead of resolving `lease-not-held`; a transient failure written after a database error; a schema version hard-coded to 1; interpreting the evidence head or the latest selection instead of the leased one; a mutable registry; a handler that bypasses `writer.run`; a naive default clock; an interrupt caught as transient; an unknown job reported as `lease-lost`; and a store write made while an interpretation exception is being handled. No mutant survived.
+**Reference and mutants.** A throwaway reference implementation, kept out of the repository, passes all 53 tests. So does the implementer's independent implementation, unchanged: it already returned `"lease-lost"` for the R10 state added below. 52 incorrect implementations were tried, and each fails at least one test. They include every case in the list below, and also: no cap on the backoff, a fixed delay, and an off-by-one delay; a retry write after a busy store; a write under the job's current fence instead of the lease's; a raise instead of resolving `lease-not-held`; a transient failure written after a database error; a schema version hard-coded to 1; interpreting the evidence head or the latest selection instead of the leased one; a mutable registry; a handler that bypasses `writer.run`; a naive default clock; an interrupt caught as transient; an unknown job reported as `lease-lost`; a store write made while an interpretation exception is being handled; and the four the implementer review added below. No mutant survived.
 
 The draft's required list:
 - recording the wrong kind, version, policy identity, or indexed column;
@@ -282,9 +282,9 @@ The draft's required list:
 - a clock read per write, or before an execution that writes nothing;
 - exception text carried into a reason.
 
-**Refinements the tests pin beyond the approved text.** The first three fill gaps in the approved text. The approver should confirm them, because each could be read as new semantics:
+**Refinements the tests pin beyond the approved text.** The first three and the last fill gaps in the approved text. The approver should confirm them, because each could be read as new semantics:
 1. *Flag.* An exception from a store write that is neither `StoreRefusal` nor `StoreRetryable`, such as a database error raised by a trigger, propagates unchanged and is followed by no other write. R9 allows only a deterministic failure after a refused completion; this is not a refusal. The test is in `test_one_write_per_execution`.
-2. *Flag.* A `"retry-scheduled"` result's `reason` is `interpretation-unexpected-failure`, the reason recorded on the attempt. The job itself records no failure while it is re-queued, so "the job's failure reason" would otherwise be `None`.
+2. *Flag.* A `"retry-scheduled"` result's `reason` is `interpretation-unexpected-failure`, the reason recorded on the attempt. The job itself records no failure while it is re-queued, so the Interface's "the job's failure reason" would otherwise be `None`. This departs from that literal text, so it stays flagged here rather than folded into the Interface; on confirmation the Interface can say "or the attempt's failure reason for a retry".
 3. *Flag.* `"already-recorded"` and `"lease-lost"` results have `outcome_kind`, `reason`, and `retry_at` all `None`.
 4. A result always carries the lease's `job_id` and `fence`, including `"lease-lost"`.
 5. When the lease's own attempt is already closed, the result is `"already-recorded"` even if a later claim has since taken the job. The closed-attempt check comes before the fence check (R10's order).
@@ -296,12 +296,26 @@ The draft's required list:
 11. `make_job_handler` makes no call until it is invoked. It then makes one `writer.run` per lease, makes every write inside it, and returns that run's result object. Its default clock is the timezone-aware wall clock.
 12. Inside `Worker`, a `StoreRetryable` from the handler is logged as `worker handler retryable: <name>`, and the next wait is the configured `idle_seconds`.
 13. The R12 worker test configures discovery with `processor_versions=PROCESSOR_VERSIONS`, because `worker.py` stays unchanged until enabling task 64r. It expects every job completed within three cycles, and no worker warning.
+14. *Flag.* A claim can close an expired attempt as `lease-expired` without taking the job: when the job has used its attempts (`lease-expired-retries-exhausted`), or when its record was retracted meanwhile (superseded). The fence stays the lease's. Neither approved R10 branch covered this state. R10 now says it returns `"lease-lost"`, reads no time, and writes nothing, as the implementer proposed. The tests are in `test_repeat_after_reclaim_is_lease_lost`.
 
 **How faults are injected, for the implementer's review.** The store cannot hold a missing Source Record, evidence row, batch, or projection, or a stored digest that does not match the bytes. Tests therefore replace published reads in a delegating store:
 - `source_record`, for the record, its evidence, and its digest;
 - `archived_message` and `archived_items`, for the batch and its schema version;
 - `projection_bytes`, with the batch's items emptied too, for the bytes.
 
-An implementation that reads this evidence by any other published read would escape these faults. None exists for these values. A transient fault comes from a synthetic processor whose `supported_schema_versions` membership test raises. `interpret` reads that attribute outside its processor boundary, and it turns any exception raised from `interpret_body` into `processor-invariant-violated`.
+An implementation that reads this evidence by any other published read would escape these faults. No unpatched alternative exists for these values. A transient fault comes from a synthetic processor whose `supported_schema_versions` membership test raises. `interpret` reads that attribute outside its processor boundary, and it turns any exception raised from `interpret_body` into `processor-invariant-violated`.
+
+**Implementer review resolved.** GPT 6.1 Sol reviewed the pack read-only at `ca3d346`; its independent implementation passed 53/53, and it confirmed RED. Its findings are resolved as follows:
+1. Every fault hook and replaced read now accepts `*args, **kwargs`, so keyword calls to `complete_processing_job`, `fail_processing_job`, `source_record`, `archived_message`, `archived_items`, and `projection_bytes` work. The implementer's implementation, with keyword writes and reads, passes.
+2. `test_naive_clock_is_refused` no longer requires a store write attempt. It requires one clock read, `timestamp-invalid`, no `__cause__`, and an unchanged database. The implementer's variant that refuses the naive time itself passes.
+3. The one-read-view residual now allows a fresh history read after `lease-not-held`, while keeping one input snapshot.
+4. Backoff now separates attempts used from lifetime history and from the transient-failure count. After a completion re-queues the job for a newer selection, the first transient failure waits 60 s, in `test_backoff_doubles_and_is_capped`. A reclaim after expiry, then a transient failure, waits 120 s, and a mixed expiry and transient run fails with `retries-exhausted` at the third attempt, in `test_retries_are_bounded_by_the_job`.
+5. `test_repeat_after_commit_is_already_recorded` now also closes the same attempt concurrently on the transient and deterministic paths. The result is `"already-recorded"` after one write attempt, and the whole database equals the concurrent writer's state.
+6. R10's gap is filled as refinement 14, flagged above.
+7. Raised failures are captured with an explicit `try`/`except`, and their real traceback is formatted inside the handler. This applies in `test_raised_failures_carry_no_health_data` and in the database-error case of `test_one_write_per_execution`.
+8. The retry reason stays a flagged refinement (item 2) rather than Interface wording.
+9. "None exists" now reads "No unpatched alternative exists".
+
+The implementer's three surviving mutants now fail: ignoring expired claims in the delay, using lifetime history in the delay, and skipping the history read after a refused failure write. A fourth, which proceeds past an attempt closed as `lease-expired`, also fails. Its six other mutants still fail. Its correct alternatives pass: keyword calls, a naive time refused before the write, and projection bytes read from the archived batch.
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration matches the contract, that the refinements above are acceptable, and that the residuals above are complete.

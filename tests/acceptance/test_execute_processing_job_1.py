@@ -325,6 +325,19 @@ class TamperedView:
         return getattr(self._view, name)
 
 
+def raised(expected: type[BaseException], operation: Callable[[], object]) -> tuple[BaseException, str]:
+    """The expected exception an operation raises, with its real traceback formatted inside the handler.
+
+    assertRaises keeps only a traceback-free copy, so it cannot check what a traceback shows. Any other
+    exception propagates unchanged.
+    """
+    try:
+        operation()
+    except expected as error:
+        return error, "".join(traceback.format_exception(error))
+    raise AssertionError(f"{expected.__name__} was not raised")
+
+
 def raiser(error: BaseException) -> Callable:
     def hook(*args, **kwargs):
         raise error
@@ -819,24 +832,40 @@ class R5UnmodeledRecordTypes(StoreCase):
 
 # ---------------------------------------------------------------- R6
 
+# Replaced reads and fault hooks accept any call syntax, so an implementation may call the published
+# operations with positional or keyword arguments.
+
 def drop_evidence(evidence_id: int):
-    def source_record(view, record_id):
-        found = view.source_record(record_id)
+    def source_record(view, *args, **kwargs):
+        found = view.source_record(*args, **kwargs)
         return None if found is None else replace(found, evidence=tuple(
             item for item in found.evidence if item.evidence_id != evidence_id))
     return source_record
 
 
-def without_items(view, installation_id, sequence):
-    message = view.archived_message(installation_id, sequence)
+def other_digest(view, *args, **kwargs):
+    found = view.source_record(*args, **kwargs)
+    return None if found is None else replace(found, evidence=tuple(
+        replace(item, projection_sha256=digest(b"synthetic-other-bytes")) for item in found.evidence))
+
+
+def without_items(view, *args, **kwargs):
+    message = view.archived_message(*args, **kwargs)
     return None if message is None or message.batch is None else replace(message, batch=replace(message.batch, items=()))
 
 
+def nothing(view, *args, **kwargs):
+    return None
+
+
+def no_items(view, *args, **kwargs):
+    return ()
+
+
 MISSING = {
-    "source-record": dict(source_record=lambda view, record_id: None),
-    "archived-batch": dict(archived_message=lambda view, *args: None, archived_items=lambda view, *args: ()),
-    "projection-bytes": dict(projection_bytes=lambda view, evidence_id: None, archived_message=without_items,
-                             archived_items=lambda view, *args: ()),
+    "source-record": dict(source_record=nothing),
+    "archived-batch": dict(archived_message=nothing, archived_items=no_items),
+    "projection-bytes": dict(projection_bytes=nothing, archived_message=without_items, archived_items=no_items),
 }
 
 
@@ -859,9 +888,7 @@ class R6DeterministicFailures(StoreCase):
         self.assertFailedJob(lease, "processing-input-invalid",
                              policies=(FallbackTimezonePolicy("", None, "Asia/Kolkata"),))
         lease = self.leased(projection(number=2))
-        tampered = Delegating(self.store, view=lambda view: TamperedView(view, source_record=lambda real, record_id: replace(
-            real.source_record(record_id), evidence=tuple(
-                replace(item, projection_sha256=digest(b"synthetic-other-bytes")) for item in real.source_record(record_id).evidence))))
+        tampered = Delegating(self.store, view=lambda view: TamperedView(view, source_record=other_digest))
         self.assertFailedJob(lease, "projection-digest-mismatch", store=tampered)
         lease = self.leased(projection(number=3), last_modified_time=datetime(2026, 1, 15, 9, 0, 1, tzinfo=UTC))
         self.assertFailedJob(lease, "projection-identity-mismatch")
@@ -998,6 +1025,21 @@ class R7TransientFailures(StoreCase):
             clocks.append(result.retry_at - clock.value)
             lease = self.store.claim_processing_job(OWNER, LEASE, result.retry_at)
         self.assertEqual(clocks, [timedelta(seconds=5), timedelta(seconds=10), timedelta(seconds=12)])
+        # A completion that re-queues for a newer selection resets the attempts used: the next
+        # claim's first transient failure waits 60 s, although the job's history holds two attempts.
+        lease = self.synthetic_lease(number=3)
+        self.deliver(projection(number=3, last_modified="2026-01-15T11:00:00Z", count=2222), change=True)
+        self.select(lease.record_id)
+        self.assertEqual(self.execute(lease, processors=registry(SyntheticProcessor())).disposition, "outcome-recorded")
+        job = self.job(lease.job_id)
+        self.assertEqual((job.state, job.attempts), ("queued", 0))
+        lease = self.store.claim_processing_job(OWNER, LEASE, job.not_before)
+        self.assertEqual(lease.job_id, job.job_id)
+        clock = self.clock_for(lease)
+        result = self.execute(lease, clock, processors=transient())
+        job = self.job(lease.job_id)
+        self.assertEqual((job.attempts, len(job.history)), (1, 2))
+        self.assertEqual((result.disposition, result.retry_at - clock.value), ("retry-scheduled", timedelta(seconds=60)))
 
     def test_retries_are_bounded_by_the_job(self) -> None:
         lease = self.synthetic_lease(max_attempts=2)
@@ -1015,6 +1057,19 @@ class R7TransientFailures(StoreCase):
         self.assertEqual(contents(self.path), self.replay(control, lambda store: store.fail_processing_job(
             lease.job_id, lease.fence, "transient", TRANSIENT, clock.value + timedelta(seconds=120), clock.value)))
         self.assertIsNone(self.store.claim_processing_job(OWNER, LEASE, at(100_000)))
+        # An expired claim counts as an attempt used: after a reclaim, the first transient failure
+        # waits 120 s, and the job's bound counts the expiry too.
+        lease = self.synthetic_lease(number=2, max_attempts=3)
+        lease = self.reclaim(lease)
+        clock = self.clock_for(lease)
+        result = self.execute(lease, clock, processors=transient())
+        self.assertResult(result, lease, "retry-scheduled", None, TRANSIENT, clock.value + timedelta(seconds=120))
+        lease = self.store.claim_processing_job(OWNER, LEASE, result.retry_at)
+        self.assertResult(self.execute(lease, processors=transient()), lease, "job-failed", None, "retries-exhausted")
+        job = self.job(lease.job_id)
+        self.assertEqual((job.state, job.failure, job.attempts), ("failed", "retries-exhausted", 3))
+        self.assertEqual([(item.result, item.reason) for item in job.history],
+                         [("lease-expired", None), ("transient-failure", TRANSIENT), ("transient-failure", TRANSIENT)])
 
     def test_interrupt_propagates_and_writes_nothing(self) -> None:
         for name, error in (("keyboard-interrupt", KeyboardInterrupt), ("system-exit", SystemExit)):
@@ -1106,7 +1161,7 @@ class R8TheStoreCannotWrite(StoreCase):
         for number, (path, _kind, writes) in enumerate(self.PATHS, start=60):
             with self.subTest(f"real-{path}"):
                 lease, options = self.path_lease(path, number)
-                recording = Delegating(self.store, before={writes[0]: lambda *args: setattr(self, "free", RESERVE - 1)})
+                recording = Delegating(self.store, before={writes[0]: lambda *args, **kwargs: setattr(self, "free", RESERVE - 1)})
                 before = contents(self.path)
                 with self.assertRaises(StoreRetryable) as caught:
                     self.execute(lease, store=recording, **options)
@@ -1177,7 +1232,7 @@ class R9FencingAndOneWrite(StoreCase):
                 lease = self.claim(record_id, self.select(record_id), version)
                 expected: dict[str, object] = {}
 
-                def reclaim(*args, lease=lease) -> None:
+                def reclaim(*args, lease=lease, **kwargs) -> None:
                     self.reclaim(lease)
                     expected.update(contents(self.path))
                 recording = Delegating(self.store, before={write: reclaim})
@@ -1245,12 +1300,10 @@ class R9FencingAndOneWrite(StoreCase):
                 with self.trigger(f"BEFORE {event} ON {table}"):
                     recording = Delegating(self.store)
                     before = contents(self.path)
-                    with self.assertRaises(sqlite3.Error) as caught:
-                        self.execute(lease, store=recording, **options)
+                    exception, text = raised(sqlite3.Error, lambda: self.execute(lease, store=recording, **options))
                     self.assertEqual(contents(self.path), before)
                 self.assertEqual(len(recording.calls), 1)
-                for item in chain(caught.exception):
-                    self.assertNotIn(HEALTH_MARKER, str(item))
+                self.assertNotIn(HEALTH_MARKER, text + "".join(str(item) for item in chain(exception)))
                 self.assertHeldOpen(lease)
 
     @contextmanager
@@ -1315,7 +1368,7 @@ class R10RepeatsAndCrashRecovery(StoreCase):
         lease = self.leased(projection(number=11))
         expected: dict[str, object] = {}
 
-        def complete_first(*args) -> None:
+        def complete_first(*args, **kwargs) -> None:
             self.assertEqual(self.execute(lease).disposition, "outcome-recorded")
             expected.update(contents(self.path))
         recording = Delegating(self.store, before={"complete_processing_job": complete_first})
@@ -1324,6 +1377,23 @@ class R10RepeatsAndCrashRecovery(StoreCase):
         self.assertEqual(recording.calls, ["complete_processing_job"])
         self.assertEqual(contents(self.path), expected)
         self.assertEqual(len(self.outcomes(lease.record_id)), 1)
+        # The same lease records its failure concurrently, on either failure path.
+        for number, (version, options, disposition) in enumerate((
+            (SYNTHETIC_VERSION, {"processors": transient()}, "retry-scheduled"),
+            ("interpret-steps@9", {}, "job-failed"),
+        ), start=12):
+            with self.subTest(f"concurrent-{disposition}"):
+                lease = self.leased(projection(number=number), "steps", version)
+                closed: dict[str, object] = {}
+
+                def fail_first(*args, lease=lease, options=options, disposition=disposition, closed=closed, **kwargs) -> None:
+                    self.assertEqual(self.execute(lease, **options).disposition, disposition)
+                    closed.update(contents(self.path))
+                recording = Delegating(self.store, before={"fail_processing_job": fail_first})
+                result = self.execute(lease, store=recording, **options)
+                self.assertResult(result, lease, "already-recorded")
+                self.assertEqual(recording.calls, ["fail_processing_job"])
+                self.assertEqual(contents(self.path), closed)
 
     def test_repeat_after_reclaim_is_lease_lost(self) -> None:
         lease = self.leased(projection())
@@ -1337,6 +1407,24 @@ class R10RepeatsAndCrashRecovery(StoreCase):
         # And the later lease's repeat is already recorded.
         self.assertResult(self.assertWritesNothing(self.execute, later), later, "already-recorded")
         self.assertEqual(len(self.outcomes(lease.record_id)), 1)
+        # A claim can close an expired attempt without taking the job, leaving the fence unchanged:
+        # when the job has used its attempts, or when its record was retracted meanwhile.
+        for number, (name, max_attempts, state) in enumerate((
+            ("exhausted", 1, "failed"),
+            ("superseded", 3, "superseded"),
+        ), start=2):
+            with self.subTest(name):
+                lease = self.leased(projection(number=number), max_attempts=max_attempts)
+                if name == "superseded":
+                    self.retract(lease.record_id)
+                self.assertIsNone(self.store.claim_processing_job(OTHER_OWNER, LEASE, lease.expires_at + timedelta(seconds=1)))
+                job = self.job(lease.job_id)
+                self.assertEqual((job.state, job.fence, job.history[-1].result), (state, lease.fence, "lease-expired"))
+                clock = self.clock_for(lease)
+                recording = Delegating(self.store)
+                result = self.assertWritesNothing(self.execute, lease, clock, store=recording)
+                self.assertResult(result, lease, "lease-lost")
+                self.assertEqual((recording.calls, clock.calls), ([], 0))
 
     def test_crash_before_write_recovers_by_reclaim(self) -> None:
         for number, (write, version, options) in enumerate((
@@ -1616,14 +1704,13 @@ class R13Time(StoreCase):
                 record_id = self.deliver(projection(number=number))
                 lease = self.claim(record_id, self.select(record_id), version)
                 clock = Clock(NAIVE)
-                recording = Delegating(self.store)
                 before = contents(self.path)
+                # The refusal may come from the store's write or from the unit's own check just before it.
                 with self.assertRaises(StoreRefusal) as caught:
-                    self.execute(lease, clock, store=recording, **options)
+                    self.execute(lease, clock, **options)
                 self.assertEqual(caught.exception.failure, "timestamp-invalid")
                 self.assertIsNone(caught.exception.__cause__)
                 self.assertEqual(clock.calls, 1)
-                self.assertEqual(len(recording.calls), 1)
                 self.assertEqual(contents(self.path), before)
                 self.assertHeldOpen(lease)
 
@@ -1696,9 +1783,9 @@ class R14HealthDataFree(StoreCase):
                     self.assertNotIn(marker, str(value))
 
     def test_raised_failures_carry_no_health_data(self) -> None:
-        def assertClean(error: BaseException) -> None:
+        def assertClean(error: BaseException, text: str) -> None:
+            self.assertIsNotNone(error.__traceback__)
             self.assertIsNone(error.__cause__)
-            text = "".join(traceback.format_exception(error))
             for item in chain(error):
                 text += str(item) + repr(item) + repr(item.args)
             for marker in MARKERS:
@@ -1725,12 +1812,11 @@ class R14HealthDataFree(StoreCase):
         for error, failure, operation in cases:
             with self.subTest(failure):
                 before = contents(self.path)
-                with self.assertRaises(error) as caught:
-                    operation()
-                self.assertEqual(caught.exception.failure, failure)
-                self.assertEqual(caught.exception.args, (failure,))
+                exception, text = raised(error, operation)
+                self.assertEqual(exception.failure, failure)
+                self.assertEqual(exception.args, (failure,))
                 self.assertEqual(contents(self.path), before)
-                assertClean(caught.exception)
+                assertClean(exception, text)
 
     def test_unit_emits_no_logs(self) -> None:
         with self.assertNoLogs(level=logging.DEBUG):
