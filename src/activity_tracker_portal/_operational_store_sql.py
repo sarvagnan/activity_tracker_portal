@@ -280,3 +280,46 @@ CREATE TABLE item_quarantines (
 CREATE INDEX processing_record_type ON source_records (record_type, record_id);
 CREATE INDEX processing_latest_selection ON source_selections (record_id, selection_id, outcome);
 """
+
+
+_POLICY_SQL = """
+CREATE TABLE policies (
+    policy_id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('fallback-timezone', 'source-selection')),
+    requested_at TEXT NOT NULL
+) STRICT;
+CREATE TABLE fallback_timezone_policies (
+    policy_id INTEGER PRIMARY KEY REFERENCES policies (policy_id),
+    zone TEXT NOT NULL,
+    effective_from TEXT
+) STRICT;
+CREATE INDEX fallback_timezone_start ON fallback_timezone_policies (effective_from, policy_id);
+CREATE TABLE source_selection_policies (
+    policy_id INTEGER PRIMARY KEY REFERENCES policies (policy_id),
+    measure TEXT NOT NULL,
+    record_type TEXT NOT NULL,
+    first_date TEXT,
+    last_date TEXT,
+    CHECK (first_date IS NULL OR last_date IS NULL OR first_date <= last_date)
+) STRICT;
+CREATE INDEX source_selection_scope ON source_selection_policies (measure, record_type, first_date, last_date);
+CREATE TABLE policy_origins (
+    policy_id INTEGER NOT NULL REFERENCES source_selection_policies (policy_id),
+    source_system_kind TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    PRIMARY KEY (policy_id, source_system_kind, origin)
+) STRICT;
+CREATE TABLE policy_supersessions (
+    old_id INTEGER PRIMARY KEY REFERENCES policies (policy_id),
+    new_id INTEGER NOT NULL REFERENCES policies (policy_id),
+    CHECK (old_id < new_id)
+) STRICT;
+CREATE INDEX policy_supersession_history ON policy_supersessions (new_id, old_id);
+CREATE TABLE policy_lease_marks (
+    job_id INTEGER NOT NULL,
+    fence INTEGER NOT NULL,
+    PRIMARY KEY (job_id, fence),
+    FOREIGN KEY (job_id, fence) REFERENCES processing_attempts (job_id, fence)
+) STRICT;
+CREATE INDEX known_origin_cover ON source_records (record_type, source_system_kind, origin);
+"""

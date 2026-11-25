@@ -21,7 +21,7 @@ import sqlite3
 import time
 from typing import Literal, cast
 
-from ._operational_store_sql import _BASELINE_SQL, _PROCESSING_SQL, _SOURCE_INDEX_SQL
+from ._operational_store_sql import _BASELINE_SQL, _POLICY_SQL, _PROCESSING_SQL, _SOURCE_INDEX_SQL
 
 STARTUP_FAILURES = frozenset(
     {
@@ -69,13 +69,20 @@ INVARIANT_FAILURES = frozenset(
         "outcome-conflict",
         "item-already-indexed",
         "item-quarantine-conflict",
+        "policy-request-invalid",
+        "policy-unknown",
+        "policy-supersession-invalid",
+        "policy-overlap",
+        "policy-origin-unknown",
     }
 )
 FAILURES = STARTUP_FAILURES | RETRYABLE_FAILURES | INVARIANT_FAILURES
 
 # Ordered (version, exact SQL) pairs; store_migrations records the SHA-256 of each
 # migration's UTF-8 SQL. The baseline is migration 1.
-MIGRATIONS: tuple[tuple[int, str], ...] = ((1, _BASELINE_SQL), (2, _SOURCE_INDEX_SQL), (3, _PROCESSING_SQL))
+MIGRATIONS: tuple[tuple[int, str], ...] = (
+    (1, _BASELINE_SQL), (2, _SOURCE_INDEX_SQL), (3, _PROCESSING_SQL), (4, _POLICY_SQL),
+)
 
 InstallationState = Literal["pending", "active", "draining", "retired", "withdrawn"]
 RetirementKind = Literal["drained", "destructive"]
@@ -798,6 +805,175 @@ class ProcessingCounts:
     items_awaiting_index: int
 
 
+# operational-store@5: policy records, policy reads, known origins, and the
+# reprocessing a Fallback Timezone Policy affects (packs/operational-store-5.spec.md).
+
+
+@dataclass(frozen=True)
+class OriginKey:
+    """One origin, as a Source Record key names it."""
+
+    source_system_kind: str
+    origin: str
+
+
+@dataclass(frozen=True)
+class FallbackTimezonePolicyRecord:
+    """A pending Fallback Timezone Policy; effective_from None covers all earlier history, superseded_by None is live."""
+
+    policy_id: int
+    zone: str
+    effective_from: datetime | None
+    supersedes: tuple[int, ...]
+    superseded_by: int | None
+    requested_at: datetime
+
+
+@dataclass(frozen=True)
+class SourceSelectionPolicyRecord:
+    """A pending Source Selection Policy over inclusive local dates; a None bound is unbounded."""
+
+    policy_id: int
+    measure: str
+    record_type: str
+    origins: tuple[OriginKey, ...]
+    first_date: date | None
+    last_date: date | None
+    supersedes: tuple[int, ...]
+    superseded_by: int | None
+    requested_at: datetime
+
+
+@dataclass(frozen=True)
+class FallbackTimezoneRecording:
+    """A recorded Fallback Timezone Policy with health-data-free counts of the jobs queued and leases marked."""
+
+    policy: FallbackTimezonePolicyRecord
+    jobs_enqueued: int
+    jobs_rearmed: int
+
+
+@dataclass(frozen=True)
+class KnownOrigin:
+    """One source-system kind, record type, and origin among the Source Records, with its record count."""
+
+    source_system_kind: str
+    record_type: str
+    origin: str
+    record_count: int
+
+
+_PolicyRecord = FallbackTimezonePolicyRecord | SourceSelectionPolicyRecord
+
+# Supersession links are append-only; absence of a link makes a policy live.
+_LIVE_POLICY_SQL = "NOT EXISTS (SELECT 1 FROM policy_supersessions x WHERE x.old_id = p.policy_id)"
+_AFFECTED_PROCESSING_SQL = (
+    "INSERT INTO processing_jobs "
+    "(record_id, processor_version, selection_id, state, max_attempts, not_before, enqueued_at) "
+    "SELECT r.record_id, ?, s.selection_id, 'queued', ?, ?, ? FROM source_records r "
+    "JOIN source_selections s ON s.selection_id = (SELECT max(latest.selection_id) "
+    "FROM source_selections latest WHERE latest.record_id = r.record_id) "
+    "JOIN processing_outcomes o ON o.outcome_id = (SELECT max(latest.outcome_id) "
+    "FROM processing_outcomes latest WHERE latest.selection_id = s.selection_id AND latest.processor_version = ?) "
+    "WHERE r.record_type = ? AND s.outcome = 'projection' "
+    "AND (o.policy_identity != 'none' OR (o.kind = 'policy-pending' AND o.policy_kind = 'fallback-timezone')) "
+    "AND NOT EXISTS (SELECT 1 FROM processing_jobs j WHERE j.record_id = r.record_id "
+    "AND j.processor_version = ? AND j.state IN ('queued', 'leased'))"
+)
+
+
+def _policy_supersedes_shape(supersedes: tuple[int, ...]) -> tuple[int, ...]:
+    if (
+        not isinstance(supersedes, tuple)
+        or any(type(identity) is not int or identity <= 0 for identity in supersedes)
+        or len(set(supersedes)) != len(supersedes)
+    ):
+        raise StoreRefusal("policy-request-invalid")
+    return tuple(sorted(supersedes))
+
+
+def _policy_links(connection: sqlite3.Connection, policy_id: int) -> tuple[tuple[int, ...], int | None]:
+    supersedes = tuple(row[0] for row in _execute(
+        connection, "SELECT old_id FROM policy_supersessions WHERE new_id = ? ORDER BY old_id", (policy_id,),
+    ))
+    newer = _execute(connection, "SELECT new_id FROM policy_supersessions WHERE old_id = ?", (policy_id,)).fetchone()
+    return supersedes, None if newer is None else newer[0]
+
+
+def _fallback_policy(connection: sqlite3.Connection, row: sqlite3.Row) -> FallbackTimezonePolicyRecord:
+    supersedes, superseded_by = _policy_links(connection, row["policy_id"])
+    return FallbackTimezonePolicyRecord(
+        row["policy_id"], row["zone"], _optional_datetime(row["effective_from"]),
+        supersedes, superseded_by, _datetime(row["requested_at"]),
+    )
+
+
+def _selection_policy(connection: sqlite3.Connection, row: sqlite3.Row) -> SourceSelectionPolicyRecord:
+    supersedes, superseded_by = _policy_links(connection, row["policy_id"])
+    origins = tuple(OriginKey(item[0], item[1]) for item in _execute(
+        connection, "SELECT source_system_kind, origin FROM policy_origins WHERE policy_id = ? "
+        "ORDER BY source_system_kind, origin", (row["policy_id"],),
+    ))
+    return SourceSelectionPolicyRecord(
+        row["policy_id"], row["measure"], row["record_type"], origins,
+        None if row["first_date"] is None else date.fromisoformat(row["first_date"]),
+        None if row["last_date"] is None else date.fromisoformat(row["last_date"]),
+        supersedes, superseded_by, _datetime(row["requested_at"]),
+    )
+
+
+def _policy(connection: sqlite3.Connection, policy_id: int) -> _PolicyRecord | None:
+    # SQLite identities are signed 64-bit integers. Larger positive request
+    # identities are unknown, rather than a driver overflow that leaks a value.
+    if policy_id <= 0 or policy_id > 2**63 - 1:
+        return None
+    row = _execute(connection, "SELECT * FROM policies WHERE policy_id = ?", (policy_id,)).fetchone()
+    if row is None:
+        return None
+    if row["kind"] == "fallback-timezone":
+        detail = _execute(
+            connection, "SELECT p.policy_id, p.requested_at, f.zone, f.effective_from FROM policies p "
+            "JOIN fallback_timezone_policies f USING (policy_id) WHERE p.policy_id = ?", (policy_id,),
+        ).fetchone()
+        return _fallback_policy(connection, detail)
+    detail = _execute(
+        connection, "SELECT p.requested_at, s.* FROM policies p "
+        "JOIN source_selection_policies s USING (policy_id) WHERE p.policy_id = ?", (policy_id,),
+    ).fetchone()
+    return _selection_policy(connection, detail)
+
+
+def _validate_policy_supersession(
+    connection: sqlite3.Connection, supersedes: tuple[int, ...], kind: str,
+    measure: str | None = None, record_type: str | None = None,
+) -> None:
+    # Existence is checked for the entire request before kind/scope/liveness,
+    # so policy-unknown wins independently of the caller's identity order.
+    policies = tuple(_policy(connection, identity) for identity in supersedes)
+    if any(policy is None for policy in policies):
+        raise StoreRefusal("policy-unknown")
+    for policy in policies:
+        assert policy is not None
+        if policy.superseded_by is not None:
+            raise StoreRefusal("policy-supersession-invalid")
+        if kind == "fallback-timezone":
+            valid = isinstance(policy, FallbackTimezonePolicyRecord)
+        else:
+            valid = (isinstance(policy, SourceSelectionPolicyRecord)
+                     and policy.measure == measure and policy.record_type == record_type)
+        if not valid:
+            raise StoreRefusal("policy-supersession-invalid")
+
+
+def _record_policy(connection: sqlite3.Connection, kind: str, timestamp: str, supersedes: tuple[int, ...]) -> int:
+    policy_id = _execute(
+        connection, "INSERT INTO policies (kind, requested_at) VALUES (?, ?)", (kind, timestamp),
+    ).lastrowid
+    assert policy_id is not None
+    for identity in supersedes:
+        _execute(connection, "INSERT INTO policy_supersessions (old_id, new_id) VALUES (?, ?)", (identity, policy_id))
+    return policy_id
+
 
 # All routing and counting uses scalar columns; bytes are loaded only by reads
 # that explicitly return them. The earlier migrations and write paths are intact.
@@ -1377,6 +1553,59 @@ class StoreView:
             self._connection, "SELECT count(*) FROM batch_items i WHERE " + _UNINDEXED_PROCESSING_SQL,
         ).fetchone()[0])
         return ProcessingCounts(*counts)
+
+    def policy(self, policy_id: int) -> FallbackTimezonePolicyRecord | SourceSelectionPolicyRecord | None:
+        return _policy(self._connection, policy_id)
+
+    def fallback_timezone_policies(self) -> tuple[FallbackTimezonePolicyRecord, ...]:
+        return tuple(_fallback_policy(self._connection, row) for row in _execute(
+            self._connection, "SELECT p.requested_at, f.* FROM policies p "
+            "JOIN fallback_timezone_policies f USING (policy_id) ORDER BY p.policy_id",
+        ))
+
+    def fallback_timezone_timeline(self) -> tuple[FallbackTimezonePolicyRecord, ...]:
+        return tuple(_fallback_policy(self._connection, row) for row in _execute(
+            self._connection, "SELECT p.requested_at, f.* FROM fallback_timezone_policies f "
+            "JOIN policies p USING (policy_id) WHERE " + _LIVE_POLICY_SQL + " ORDER BY f.effective_from",
+        ))
+
+    def source_selection_policies(
+        self, measure: str | None = None, record_type: str | None = None
+    ) -> tuple[SourceSelectionPolicyRecord, ...]:
+        return tuple(_selection_policy(self._connection, row) for row in _execute(
+            self._connection, "SELECT p.requested_at, s.* FROM policies p "
+            "JOIN source_selection_policies s USING (policy_id) "
+            "WHERE (? IS NULL OR s.measure = ?) AND (? IS NULL OR s.record_type = ?) ORDER BY p.policy_id",
+            (measure, measure, record_type, record_type),
+        ))
+
+    def source_selection_timeline(self, measure: str, record_type: str) -> tuple[SourceSelectionPolicyRecord, ...]:
+        return tuple(_selection_policy(self._connection, row) for row in _execute(
+            self._connection, "SELECT p.requested_at, s.* FROM source_selection_policies s "
+            "JOIN policies p USING (policy_id) WHERE s.measure = ? AND s.record_type = ? AND "
+            + _LIVE_POLICY_SQL + " ORDER BY s.first_date", (measure, record_type),
+        ))
+
+    def applicable_source_selection(
+        self, measure: str, record_type: str, on: date
+    ) -> SourceSelectionPolicyRecord | None:
+        day = on.isoformat()
+        row = _execute(
+            self._connection, "SELECT p.requested_at, s.* FROM source_selection_policies s "
+            "JOIN policies p USING (policy_id) WHERE s.measure = ? AND s.record_type = ? "
+            "AND (s.first_date IS NULL OR s.first_date <= ?) AND (s.last_date IS NULL OR s.last_date >= ?) AND "
+            + _LIVE_POLICY_SQL, (measure, record_type, day, day),
+        ).fetchone()
+        return None if row is None else _selection_policy(self._connection, row)
+
+    def known_origins(self, record_type: str | None = None) -> tuple[KnownOrigin, ...]:
+        condition = "" if record_type is None else "WHERE record_type = ? "
+        return tuple(KnownOrigin(row[0], row[1], row[2], row[3]) for row in _execute(
+            self._connection, "SELECT source_system_kind, record_type, origin, count(*) FROM source_records "
+            + condition + "GROUP BY record_type, source_system_kind, origin "
+            "ORDER BY record_type, source_system_kind, origin",
+            () if record_type is None else (record_type,),
+        ))
 
     def storage_reserve(self) -> ReserveStatus:
         free = _sample_free_bytes(self._free_bytes, self._path)
@@ -1980,11 +2209,13 @@ class OperationalStore:
             assert latest is not None
             if latest["outcome"] != "projection":
                 _close_processing_job(self._connection, job_id, "superseded", timestamp)
-            elif latest["selection_id"] == job["selection_id"]:
+            elif latest["selection_id"] == job["selection_id"] and _execute(
+                self._connection, "SELECT 1 FROM policy_lease_marks WHERE job_id = ? AND fence = ?", (job_id, fence),
+            ).fetchone() is None:
                 _close_processing_job(self._connection, job_id, "completed", timestamp)
             else:
-                # Successful completion against older evidence starts a fresh
-                # retry budget. Claim-time retargeting deliberately does not.
+                # Older evidence or a policy written during this lease starts
+                # a fresh retry budget. Claim-time retargeting does not.
                 _execute(
                     self._connection, "UPDATE processing_jobs SET selection_id = ?, state = 'queued', attempts = 0, "
                     "not_before = ?, lease_owner = NULL, lease_expires_at = NULL, failure = NULL, closed_at = NULL "
@@ -2051,6 +2282,134 @@ class OperationalStore:
                 parameters + (reason, pointer, timestamp),
             )
             return ItemQuarantine(position, reason, pointer, _datetime(timestamp))
+
+    def record_fallback_timezone_policy(
+        self,
+        zone: str,
+        effective_from: datetime | None,
+        supersedes: tuple[int, ...],
+        processor_versions: Mapping[str, str],
+        max_attempts: int,
+        at: datetime,
+    ) -> FallbackTimezoneRecording:
+        # SQLite serializes repeat detection, validation, and all effects across
+        # handles/processes. A no-write repeat commits no data, even below reserve.
+        with _transaction(self._connection):
+            timestamp = _timestamp(at)
+            start = None if effective_from is None else _timestamp(effective_from)
+            if not isinstance(zone, str) or re.fullmatch(r"[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)*", zone) is None:
+                raise StoreRefusal("policy-request-invalid")
+            supersedes = _policy_supersedes_shape(supersedes)
+            _processing_bound(max_attempts, 100)
+            if not isinstance(processor_versions, Mapping):
+                raise StoreRefusal("policy-request-invalid")
+            versions = dict(processor_versions)
+            for record_type, version in versions.items():
+                if not isinstance(record_type, str) or not record_type:
+                    raise StoreRefusal("policy-request-invalid")
+                if not isinstance(version, str) or re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*@[0-9]+", version) is None:
+                    raise StoreRefusal("processor-version-invalid")
+            candidates = _execute(
+                self._connection, "SELECT p.requested_at, f.* FROM fallback_timezone_policies f "
+                "JOIN policies p USING (policy_id) WHERE f.effective_from IS ? AND " + _LIVE_POLICY_SQL, (start,),
+            ).fetchall()
+            for row in candidates:
+                existing = _fallback_policy(self._connection, row)
+                if existing.zone == zone and existing.supersedes == supersedes:
+                    return FallbackTimezoneRecording(existing, 0, 0)
+            _validate_policy_supersession(self._connection, supersedes, "fallback-timezone")
+            if any(row["policy_id"] not in supersedes for row in candidates):
+                raise StoreRefusal("policy-overlap")
+            self._processing_write_reserve()
+            policy_id = _record_policy(self._connection, "fallback-timezone", timestamp, supersedes)
+            _execute(
+                self._connection, "INSERT INTO fallback_timezone_policies (policy_id, zone, effective_from) VALUES (?, ?, ?)",
+                (policy_id, zone, start),
+            )
+            jobs_enqueued = 0
+            # One indexed, set-based insertion per mapped type; no Source Record,
+            # outcome bytes, or opaque policy identity is interpreted in Python.
+            for record_type, version in versions.items():
+                jobs_enqueued += _execute(
+                    self._connection, _AFFECTED_PROCESSING_SQL,
+                    (version, max_attempts, timestamp, timestamp, version, record_type, version),
+                ).rowcount
+            jobs_rearmed = _execute(
+                self._connection, "SELECT count(*) FROM processing_jobs WHERE state = 'leased'",
+            ).fetchone()[0]
+            # Count every held lease, including an already marked fence. Marks
+            # remain as history; a reclaimed lease has a different fence.
+            _execute(
+                self._connection, "INSERT INTO policy_lease_marks (job_id, fence) "
+                "SELECT job_id, fence FROM processing_jobs WHERE state = 'leased' ON CONFLICT DO NOTHING",
+            )
+            policy = _policy(self._connection, policy_id)
+            assert isinstance(policy, FallbackTimezonePolicyRecord)
+            return FallbackTimezoneRecording(policy, jobs_enqueued, jobs_rearmed)
+
+    def record_source_selection_policy(
+        self,
+        measure: str,
+        record_type: str,
+        origins: tuple[OriginKey, ...],
+        first_date: date | None,
+        last_date: date | None,
+        supersedes: tuple[int, ...],
+        at: datetime,
+    ) -> SourceSelectionPolicyRecord:
+        with _transaction(self._connection):
+            timestamp = _timestamp(at)
+            supersedes = _policy_supersedes_shape(supersedes)
+            if (
+                not _kebab(measure) or not isinstance(record_type, str) or not record_type
+                or not isinstance(origins, tuple) or not origins
+                or any(not isinstance(origin, OriginKey) or not isinstance(origin.source_system_kind, str)
+                       or not isinstance(origin.origin, str) for origin in origins)
+                or len(set(origins)) != len(origins)
+                or any(bound is not None and type(bound) is not date for bound in (first_date, last_date))
+                or (first_date is not None and last_date is not None and last_date < first_date)
+            ):
+                raise StoreRefusal("policy-request-invalid")
+            origins = tuple(sorted(origins, key=lambda origin: (origin.source_system_kind, origin.origin)))
+            first = None if first_date is None else first_date.isoformat()
+            last = None if last_date is None else last_date.isoformat()
+            candidates = _execute(
+                self._connection, "SELECT p.requested_at, s.* FROM source_selection_policies s "
+                "JOIN policies p USING (policy_id) WHERE s.measure = ? AND s.record_type = ? "
+                "AND (s.first_date IS NULL OR ? IS NULL OR s.first_date <= ?) "
+                "AND (s.last_date IS NULL OR ? IS NULL OR s.last_date >= ?) AND " + _LIVE_POLICY_SQL,
+                (measure, record_type, last, last, first, first),
+            ).fetchall()
+            for row in candidates:
+                existing = _selection_policy(self._connection, row)
+                if (existing.origins == origins and existing.first_date == first_date
+                    and existing.last_date == last_date and existing.supersedes == supersedes):
+                    return existing
+            _validate_policy_supersession(self._connection, supersedes, "source-selection", measure, record_type)
+            for origin in origins:
+                if _execute(
+                    self._connection, "SELECT 1 FROM source_records WHERE record_type = ? "
+                    "AND source_system_kind = ? AND origin = ? LIMIT 1",
+                    (record_type, origin.source_system_kind, origin.origin),
+                ).fetchone() is None:
+                    raise StoreRefusal("policy-origin-unknown")
+            if any(row["policy_id"] not in supersedes for row in candidates):
+                raise StoreRefusal("policy-overlap")
+            self._processing_write_reserve()
+            policy_id = _record_policy(self._connection, "source-selection", timestamp, supersedes)
+            _execute(
+                self._connection, "INSERT INTO source_selection_policies "
+                "(policy_id, measure, record_type, first_date, last_date) VALUES (?, ?, ?, ?, ?)",
+                (policy_id, measure, record_type, first, last),
+            )
+            for origin in origins:
+                _execute(
+                    self._connection, "INSERT INTO policy_origins (policy_id, source_system_kind, origin) VALUES (?, ?, ?)",
+                    (policy_id, origin.source_system_kind, origin.origin),
+                )
+            policy = _policy(self._connection, policy_id)
+            assert isinstance(policy, SourceSelectionPolicyRecord)
+            return policy
 
     def read(self) -> AbstractContextManager[StoreView]:
         return self._read_view()
