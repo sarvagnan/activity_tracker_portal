@@ -1173,9 +1173,11 @@ class R8TheStoreCannotWrite(StoreCase):
 
     def test_reclaimed_job_records_the_same_outcome_once(self) -> None:
         lease = self.leased(projection())
+        before = contents(self.path)
         with self.assertRaises(StoreRetryable):
             self.execute(lease, store=Delegating(self.store, before={
                 "complete_processing_job": raiser(StoreRetryable("store-busy"))}))
+        self.assertEqual(contents(self.path), before)
         self.assertHeldOpen(lease)
         # The lease expires; a later claim takes the job with a higher fence and records the outcome once.
         later = self.reclaim(lease)
@@ -1563,7 +1565,9 @@ class R12WorkerSeam(StoreCase):
         lease = self.leased(projection(number=1))
         writer = FakeWriter(self.store)
         clock = self.clock_for(lease)
+        before = contents(self.path)
         handler = make_job_handler(writer, clock=clock)
+        self.assertEqual(contents(self.path), before, "building the handler changed the database")
         self.assertTrue(callable(handler))
         self.assertEqual((writer.runs, clock.calls), (0, 0))
         result = handler(lease)
@@ -1639,10 +1643,24 @@ class R12WorkerSeam(StoreCase):
         settings = worker_module.WorkerSettings(self.path, 0, processor_versions={"steps": "interpret-steps@1"},
                                                 claim_batch_size=1)
         worker_writer = SimpleWriter(self.store, {"complete_processing_job": raiser(StoreRetryable("store-busy"))})
-        loop = worker_module.Worker(worker_writer, settings, handler=make_job_handler(worker_writer, clock=lambda: at(500)),
+        before = contents(self.path)
+        handler = make_job_handler(worker_writer, clock=lambda: at(500))
+        self.assertEqual(contents(self.path), before, "building the handler changed the database")
+        unchanged: list[bool] = []
+
+        def checked(lease: Lease):
+            # Discovery and claims may write; each handler call itself must write nothing.
+            before = contents(self.path)
+            try:
+                return handler(lease)
+            finally:
+                unchanged.append(contents(self.path) == before)
+        loop = worker_module.Worker(worker_writer, settings, handler=checked,
                                     clock=lambda: at(500), monotonic=lambda: 0.0, sleep=waits.append)
         with self.assertLogs(worker_module.LOG, level="WARNING") as logs:
             loop.run(max_cycles=2)
+        self.assertTrue(unchanged, "the worker called no handler")
+        self.assertTrue(all(unchanged), "a handler call that raised a retryable changed the database")
         self.assertIn("WARNING:activity_tracker_portal.worker:worker handler retryable: store-busy", logs.output)
         self.assertEqual(waits[:1], [settings.idle_seconds])
         for marker in MARKERS:
@@ -1691,7 +1709,8 @@ class R13Time(StoreCase):
                          (clock.value + timedelta(seconds=60), clock.value))
         # Executions that return before any write attempt read no time.
         clock = self.clock_for(lease)
-        self.assertEqual(self.execute(lease, clock, processors=transient()).disposition, "already-recorded")
+        result = self.assertWritesNothing(self.execute, lease, clock, processors=transient())
+        self.assertEqual(result.disposition, "already-recorded")
         self.assertEqual(clock.calls, 0)
 
     def test_naive_clock_is_refused(self) -> None:
@@ -1723,7 +1742,7 @@ class R14HealthDataFree(StoreCase):
         found = []
         lease = self.leased(projection("sleep-session", number=1, notes=HEALTH_MARKER, title=HEALTH_MARKER), "sleep-session")
         found.append((lease, self.execute(lease)))
-        found.append((lease, self.execute(lease)))
+        found.append((lease, self.assertWritesNothing(self.execute, lease)))
         record_id = self.deliver(projection(number=2))
         lease = self.claim(record_id, self.select(record_id), SYNTHETIC_VERSION, max_attempts=1)
         found.append((lease, self.execute(lease, processors=registry(SyntheticProcessor(body_fault=True)))))
@@ -1735,7 +1754,7 @@ class R14HealthDataFree(StoreCase):
         found.append((lease, self.execute(lease, processors=transient())))
         lease = self.leased(projection(number=4))
         self.reclaim(lease)
-        found.append((lease, self.execute(lease)))
+        found.append((lease, self.assertWritesNothing(self.execute, lease)))
         for number, reason in enumerate(("processor-unavailable", "processor-record-type-mismatch"), start=5):
             payload = projection("weight", number=number)
             lease = self.leased(payload, "weight", "interpret-weight@9" if reason == "processor-unavailable" else "interpret-steps@1")
@@ -1822,9 +1841,11 @@ class R14HealthDataFree(StoreCase):
         with self.assertNoLogs(level=logging.DEBUG):
             results = self.scenarios()
             lease = self.leased(projection(number=30))
+            before = contents(self.path)
             with self.assertRaises(StoreRetryable):
                 self.execute(lease, store=Delegating(self.store, before={
                     "complete_processing_job": raiser(StoreRetryable("store-busy"))}))
+            self.assertEqual(contents(self.path), before)
             make_job_handler(FakeWriter(self.store), clock=self.clock_for(lease))(lease)
         self.assertEqual(len(results), 8)
 

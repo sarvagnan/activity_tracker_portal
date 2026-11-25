@@ -319,4 +319,6 @@ An implementation that reads this evidence by any other published read would esc
 
 The implementer's three surviving mutants now fail: ignoring expired claims in the delay, using lifetime history in the delay, and skipping the history read after a refused failure write. A fourth, which proceeds past an attempt closed as `lease-expired`, also fails. Its six other mutants still fail. Its correct alternatives pass: keyword calls, a naive time refused before the write, and projection bytes read from the archived batch.
 
+Approver Gate B round 3 resolved: whole-database comparisons added on every no-write execution, including each handler call inside the worker loop and the building of the handler.
+
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration matches the contract, that the refinements above are acceptable, and that the residuals above are complete.
