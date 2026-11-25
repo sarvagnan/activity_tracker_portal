@@ -109,13 +109,13 @@ Proposed tests: `test_planning_writes_nothing`.
 ### R8 — Confirming a plan
 
 `set_fallback_timezone_policy`:
-1. checks `at`, and the plan's zone, start, and `replacing` form, as R2 and R3 do;
+1. checks `at`, and the plan's zone, start, and `replacing` form, as R2 and R3 do, and that `replacing` is a subset of `supersedes` (`replacement-invalid` otherwise);
 2. reads the timeline in one read view;
 3. if a live policy already has the plan's zone, start, and `supersedes`, returns it with `repeated` true and zero counts, and writes nothing (R9);
 4. plans the same request again against that read. If the result differs from the given plan, or the request now fails R4, R5, or R6, it raises `plan-stale`;
 5. records the policy with `record_fallback_timezone_policy(plan.zone, plan.effective_from, plan.supersedes, processor_versions, max_attempts, at)`.
 
-The result's `policy` is the store's record: live, pending, with `requested_at` equal to `at`. A plan built by hand cannot get round R2–R6: step 1 or step 4 refuses it.
+The result's `policy` is the store's record: live, pending, with `requested_at` equal to `at`. A plan built by hand cannot get round R2–R6: step 1 or step 4 refuses it. A repeat (step 3) must be internally consistent, with `replacing` a subset of `supersedes`, which step 1 checks first. Beyond that, a repeat is recognised by the recorded write content alone: zone, start, and `supersedes`.
 
 Proposed tests: `test_confirmed_plan_is_recorded_pending`, `test_confirmation_supersedes_exactly_the_plan`, `test_confirmation_rechecks_the_request`, `test_hand_built_plan_cannot_bypass_rules`.
 
@@ -228,18 +228,18 @@ In the worktree, with the stub, these all pass:
 - in `set`, checks the request, reads the timeline once, returns a live identical plan as a repeat, plans again, and compares the result's `supersedes` with the plan's;
 - writes with one `record_fallback_timezone_policy` call, and maps the store's three concurrent-change refusals to `plan-stale`.
 
-**Mutants.** The drafter ran 36 wrong implementations against the reference, and the suite kills all 36. Two survived the first run, and the suite was strengthened to kill them:
+**Mutants.** The drafter ran 41 wrong implementations against the reference, and the suite kills all 41. One valid variant, `raise FallbackTimezoneRefusal("plan-stale") from None` inside the store-refusal handler, passes, as review item 3 below requires. Of the 41, the first 36 were run before the implementer review; two of those survived the first run, and the suite was strengthened to kill them:
 - a zone list taken from `zoneinfo.available_timezones()` and cached before the test changed the host path. R2 now also runs a fresh process with `PYTHONTZPATH` pointing at a synthetic host database;
 - a repeat that calls the store, which writes nothing on an identical repeat. R9 now confirms a repeat while another connection holds the write lock.
 
 The mutants cover:
 - **Zones:** checked against the host database, by `ZoneInfo(name)` or `available_timezones()`; matched case-insensitively; checked by file existence with the store's form check (which accepts `leapseconds`, and case variants on macOS); links canonicalised to their target; links refused; and `Factory` allowed.
-- **Start:** a future start allowed; the future compared with the wall clock instead of `at`; the start kept in its local offset; and an out-of-range start left as an `OverflowError`.
+- **Start and request time:** a future start allowed; the future compared with the wall clock instead of `at`; the start kept in its local offset; an out-of-range start left as an `OverflowError`; and an out-of-range `at` left to the store.
 - **Timeline:** a first policy with a start allowed; every later policy replaced automatically; a same-start policy not replaced; an earlier policy replaceable; `replacing` left unsorted; and the all-history check placed after the replacement check.
 - **Unchanged requests:** an unchanged request recorded; and "unchanged" judged by the zone that applies at the start rather than a policy starting there.
-- **Stale plans:** a stale plan recorded; a stale plan silently re-planned; the store's concurrent-change refusals passed through; and `plan-stale` raised with the store's refusal as context.
-- **Repeats:** no repeat check; a repeat written through the store; a repeat reporting counts; `repeated` always false; and a concurrent repeat not flagged.
-- **Store failures and settings:** store failures swallowed; retryables wrapped; settings refusals wrapped; reprocessing settings replaced with the worker's defaults; and the request not checked again in `set`.
+- **Stale plans:** a stale plan recorded; a stale plan silently re-planned; the store's concurrent-change refusals passed through; `policy-unknown` alone passed through; and `plan-stale` raised with the store's refusal as unsuppressed context.
+- **Repeats:** no repeat check; a repeat written through the store; a repeat reporting counts; `repeated` always false; a concurrent repeat not flagged; and a forged repeat whose `replacing` is not within its `supersedes` accepted.
+- **Store failures and settings:** store failures swallowed; retryables wrapped; settings refusals wrapped; reprocessing settings replaced with the worker's defaults; valid attempt bounds capped at 7; every version rewritten to `@1`; and the request not checked again in `set`.
 - **Surfaces:** the zone leaked into a refusal's `args`; a log record written; and planning that reads a store method other than the timeline.
 
 **Refinements.** The tests pin the refinements below beyond the approved text. None changes approved semantics. Items that settle a point the text left open are marked *settles*.
@@ -253,8 +253,9 @@ The mutants cover:
   - A name that exists only in a host database is refused, both in-process (after `zoneinfo.reset_tzpath`) and in a fresh process started with `PYTHONTZPATH`. Emptying the host database does not affect a pinned name.
 - **Times (R3).**
   - A non-`datetime` `at`, including `None`, a `date`, and a string, is `timestamp-invalid`.
+  - **For the approver (drafter's resolution of review finding 5):** an aware `at` whose UTC value is out of range (`0001-01-01T00:30+01:00`, `9999-12-31T23:30-01:00`) is `timestamp-invalid`, in both plan and set.
   - A start equal to `at`, written in another offset, is accepted. A start one microsecond after `at` is refused.
-  - A start in year 1 is accepted when its UTC value is still in range (`0001-01-01T00:30+00:30`). A start whose UTC value is out of range (`0001-01-01T00:30+01:00`) is `effective-time-invalid`.
+  - A start in year 1 is accepted when its UTC value is still in range (`0001-01-01T00:30+00:30`). A start whose UTC value is out of range, below (`0001-01-01T00:30+01:00`) or above (`9999-12-31T23:30-01:00`), is `effective-time-invalid`.
   - The plan's start has `tzinfo` exactly `timezone.utc`.
 - **Refusal order (R3).** `at`, zone, start, and the form of `replacing` come first. Then, among the timeline checks: `all-history-policy-required` before a `replacing` entry that is not live, and that before `policy-unchanged`.
 - **`replacing` (R5).** These are `replacement-invalid`:
@@ -268,6 +269,7 @@ The mutants cover:
   - A link name for the zone that already applies at that start (`Europe/Amsterdam` where `Europe/London` starts) is a change.
 - **Planning (R7).** A view that offers only `fallback_timezone_timeline` is enough to plan, so planning reads nothing else.
 - **Confirmation (R8).**
+  - **For the approver (drafter's resolution of review finding 4):** a plan must be internally consistent: `replacing` must be a subset of `supersedes`, or it is `replacement-invalid`, checked before repeat detection. So a forged repeat such as `replacing=(999,)` with `supersedes=()` is refused. Beyond that, repeat detection compares the recorded write content: zone, start, and `supersedes`.
   - When re-planning fails a timeline check (R4–R6), the result is `plan-stale` with no other name. This also applies to a hand-built plan that never matched, for example a first plan with a start on an empty timeline.
   - A `supersedes` that is a list rather than a tuple is `plan-stale`.
 - **Repeats (R9).**
@@ -275,12 +277,22 @@ The mutants cover:
   - *Settles:* a repeat is recognised only while the recorded policy is live. Once a later request replaces it, the old plan is `plan-stale`.
   - *Settles:* a repeat reads and never writes. It succeeds below the reserve and while another connection holds the write lock.
   - On a concurrent repeat, the returned policy's `requested_at` is the other call's time.
-- **Concurrent change (R9).** Two interleavings are injected between the read and the write: a policy with the plan's start (the store's `policy-overlap`), and the supersession of a policy the plan names (`policy-supersession-invalid`). Each gives `plan-stale`, with `__cause__` and `__context__` both `None`, exactly one store write attempt, and the database exactly as the injected write left it. `policy-unknown` cannot be produced by an injected write, because policies are never deleted. So it is not exercised, though the mapping covers it.
-- **Store failures (R10).** Each of the store's refusals keeps its exact type, `StoreRefusal`, and the same holds for `StoreRetryable`. A `max_attempts` of 101 is `processing-request-invalid`. A fault injected partway through the store's write propagates as the store's `sqlite3.Error` and commits nothing.
+- **Concurrent change (R9).** Two interleavings are injected between the read and the write: a policy with the plan's start (the store's `policy-overlap`), and the supersession of a policy the plan names (`policy-supersession-invalid`). Each gives `plan-stale` under the context rule in Surfaces below, with exactly one store write attempt, and the database exactly as the injected write left it. `policy-unknown` cannot come from a real write, because policies are never deleted, so a delegating store raises it at the write seam; it too gives `plan-stale`.
+- **Store failures (R10).** Each of the store's refusals keeps its exact type, `StoreRefusal`, and the same holds for `StoreRetryable`. A `max_attempts` of 101 is `processing-request-invalid`. The bounds 1 and 100 reach the store unchanged, and so does a version that is not `@1` (`interpret-heart-rate@3`, over a record whose latest outcome is under it); each queued job keeps them. A fault injected partway through the store's write propagates as the store's `sqlite3.Error` and commits nothing.
 - **Surfaces (R12).**
-  - Every refusal of this unit has `__cause__` and `__context__` both `None`, which is stricter than the approved text.
-  - Its formatted traceback carries no marker.
+  - **For the approver (drafter's resolution of review finding 3):** a refusal of this unit has `__cause__` `None`. It either has no context, or has `__suppress_context__` true with a chain made only of the store's `StoreRefusal` or `StoreRetryable`, each carrying only a store failure name. Neither its formatted traceback nor any message in its chain carries a marker. A conventional `raise ... from None` is valid. An exception the caller is already handling when it calls the unit (ambient caller context) is out of scope: Python attaches it, and the unit cannot prevent that.
   - Its text does not carry the zone.
+
+**Implementer review resolved.** GPT 6.1 Sol reviewed the pack read-only at `b9838ed` and found no passability blocker: its independent implementation passed all 45 tests. The coordinator decided the following, and the suite still has 45 tests:
+1. **Attempt bound.** R10 now passes the bounds 100 and 1 through affected records and checks each queued job's bound. Sol's `cap_bound_at_seven` mutant fails.
+2. **Processor mapping.** R10 now has an affected record whose latest outcome is under `interpret-heart-rate@3`, and checks that the new job keeps that version. Sol's `force_version_one` mutant fails.
+3. **Exception context** (drafter's resolution, flagged above for the approver). `__context__ is None` is no longer required. The suite requires `__cause__ is None`, any context suppressed and made only of store failure names, and no marker in the traceback or chain. Ambient caller context is out of scope. Sol's `suppress_context` variant now passes.
+4. **Forged repeats** (drafter's resolution, flagged above for the approver). `replacing` must be a subset of `supersedes`, checked before repeat detection. R8 adds three forged cases, including `replacing=(999,)` with `supersedes=()`. The hand-built case that dropped a named policy is now `replacement-invalid` rather than `plan-stale`. Sol's implementation needed this change; it needed no other.
+5. **`at` range** (drafter's resolution, flagged above for the approver). An out-of-range aware `at` is `timestamp-invalid` in plan and set. The upper UTC-overflow start is tested.
+6. **`policy-unknown`.** It is injected at the write seam and must give `plan-stale`. Sol's `ignore_unknown_race_mapping` mutant fails.
+7. **Same-`at` concurrent repeat.** The residual is reworded as a disclosed limitation.
+
+Sol's implementation, with only the subset check of item 4 added, passes all 45 tests. RED is unchanged: 3 pass and 42 fail, every failure the stub's `NotImplementedError` (`FAILED (errors=47)`).
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration matches the contract, and that the residuals below are complete.
 
@@ -291,7 +303,7 @@ Not mechanically provable here; the approver confirms these in implementation re
 - zones are read only from the `tzdata` package's resources, never through `ZoneInfo(name)`, `TZPATH`, or `available_timezones()`, which consult the host;
 - no clock, no host timezone, and no logging;
 - the R9 "change during the write" test injects one interleaving. It cannot prove every interleaving; the store's single write transaction does.
-- `repeated` can be wrong in one case: another call records the identical plan after this call's read, with exactly the same `at`. A single Operator cannot practically do this.
+- `repeated` can be wrong in one case, a disclosed limitation: another call records the identical plan after this call's read, with exactly the same `at`. Two retries that reuse one caller timestamp can produce this. The published store's result does not say whether it inserted or returned an existing policy, so the two cases cannot be told apart through the allowed operations. The test injects a different `at`, so it does not prove every concurrent repeat is flagged.
 
 Left to other units:
 - the Portal page: proposing a zone from the browser, showing the plan, the confirmation, and CSRF: Phase 7;

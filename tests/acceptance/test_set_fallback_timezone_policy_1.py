@@ -31,6 +31,7 @@ from pathlib import Path
 import tzdata
 
 from activity_tracker_portal import interpret_steps
+from activity_tracker_portal import operational_store as store_module
 from activity_tracker_portal.interpret_source_projection import (
     CanonicalRevision,
     FallbackTimezonePolicy,
@@ -316,6 +317,30 @@ class SetterCase(unittest.TestCase):
     def assertPlanRefused(self, failure: str, store, zone, start, replacing=(), when: object = TICK) -> None:
         self.assertRefusal(failure, self.plan, store, zone, start, replacing, when)
 
+    def assertCleanChain(self, error: BaseException) -> None:
+        """Operator decision on exception context: no cause; any context is suppressed and holds only
+        the store's failure names; and neither the formatted traceback nor any message in the chain
+        carries a marker. An exception the caller is already handling when it calls the unit (ambient
+        caller context) is out of scope, so no test calls the unit inside an except block."""
+        self.assertIsNone(error.__cause__)
+        if error.__context__ is not None:
+            self.assertTrue(error.__suppress_context__, "a context must be suppressed")
+        link, depth = error.__context__, 0
+        while link is not None:
+            depth += 1
+            self.assertLess(depth, 20)
+            self.assertIn(type(link), (StoreRefusal, StoreRetryable))
+            self.assertEqual(link.args, (link.failure,))  # type: ignore[attr-defined]
+            self.assertIn(link.failure, store_module.FAILURES)  # type: ignore[attr-defined]
+            link = link.__cause__ or link.__context__
+        text = "".join(traceback.format_exception(error))
+        link = error
+        while link is not None:
+            text += str(link) + repr(link)
+            link = link.__cause__ or link.__context__
+        for marker in MARKERS:
+            self.assertNotIn(marker, text)
+
     def assertWritesNothing(self, operation, *args, **kwargs):
         before = contents(self.path)
         result = operation(*args, **kwargs)
@@ -560,7 +585,8 @@ class R3StartAndRequestTime(SetterCase):
         store = self.ready()
         self.setp(store, "Asia/Kolkata", None)
         low = datetime(1, 1, 1, 0, 30, tzinfo=timezone(timedelta(hours=1)))
-        for start in (NAIVE, date(2026, 6, 1), "2026-06-01T00:00:00Z", 1_780_000_000, low):
+        high = datetime(9999, 12, 31, 23, 30, tzinfo=timezone(timedelta(hours=-1)))
+        for start in (NAIVE, date(2026, 6, 1), "2026-06-01T00:00:00Z", 1_780_000_000, low, high):
             with self.subTest(start=start):
                 self.assertPlanRefused("effective-time-invalid", store, "Europe/London", start)
                 self.assertRefusal("effective-time-invalid", self.confirm, store,
@@ -572,7 +598,10 @@ class R3StartAndRequestTime(SetterCase):
     def test_naive_request_time_is_refused(self) -> None:
         store = self.ready()
         plan = self.plan(store, "Asia/Kolkata", None)
-        for when in (NAIVE, date(2026, 6, 1), "2026-11-25T09:00:00Z", None):
+        # An aware time whose UTC value is out of range is timestamp-invalid too (Operator decision).
+        low = datetime(1, 1, 1, 0, 30, tzinfo=timezone(timedelta(hours=1)))
+        high = datetime(9999, 12, 31, 23, 30, tzinfo=timezone(timedelta(hours=-1)))
+        for when in (NAIVE, date(2026, 6, 1), "2026-11-25T09:00:00Z", None, low, high):
             with self.subTest(at=when):
                 self.assertPlanRefused("timestamp-invalid", store, "Asia/Kolkata", None, when=when)
                 self.assertRefusal("timestamp-invalid", self.confirm, store, plan, when)
@@ -824,13 +853,22 @@ class R8ConfirmingAPlan(SetterCase):
             FallbackTimezonePlan("Asia/Tokyo", MARCH, (), (june.policy_id,)),           # a later policy not named
             FallbackTimezonePlan("Asia/Tokyo", MARCH, (first.policy_id,), (first.policy_id,)),  # names an earlier one
             FallbackTimezonePlan("Europe/London", JUNE, (), (june.policy_id,)),         # changes nothing
-            FallbackTimezonePlan("Asia/Tokyo", JUNE, (september.policy_id,), (june.policy_id,)),  # drops a named one
             FallbackTimezonePlan("Asia/Tokyo", JUNE, (), (june.policy_id, 999)),        # names an unknown one
             FallbackTimezonePlan("Asia/Tokyo", JUNE, (), [june.policy_id]),             # not a tuple
         ]
         for plan in stale:
             with self.subTest(plan=plan):
                 self.assertRefusal("plan-stale", self.confirm, store, plan)
+        # Operator decision: a plan must be internally consistent, with replacing a subset of supersedes.
+        # Otherwise it is replacement-invalid before repeat detection, so a forged repeat is refused.
+        for forged in (FallbackTimezonePlan("Asia/Kolkata", None, (999,), ()),
+                       FallbackTimezonePlan("Asia/Kolkata", None, (june.policy_id,), ()),
+                       FallbackTimezonePlan("Asia/Tokyo", JUNE, (september.policy_id,), (june.policy_id,))):
+            with self.subTest(forged=forged):
+                self.assertRefusal("replacement-invalid", self.confirm, store, forged)
+        # Beyond that, a repeat is recognised by the recorded write content: zone, start, and supersedes.
+        genuine = self.assertWritesNothing(self.confirm, store, FallbackTimezonePlan("Asia/Kolkata", None, (), ()))
+        self.assertEqual(genuine, FallbackTimezoneResult(first, True, 0, 0))
         self.assertEqual(self.timeline(store), (first, june, september))
 
 
@@ -935,10 +973,22 @@ class R9RepeatsAndStalePlans(SetterCase):
                 with self.assertRaises(FallbackTimezoneRefusal) as caught:
                     self.confirm(interleaved, plan)
                 self.assertEqual(caught.exception.failure, "plan-stale")
-                self.assertIsNone(caught.exception.__cause__)
-                self.assertIsNone(caught.exception.__context__)
+                self.assertCleanChain(caught.exception)
                 self.assertEqual(interleaved.writes, 1)
                 self.assertEqual(contents(self.path), observed["after"])
+        # policy-unknown cannot come from a real write, because policies are never deleted, so it is
+        # injected at the write seam: the store's refusal still maps to plan-stale.
+        def refuse_unknown() -> None:
+            observed["after"] = contents(self.path)
+            raise StoreRefusal("policy-unknown")
+
+        interleaved = Interleaved(store, refuse_unknown)
+        with self.assertRaises(FallbackTimezoneRefusal) as caught:
+            self.confirm(interleaved, self.plan(store, "Asia/Tokyo", datetime(2026, 4, 1, tzinfo=UTC)))
+        self.assertEqual(caught.exception.failure, "plan-stale")
+        self.assertCleanChain(caught.exception)
+        self.assertEqual(interleaved.writes, 1)
+        self.assertEqual(contents(self.path), observed["after"])
         # The identical plan, recorded by another handle in between, is a repeat (@5 R46).
         plan = self.plan(store, "Asia/Seoul", SEPTEMBER)
         interleaved = Interleaved(store, landing("Asia/Seoul", SEPTEMBER))
@@ -991,6 +1041,12 @@ class R10ReprocessingThroughTheStore(SetterCase):
     def test_reprocessing_settings_reach_the_store(self) -> None:
         store = self.ready()
         inferred, waiting, _experienced, weight, _held = self.records(store)
+        # Affected records under a version that is not @1, and under another record type, for the
+        # attempt-bound edges (1 and 100). The store accepts any well-formed version.
+        later_version = self.project(store, "later-version", "heart-rate")
+        self.process(store, later_version, revision(policy=INFERRED, pv="interpret-heart-rate@3"))
+        lowest_bound = self.project(store, "lowest-bound", "sleep-session")
+        self.process(store, lowest_bound, revision(policy=INFERRED, pv="interpret-sleep-session@1"))
         steps_before = (self.jobs(store, inferred[0]), self.jobs(store, waiting[0]))
         result = self.confirm(store, self.plan(store, "Asia/Kolkata", None), mapping={"weight": WPV}, max_attempts=7)
         self.assertEqual((result.jobs_enqueued, result.jobs_rearmed), (1, 1))
@@ -1000,6 +1056,19 @@ class R10ReprocessingThroughTheStore(SetterCase):
         # An empty mapping queues nothing but still marks held leases.
         result = self.confirm(store, self.plan(store, "Europe/London", JUNE), mapping={})
         self.assertEqual((result.jobs_enqueued, result.jobs_rearmed), (0, 1))
+        # The highest bound and a version that is not @1 reach the store unchanged.
+        result = self.confirm(store, self.plan(store, "Europe/Paris", MARCH),
+                              mapping={"heart-rate": "interpret-heart-rate@3"}, max_attempts=100)
+        self.assertEqual((result.jobs_enqueued, result.jobs_rearmed), (1, 1))
+        job = self.jobs(store, later_version[0])[-1]
+        self.assertEqual((job.state, job.processor_version, job.max_attempts, job.selection_id),
+                         ("queued", "interpret-heart-rate@3", 100, later_version[1]))
+        # The lowest bound reaches the store unchanged.
+        result = self.confirm(store, self.plan(store, "Europe/Rome", SEPTEMBER),
+                              mapping={"sleep-session": "interpret-sleep-session@1"}, max_attempts=1)
+        self.assertEqual((result.jobs_enqueued, result.jobs_rearmed), (1, 1))
+        job = self.jobs(store, lowest_bound[0])[-1]
+        self.assertEqual((job.state, job.processor_version, job.max_attempts), ("queued", "interpret-sleep-session@1", 1))
 
     def test_invalid_reprocessing_settings_pass_through(self) -> None:
         store = self.ready()
@@ -1155,10 +1224,7 @@ class R12HealthDataFreeNoClockNoLogs(SetterCase):
                 self.assertEqual(error.failure, name)  # type: ignore[attr-defined]
                 self.assertEqual(error.args, (name,))
                 self.assertEqual(str(error), name)
-                self.assertIsNone(error.__cause__)
-                self.assertIsNone(error.__context__)
-                text = "".join(traceback.format_exception(error))
-                self.assertNoMarkers(text)
+                self.assertCleanChain(error)
                 self.assertNotIn("Asia/Kolkata", str(error) + repr(error))
 
     def test_no_clock_or_host_timezone_is_read(self) -> None:
