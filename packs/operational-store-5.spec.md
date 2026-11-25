@@ -243,27 +243,117 @@ Unbound inputs, reviewed rather than frozen:
 - the execution environment (`.python-version`, `pyproject.toml`, `uv.lock`, and the managed Python and SQLite runtime), which CI pins;
 - `tests/governance/test_operational_store_5_contract.py`, which runs in the governance suite;
 - `tests/unit/test_operational_store_hardening.py`, which checks that a new database records every known migration. It is supplementary, not bound acceptance evidence.
+- `projection/v1/vectors/positive.json` and the published `interpret-source-projection@1` and `interpret-steps@1` modules, which R49's timeline test uses to show that the timeline is exactly what `interpret` accepts. Each is bound by its own unit.
 
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- the new suite `tests/acceptance/test_operational_store_5.py`, covering R41–R53 with every proposed test name above;
-- the fixture `tests/acceptance/fixtures/operational-store-4-processing.sql`, an `iterdump` of a synthetic database written by the published `@4` module, with `PRAGMA user_version=3` appended. It holds:
-  - Source Records from two origins of one record type and one origin of another;
-  - an inferred revision, an experienced revision, a Policy-Pending `fallback-timezone` outcome, and a quarantine;
-  - a queued job, a leased job, and a failed job;
-- the runner `tests/acceptance/run_operational_store_5.sh`, which runs `@4`'s bound runner unchanged (it runs `@3`'s, `@2`'s and `@1`'s) and then the new suite;
-- the Interface stub, added to the published module: the five frozen dataclasses (real) and nine operations, each raising `NotImplementedError("operational-store@5")`. The stub adds no `FAILURES` entries, no migration, and no change to `complete_processing_job`. The implementer adds all three.
+- **The suite.** `tests/acceptance/test_operational_store_5.py` has 47 tests across R41–R53. Every proposed test name above is present, plus one more, `test_every_held_lease_is_marked` (R48).
+- **The fixture.** `tests/acceptance/fixtures/operational-store-4-processing.sql` was written as the `@3` fixture was. A throwaway script imported the published `@4` module, extracted with `git archive 6c64dbd` (the module is unchanged since `ed7b431`), and wrote a database through its public API only: enrollment, archival, `index_items`, `record_selection`, `enqueue_processing`, `claim_processing_job`, `complete_processing_job`, and `fail_processing_job`. The database was dumped with `sqlite3` `iterdump`, and `PRAGMA user_version=3` was appended. The script stays outside the repository; the file's header comment records the method. The fixture holds:
+  - Source Records from two steps origins (5 and 2 records) and one weight origin (2 records);
+  - an inferred and an experienced steps revision, a Policy-Pending `fallback-timezone` outcome with identity `"none"`, an inferred weight revision, a weight quarantine, and an inferred revision whose record was later retracted;
+  - a failed job with no outcome, a leased job held for a day with no outcome, and a queued job with no outcome;
+  - one item that is never indexed.
+- **The runner.** `tests/acceptance/run_operational_store_5.sh` runs `@4`'s bound runner unchanged (it runs `@3`'s, `@2`'s and `@1`'s), then the new suite.
+- **The Interface stub,** added to the published module:
+  - five real frozen dataclasses: `OriginKey`, `FallbackTimezonePolicyRecord`, `SourceSelectionPolicyRecord`, `FallbackTimezoneRecording`, and `KnownOrigin`;
+  - nine operations, each raising `NotImplementedError("operational-store@5")`: two on `OperationalStore` and seven on `StoreView`.
 
-**RED, against the stub,** for the 46 proposed tests: 3 pass, 4 fail on an `AssertionError`, and 39 fail with `NotImplementedError`. Any test the executable pack adds must fail against the stub.
-- the two pure contract tests, `test_contract_5_extends_version_4` and `test_scope_map_row_does_not_contradict_contract_5`, pass;
-- `test_failures_match_contract_5` fails on an `AssertionError`, because the stub has no new names;
-- the three R42 migration tests fail on an `AssertionError`, because there is no migration 4. A migration-3 database opens without refusing, and no table is added;
-- `test_completion_without_a_policy_write_is_unchanged` passes against the stub, because it uses only `@4` operations. It guards against a mark that re-queues every completion;
-- every other new test fails with `NotImplementedError`;
-- `@1`–`@4`'s 172 bound tests (53, 15, 45, and 59) still pass.
+  The stub adds no `FAILURES` entries, no migration, and no change to `complete_processing_job`. The implementer adds all three.
 
-The drafter builds a throwaway reference outside the repository and runs mutants against it before the read-only review. The implementer then reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze.
+**RED, through the runner, against the stub:**
+- `@1`–`@4`'s 172 bound tests (53, 15, 45, and 59) pass.
+- Of the 47 new tests, 3 pass:
+  - the two pure contract tests;
+  - `test_completion_without_a_policy_write_is_unchanged`, which uses only `@4` operations and guards against re-queueing every completion.
+- 4 fail on an `AssertionError`, because the stub has no new names and no migration 4:
+  - `test_failures_match_contract_5`;
+  - `test_new_database_records_migrations_1_to_4`;
+  - `test_version_4_database_requires_migration_and_is_untouched`, because the stub opens a migration-3 database without refusing;
+  - `test_migrated_version_4_database_takes_policies`, because no table is added.
+- The other 40 fail with `NotImplementedError("operational-store@5")`. The race test re-raises its workers' unexpected errors, so its failure is the stub's too.
+
+In the worktree, with the stub, these all pass:
+- `tests/unit`, including `test_operational_store_hardening.py`. That test compares new databases with the store's own `MIGRATIONS`, so it passes with three migrations now and with four after implementation;
+- `tests/governance`;
+- the published runners that chain off the store: `execute-processing-job@1`, `reconcile-source-record@1`, the four `accept-*` units, `manage-sender-installation@1`, `receipt-bound-delivery@1`, and `interpret-source-projection@1`.
+
+**Passability.** A throwaway reference, kept out of the repository, passes all five suites (`@1`–`@5`), `tests/unit`, `tests/governance`, and the dependent runners above. It has:
+- migration 4: six tables and four indexes, one of them on `source_records`;
+- the five names;
+- both writes and the seven reads;
+- the marked-lease case in `complete_processing_job`.
+
+**Mutants.** The drafter ran 64 wrong-implementation mutants against the reference. The suite kills 63 of them. They cover:
+- a backfilling migration, and one that alters an earlier table;
+- a split, non-atomic policy write;
+- "affected" too wide (every outcome; any Policy-Pending kind; any processor version; the record's latest outcome over any selection) and too narrow (missing Policy-Pending; missing Quarantine and Unmodeled; the first outcome instead of the latest; skipping records with failed jobs);
+- duplicated open jobs, and an ignored retry bound;
+- a missed mark, and marks limited to mapped versions, unexpired leases, or affected records;
+- re-queueing an unmarked lease or every completion after a policy; a re-queue that keeps attempts or the old `not_before`; a marked lease that completes; and a mark checked before a newer selection;
+- overlap allowed, overlap with exclusive date bounds, `None` starts exempt, and overlap that ignores supersession;
+- supersession of unknown, other-kind, or other-scope policies, and an unknown policy reported as invalid;
+- repeats written twice, repeats that ignore `supersedes` or origin order, and repeats that report counts;
+- reserve bypass on either write, and a reserve check before the repeat check;
+- timelines in arrival order, with all earlier history last, with superseded policies, or with starts stored in their local offset;
+- the applicable read ignoring supersession or using an exclusive last date;
+- unknown origins allowed, or known for any record type;
+- "active instead of pending": a new policy that supersedes every live one, and a requested time taken from the start;
+- a missing `superseded_by`, and history without superseded policies;
+- values leaked into refusal `args` or text;
+- a lax zone form, and zones checked against the host database (Decision 9);
+- reversed dates and duplicate origins allowed;
+- known origins that ignore the kind or count evidence, and unsorted origins;
+- a Source Selection write that marks leases.
+
+The one survivor is equivalent. It drops the "latest selection is a projection" condition from the affected query, but `@4` records outcomes only for projection selections, so a retraction or Source Conflict has no outcome to match.
+
+Three gaps were found and closed during this run:
+- two mutants that re-queue unmarked completions made a drain loop spin forever, so the suite hung instead of failing. Both loops are now bounded and fail with a message;
+- a repeat test sent origins already in sorted order, so a mutant that compared unsorted origins survived. The repeat now uses another order.
+
+**Refinements.** The tests pin the refinements below beyond the approved text. None changes approved semantics; items that settle a point the text left open are marked *settles*.
+- **Request shapes (R43, R44).**
+  - `supersedes` is a tuple of distinct positive `int`s. Zero, negatives, `str`, `float`, `None`, and duplicates are `policy-request-invalid`. A record's `supersedes` is ascending.
+  - A zone is one or more segments of ASCII letters, digits, `_`, `+`, and `-`, joined by single `/`. A leading, trailing, or doubled `/`, a `.` or `..` segment, a backslash, a space, a control character, and non-ASCII are `policy-request-invalid`. `UTC`, `Etc/GMT+5`, `America/Argentina/Buenos_Aires`, `America/Port-au-Prince`, and the well-formed but unknown `Synthetic/Unknown_Zone` are accepted (Decision 9).
+  - A mapping key that is empty or not a string is `policy-request-invalid`. Mapping values follow `@4`'s processor-version grammar. `max_attempts` follows `@4`: 1 and 100 are accepted, and 0, 101, `2.5`, and `"3"` are refused.
+  - A measure follows `@4`'s reason rule: lowercase kebab-case of at most 64 characters.
+  - Origins are a tuple of `OriginKey` whose fields are strings. An empty tuple, a duplicate, a plain tuple or string, or a non-string field is `policy-request-invalid`. A record's origins are sorted by kind, then origin, in code point order.
+  - A date bound given as a string is `policy-request-invalid`. A single-day policy, with the first date equal to the last, is valid. A `datetime` passed as a date is unpinned.
+- **Times.** `effective_from` and `requested_at` are returned in UTC. The same instant written in another offset is the same start, for both repeats and overlap. A microsecond apart is a different start.
+- **Known origin (R44, R50).** "Known" means a Source Record with exactly that source-system kind, origin, and record type. `record_count` counts Source Records, including retracted and never-selected ones. A retraction with no Source Record adds no origin. Rows are ordered by record type, kind, and origin in code point order.
+- **Supersession (R45).**
+  - A policy may supersede a live policy it does not overlap.
+  - Overlap is checked after the named policies are removed.
+  - A list that mixes a valid and an unknown identity is `policy-unknown`.
+  - Which refusal wins when a list mixes unknown and invalid identities is unpinned.
+- **Repeats (R46).** *Settles:* the mapping and `max_attempts` are not part of a Fallback Timezone Policy, so a repeat with a different mapping or bound is still a repeat and writes nothing. Origins given in another order are the same policy. Only live policies are repeated. A repeat of a superseding request returns it, even though the policies it names are now superseded. A request equal to a superseded policy is a new request.
+- **Affected records (R47).**
+  - A policy identity other than `"none"` makes any outcome kind affected: revision, Unmodeled, Quarantine, or Policy-Pending. A Policy-Pending outcome of another policy kind with identity `"none"` is not affected.
+  - Only the mapped version's latest outcome for the latest selection counts. A later `"none"` outcome for the same selection makes the record unaffected.
+  - An open job under another processor version does not stand in for the mapped one.
+  - A record with an affected outcome whose later retry failed is affected, because it has no open job.
+  - A new job has no lease, failure, `closed_at`, or history. Its `not_before` and `enqueued_at` both equal `at`.
+- **Marks (R48).**
+  - *Settles:* every job in state `leased` is marked, whatever its processor version and whether or not its lease has expired. The fixture's expired lease is marked.
+  - Renewal keeps the mark.
+  - A marked completion re-queues for the same selection, with attempts 0, `not_before` equal to the completion's `at`, and no owner, expiry, failure, or `closed_at`. The attempt closes as `completed`, and the job keeps its fence until the next claim.
+  - A transient failure of a marked lease keeps `@4` R35 (attempts kept, `not_before` equal to `retry_at`).
+  - How `jobs_rearmed` counts a lease already marked by an earlier write is unpinned.
+- **Source Selection writes (R44).** A Source Selection write leaves every table of migrations 1–3 unchanged, so it marks no lease either.
+- **Reads (R49).**
+  - `policy` returns `None` for 0, negatives, and unknown identities.
+  - `source_selection_policies("unknown-measure")` is `()`.
+  - Both date bounds are inclusive.
+  - A read view does not see later commits.
+- **Surfaces (R51).** Each new refusal's `args` is exactly `(failure,)`, and its `str` is the failure name. The five new types are frozen.
+- **Atomicity (R52).**
+  - The fault-injection test requires at least six row writes in the Fallback Timezone write: its policy, three jobs, and two marks. It requires at least three in the Source Selection write.
+  - Completing a marked lease is also all-or-nothing.
+  - In the race test, the loser is `policy-overlap`, or `store-busy` if the lock wait expires.
+- **Earlier tables (R53).** While policies are written, only one `@4` table changes, and only by gaining the queued jobs. Lease marks therefore live in a new table.
+
+The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze.
 
 ## Residuals
 

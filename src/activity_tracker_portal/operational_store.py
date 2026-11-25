@@ -798,6 +798,64 @@ class ProcessingCounts:
     items_awaiting_index: int
 
 
+# operational-store@5: policy records, policy reads, known origins, and the
+# reprocessing a Fallback Timezone Policy affects (packs/operational-store-5.spec.md).
+
+
+@dataclass(frozen=True)
+class OriginKey:
+    """One origin, as a Source Record key names it."""
+
+    source_system_kind: str
+    origin: str
+
+
+@dataclass(frozen=True)
+class FallbackTimezonePolicyRecord:
+    """A pending Fallback Timezone Policy; effective_from None covers all earlier history, superseded_by None is live."""
+
+    policy_id: int
+    zone: str
+    effective_from: datetime | None
+    supersedes: tuple[int, ...]
+    superseded_by: int | None
+    requested_at: datetime
+
+
+@dataclass(frozen=True)
+class SourceSelectionPolicyRecord:
+    """A pending Source Selection Policy over inclusive local dates; a None bound is unbounded."""
+
+    policy_id: int
+    measure: str
+    record_type: str
+    origins: tuple[OriginKey, ...]
+    first_date: date | None
+    last_date: date | None
+    supersedes: tuple[int, ...]
+    superseded_by: int | None
+    requested_at: datetime
+
+
+@dataclass(frozen=True)
+class FallbackTimezoneRecording:
+    """A recorded Fallback Timezone Policy with health-data-free counts of the jobs queued and leases marked."""
+
+    policy: FallbackTimezonePolicyRecord
+    jobs_enqueued: int
+    jobs_rearmed: int
+
+
+@dataclass(frozen=True)
+class KnownOrigin:
+    """One source-system kind, record type, and origin among the Source Records, with its record count."""
+
+    source_system_kind: str
+    record_type: str
+    origin: str
+    record_count: int
+
+
 
 # All routing and counting uses scalar columns; bytes are loaded only by reads
 # that explicitly return them. The earlier migrations and write paths are intact.
@@ -1377,6 +1435,33 @@ class StoreView:
             self._connection, "SELECT count(*) FROM batch_items i WHERE " + _UNINDEXED_PROCESSING_SQL,
         ).fetchone()[0])
         return ProcessingCounts(*counts)
+
+    # ---- operational-store@5 stub ----
+
+    def policy(self, policy_id: int) -> FallbackTimezonePolicyRecord | SourceSelectionPolicyRecord | None:
+        raise NotImplementedError("operational-store@5")
+
+    def fallback_timezone_policies(self) -> tuple[FallbackTimezonePolicyRecord, ...]:
+        raise NotImplementedError("operational-store@5")
+
+    def fallback_timezone_timeline(self) -> tuple[FallbackTimezonePolicyRecord, ...]:
+        raise NotImplementedError("operational-store@5")
+
+    def source_selection_policies(
+        self, measure: str | None = None, record_type: str | None = None
+    ) -> tuple[SourceSelectionPolicyRecord, ...]:
+        raise NotImplementedError("operational-store@5")
+
+    def source_selection_timeline(self, measure: str, record_type: str) -> tuple[SourceSelectionPolicyRecord, ...]:
+        raise NotImplementedError("operational-store@5")
+
+    def applicable_source_selection(
+        self, measure: str, record_type: str, on: date
+    ) -> SourceSelectionPolicyRecord | None:
+        raise NotImplementedError("operational-store@5")
+
+    def known_origins(self, record_type: str | None = None) -> tuple[KnownOrigin, ...]:
+        raise NotImplementedError("operational-store@5")
 
     def storage_reserve(self) -> ReserveStatus:
         free = _sample_free_bytes(self._free_bytes, self._path)
@@ -2051,6 +2136,31 @@ class OperationalStore:
                 parameters + (reason, pointer, timestamp),
             )
             return ItemQuarantine(position, reason, pointer, _datetime(timestamp))
+
+    # ---- operational-store@5 stub ----
+
+    def record_fallback_timezone_policy(
+        self,
+        zone: str,
+        effective_from: datetime | None,
+        supersedes: tuple[int, ...],
+        processor_versions: Mapping[str, str],
+        max_attempts: int,
+        at: datetime,
+    ) -> FallbackTimezoneRecording:
+        raise NotImplementedError("operational-store@5")
+
+    def record_source_selection_policy(
+        self,
+        measure: str,
+        record_type: str,
+        origins: tuple[OriginKey, ...],
+        first_date: date | None,
+        last_date: date | None,
+        supersedes: tuple[int, ...],
+        at: datetime,
+    ) -> SourceSelectionPolicyRecord:
+        raise NotImplementedError("operational-store@5")
 
     def read(self) -> AbstractContextManager[StoreView]:
         return self._read_view()
