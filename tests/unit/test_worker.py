@@ -1,8 +1,9 @@
 """Worker supervisor integration tests with real stores and synthetic projections."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import ast
 import fcntl
 import hashlib
 import json
@@ -15,13 +16,14 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from activity_tracker_portal import ingress, operational_store as store_module, worker
 from activity_tracker_portal.operational_store import BatchItem, IngestBatchRecord, ItemPosition, MessageHeader, SourceKey
-from activity_tracker_portal.reconcile_source_record import ReconcileRetryable
+from activity_tracker_portal.reconcile_source_record import ReconcileRefusal, ReconcileRetryable
 
 ROOT = Path(__file__).resolve().parents[2]
 VECTORS = json.loads((ROOT / "projection/v1/vectors/positive.json").read_text())["vectors"]
@@ -45,6 +47,100 @@ class FakeTime:
     def sleep(self, seconds):
         self.waits.append(seconds)
         self.elapsed += seconds
+
+
+class DiscoveryTests(unittest.TestCase):
+    def test_refuser_memory_and_read_windows_are_bounded_for_every_stage(self):
+        fake_time = FakeTime()
+        reads = {stage: [] for stage in ("index", "selection", "processing")}
+        attempts = {stage: [] for stage in reads}
+
+        class View:
+            # Deliberately only the published parameters, with no **kwargs.
+            def items_awaiting_index(self, limit):
+                reads["index"].append(limit)
+                return tuple(SimpleNamespace(position=number) for number in range(1, limit + 1))
+
+            def records_awaiting_selection(self, limit):
+                reads["selection"].append(limit)
+                return tuple(range(1, limit + 1))
+
+            def selections_awaiting_processing(self, processor_versions, limit):
+                reads["processing"].append(limit)
+                return tuple(SimpleNamespace(record_id=number, selection_id=number, processor_version=PV)
+                             for number in range(1, limit + 1))
+
+            def enqueue_processing(self, record_id, selection_id, version, max_attempts, at):
+                fail("processing", record_id)
+
+        def fail(stage, identity):
+            attempts[stage].append(identity)
+            raise store_module.StoreRefusal("synthetic-health-marker")
+
+        view = View()
+        writer = SimpleNamespace(store=SimpleNamespace(read=lambda: nullcontext(view)), run=lambda op: op(view))
+        settings = worker.WorkerSettings(Path("synthetic.db"), 0, batch_size=1, max_discovery_window=4,
+                                         refusal_retry_seconds=1)
+        loop = worker.Worker(writer, settings, clock=fake_time.clock, monotonic=fake_time.monotonic,
+                             sleep=fake_time.sleep)
+        loop._index = lambda item: fail("index", item.position)
+        loop._reconcile = lambda record_id: fail("selection", record_id)
+        with self.assertLogs(worker.LOG, level="WARNING") as logs:
+            for _ in range(30):
+                before = {stage: len(values) for stage, values in attempts.items()}
+                loop.cycle(discover=True)
+                for stage in reads:
+                    self.assertLessEqual(len(loop._refusers[stage]), 3)
+                    self.assertLessEqual(len(attempts[stage]) - before[stage], 1)
+                fake_time.elapsed += 10
+                loop.cycle(discover=False)
+        for stage in reads:
+            self.assertEqual(len(reads[stage]), 30)
+            self.assertEqual(max(reads[stage]), 4)
+            self.assertEqual(set(attempts[stage]), {1, 2, 3, 4})
+            self.assertTrue(all(attempts[stage].count(number) > 1 for number in (1, 2, 3)))
+        self.assertEqual([line for line in logs.output if "window saturated" in line], [
+            f"WARNING:activity_tracker_portal.worker:worker {stage} discovery window saturated"
+            for stage in ("index", "reconcile", "enqueue")])
+        self.assertNotIn("synthetic-health-marker", repr(logs.records))
+        self.assertTrue(all(record.exc_info is None for record in logs.records))
+        self.assertEqual(fake_time.waits, [])
+
+    def test_refuser_retry_uses_injected_clock_and_success_clears_memory(self):
+        fake_time = FakeTime()
+        settings = worker.WorkerSettings(Path("synthetic.db"), 0, batch_size=1, refusal_retry_seconds=10)
+        view = SimpleNamespace(items_awaiting_index=lambda limit: (SimpleNamespace(position=1),))
+        writer = SimpleNamespace(store=SimpleNamespace(read=lambda: nullcontext(view)))
+        loop = worker.Worker(writer, settings, clock=fake_time.clock, monotonic=fake_time.monotonic)
+        attempts = []
+        def operation(item):
+            attempts.append(fake_time.elapsed)
+            if len(attempts) == 1:
+                raise store_module.StoreRefusal("source-key-invalid")
+        def turn():
+            items = loop._discover("index", lambda view, limit: view.items_awaiting_index(limit),
+                                   lambda item: item.position)
+            loop._batch("index", items, lambda item: item.position, operation, discovery_stage="index")
+        with self.assertLogs(worker.LOG, level="WARNING"):
+            turn()
+        fake_time.elapsed = 9
+        turn()
+        self.assertEqual(attempts, [0])
+        fake_time.elapsed = 10
+        turn()
+        self.assertEqual(attempts, [0, 10])
+        self.assertEqual(loop._refusers["index"], {})
+
+    def test_worker_calls_only_published_discovery_parameters(self):
+        expected = {"items_awaiting_index": 1, "records_awaiting_selection": 1,
+                    "selections_awaiting_processing": 2}
+        calls = [node for node in ast.walk(ast.parse(Path(worker.__file__).read_text()))
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                 and node.func.attr in expected]
+        self.assertEqual({node.func.attr for node in calls}, set(expected))
+        for call in calls:
+            self.assertEqual(len(call.args), expected[call.func.attr])
+            self.assertEqual(call.keywords, [])
 
 
 class WorkerCase(unittest.TestCase):
@@ -235,6 +331,104 @@ class LoopTests(WorkerCase):
             with self.assertLogs(worker.LOG, level="WARNING"):
                 self.loop(settings=replace(self.settings, batch_size=1, discovery_interval=1)).run(max_cycles=3)
         self.assertTrue(self.source(self.projection(11)).selections)
+
+    def test_two_refusers_cannot_starve_later_items_and_are_retried(self):
+        bad = [self.archive(BatchItem(projection=self.projection(number))) for number in (10, 11)]
+        self.archive(BatchItem(projection=self.projection(12)))
+        original = store_module.OperationalStore.index_items
+        attempts = []
+        def index(store, entries, at):
+            position = entries[0].position
+            attempts.append(position)
+            if position in bad:
+                raise store_module.StoreRefusal("source-key-invalid")
+            return original(store, entries, at)
+        with patch.object(store_module.OperationalStore, "index_items", autospec=True, side_effect=index):
+            with self.assertLogs(worker.LOG, level="WARNING"):
+                self.loop(settings=replace(self.settings, batch_size=1, discovery_interval=1,
+                                                refusal_retry_seconds=0.5)).run(max_cycles=8)
+        record = self.source(self.projection(12))
+        self.assertIsNotNone(record, "the valid third item must be discovered past both refusers")
+        self.assertTrue(record.selections)
+        self.assertTrue(all(attempts.count(position) >= 2 for position in bad), "refusers must be retried")
+        self.assertLessEqual(len(attempts), 8, "each cycle must attempt at most batch_size items")
+
+    def test_long_refusing_prefix_keeps_discovery_and_attempts_bounded(self):
+        # One archive exercises a refusing prefix spanning items and messages.
+        bad = self.archive(*(BatchItem(projection=self.projection(number)) for number in range(10, 19)))
+        self.archive(BatchItem(projection=self.projection(19)))
+        original_index = store_module.OperationalStore.index_items
+        original_read = store_module.StoreView.items_awaiting_index
+        attempts, reads = [], []
+        def index(store, entries, at):
+            position = entries[0].position
+            attempts.append(position)
+            if position.sequence == bad.sequence:
+                raise store_module.StoreRefusal("source-key-invalid")
+            return original_index(store, entries, at)
+        def read(view, limit):
+            items = original_read(view, limit)
+            reads.append((limit, len(items)))
+            return items
+        settings = replace(self.settings, batch_size=2, discovery_interval=1, refusal_retry_seconds=0.5)
+        with patch.object(store_module.OperationalStore, "index_items", autospec=True, side_effect=index):
+            with patch.object(store_module.StoreView, "items_awaiting_index", autospec=True, side_effect=read):
+                with self.assertLogs(worker.LOG, level="WARNING"):
+                    self.loop(settings=settings).run(max_cycles=12)
+        self.assertTrue(self.source(self.projection(19)).selections)
+        self.assertTrue(all(count <= limit <= 11 for limit, count in reads))
+        self.assertLessEqual(len(reads), 12, "one read per discovery turn")
+        self.assertLessEqual(len(attempts), 24)
+        self.assertGreaterEqual(attempts.count(bad), 2)
+
+    def test_two_reconcile_refusers_cannot_starve_later_records(self):
+        for number in (10, 11, 12):
+            self.archive(BatchItem(projection=self.projection(number)))
+        original = worker.reconcile
+        attempts = []
+        def reconcile(store, record_id, at):
+            attempts.append(record_id)
+            if record_id in (1, 2):
+                raise ReconcileRefusal("source-record-unknown")
+            return original(store, record_id, at)
+        with patch.object(worker, "reconcile", side_effect=reconcile):
+            with self.assertLogs(worker.LOG, level="WARNING"):
+                self.loop(settings=replace(self.settings, batch_size=1, discovery_interval=1,
+                                                refusal_retry_seconds=0.5)).run(max_cycles=8)
+        self.assertTrue(self.source(self.projection(12)).selections)
+        self.assertTrue(all(attempts.count(record_id) >= 2 for record_id in (1, 2)))
+        self.assertLessEqual(len(attempts), 8)
+
+    def test_two_enqueue_refusers_cannot_starve_later_selections(self):
+        for number in (10, 11, 12):
+            self.archive(BatchItem(projection=self.projection(number)))
+        original = store_module.OperationalStore.enqueue_processing
+        attempts = []
+        def enqueue(store, record_id, selection_id, version, max_attempts, at):
+            attempts.append(record_id)
+            if record_id in (1, 2):
+                raise store_module.StoreRefusal("processing-request-invalid")
+            return original(store, record_id, selection_id, version, max_attempts, at)
+        settings = replace(self.settings, processor_versions={"steps": PV}, batch_size=1, discovery_interval=1,
+                           refusal_retry_seconds=0.5)
+        leases = []
+        with patch.object(store_module.OperationalStore, "enqueue_processing", autospec=True, side_effect=enqueue):
+            with self.assertLogs(worker.LOG, level="WARNING"):
+                self.loop(settings=settings, handler=leases.append).run(max_cycles=8)
+        self.assertEqual([lease.record_id for lease in leases], [self.source(self.projection(12)).record_id])
+        self.assertTrue(all(attempts.count(record_id) >= 2 for record_id in (1, 2)))
+        self.assertLessEqual(len(attempts), 8)
+
+    def test_retryable_cycle_past_discovery_deadline_still_sleeps(self):
+        self.archive(BatchItem(projection=self.projection()))
+        def index(store, entries, at):
+            self.time.elapsed += 2
+            raise store_module.StoreRetryable("store-busy")
+        settings = replace(self.settings, discovery_interval=1, idle_seconds=0.5)
+        with patch.object(store_module.OperationalStore, "index_items", autospec=True, side_effect=index):
+            with self.assertLogs(worker.LOG, level="WARNING"):
+                self.loop(settings=settings).run(max_cycles=2)
+        self.assertEqual(self.time.waits, [0.5])
 
     def test_real_store_reserve_retryable_recovers_without_classification(self):
         self.archive(BatchItem(projection=self.projection()))
@@ -462,6 +656,10 @@ def handle(lease):
         path = self.path.with_suffix(".json")
         for value in ({}, [], {"store_path": "synthetic-health-marker", "reserve_bytes": True},
                       {"store_path": "synthetic-health-marker", "reserve_bytes": 0, "idle_seconds": 0},
+                      *({"store_path": "synthetic-health-marker", "reserve_bytes": 0, **option}
+                        for option in ({"max_discovery_window": 0}, {"max_discovery_window": 10001},
+                                       {"max_discovery_window": 99}, {"max_discovery_window": True},
+                                       {"refusal_retry_seconds": 0}, {"refusal_retry_seconds": float("inf")})),
                       {"store_path": "synthetic-health-marker", "reserve_bytes": 0, "processor_versions": {"steps": "BAD"}},
                       *({"store_path": "synthetic-health-marker", "reserve_bytes": 0, "job_handler": value}
                         for value in (42, "", "module", "module:", "module:function:extra", "../module:handle"))):

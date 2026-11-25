@@ -41,6 +41,8 @@ class WorkerSettings:
     processor_versions: Mapping[str, str] = field(default_factory=dict)
     batch_size: int = 100
     claim_batch_size: int = 10
+    max_discovery_window: int = 10000
+    refusal_retry_seconds: float = 60.0
     discovery_interval: float = 30.0
     idle_seconds: float = 1.0
     max_idle_seconds: float = 30.0
@@ -55,10 +57,14 @@ class WorkerSettings:
             if type(self.reserve_bytes) is not int or self.reserve_bytes < 0:
                 raise ValueError
             for value, maximum in ((self.batch_size, 1000), (self.claim_batch_size, 1000),
-                                   (self.lease_seconds, 86400), (self.max_attempts, 100)):
+                                   (self.lease_seconds, 86400), (self.max_attempts, 100),
+                                   (self.max_discovery_window, 10000)):
                 if type(value) is not int or not 1 <= value <= maximum:
                     raise ValueError
-            for value in (self.discovery_interval, self.idle_seconds, self.max_idle_seconds):
+            if self.max_discovery_window < self.batch_size:
+                raise ValueError
+            for value in (self.discovery_interval, self.idle_seconds, self.max_idle_seconds,
+                          self.refusal_retry_seconds):
                 if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                     raise ValueError
             if self.max_idle_seconds < self.idle_seconds:
@@ -114,11 +120,12 @@ class Worker:
         self.sleep = sleep if sleep is not None else self.stop.wait
         self._retry_records: list[int] = []
         self._retryable = False
-        self._attempt_failed = False
-        self._deferred: dict[str, object] = {}
+        self._refusers: dict[str, dict[object, float]] = {
+            stage: {} for stage in ("index", "selection", "processing")}
+        self._retry_first: set[str] = set()
+        self._saturation_logged: set[str] = set()
 
     def _attempt(self, stage, operation):
-        self._attempt_failed = False
         try:
             return operation()
         except (StoreRetryable, ReconcileRetryable) as error:
@@ -131,23 +138,50 @@ class Worker:
         except Exception:
             # No exception text, traceback, values, positions, or identities.
             LOG.error("worker %s unexpected failure", stage)
-        self._attempt_failed = True
         return None
 
-    def _batch(self, stage, items, key, operation) -> None:
-        # One bounded lookahead lets even batch_size=1 pass a refusing head.
-        # Defer that head for one turn, then retry it; no durable state or
-        # domain classification is invented, and memory remains bounded.
-        if not items:
-            return
-        deferred = self._deferred.pop(stage, None)
-        ordered = sorted(items, key=lambda item: key(item) == deferred)
-        for item in ordered[:self.settings.batch_size]:
+    def _discover(self, stage, operation, key):
+        remembered = self._refusers[stage]
+        window = min(self.settings.batch_size + len(remembered), self.settings.max_discovery_window)
+        items = self._attempt(f"{stage}-discovery", lambda: self._read(
+            lambda view: operation(view, window)))
+        if items is None:
+            return ()
+        by_key = {key(item): item for item in items}
+        # Drop keys no longer in the bounded prefix (including completed work).
+        for identity in tuple(remembered):
+            if identity not in by_key:
+                del remembered[identity]
+        fresh = [item for identity, item in by_key.items() if identity not in remembered]
+        now = self.monotonic()
+        due = [by_key[identity] for identity, retry_at in remembered.items() if retry_at <= now]
+        # Alternate priority when both kinds exist: neither sustained arrivals
+        # nor already-due refusers may monopolize a one-item stage batch.
+        candidates = due + fresh if stage in self._retry_first else fresh + due
+        if fresh and due:
+            self._retry_first.symmetric_difference_update({stage})
+        return candidates[:self.settings.batch_size]
+
+    def _batch(self, stage, items, key, operation, *, discovery_stage) -> None:
+        remembered = self._refusers[discovery_stage]
+        capacity = self.settings.max_discovery_window - self.settings.batch_size
+        for item in items[:self.settings.batch_size]:
             if self.stop.is_set():
                 break
-            self._attempt(stage, lambda: operation(item))
-            if self._attempt_failed:
-                self._deferred[stage] = key(item)
+            identity = key(item)
+            # Operations may return None on success; distinguish that from the
+            # exception path in _attempt without changing their interfaces.
+            succeeded = self._attempt(stage, lambda: (operation(item), True)[1])
+            was_remembered = identity in remembered
+            remembered.pop(identity, None)
+            if succeeded:
+                continue
+            if was_remembered or len(remembered) < capacity:
+                # Reinsert at the end so due retries rotate fairly too.
+                remembered[identity] = self.monotonic() + self.settings.refusal_retry_seconds
+            elif discovery_stage not in self._saturation_logged:
+                LOG.warning("worker %s discovery window saturated", stage)
+                self._saturation_logged.add(discovery_stage)
 
     def _read(self, operation):
         with self.writer.store.read() as view:
@@ -178,25 +212,32 @@ class Worker:
     def cycle(self, *, discover: bool) -> int:
         """Give each available stage a bounded turn; return leases dispatched."""
         self._retryable = False
-        limit = self.settings.batch_size + 1
+        limit = self.settings.batch_size
         if discover and not self.stop.is_set():
-            items = self._attempt("index-discovery", lambda: self._read(lambda view: view.items_awaiting_index(limit)))
-            self._batch("index", items or (), lambda item: item.position, self._index)
+            items = self._discover("index", lambda view, window: view.items_awaiting_index(window),
+                                   lambda item: item.position)
+            self._batch("index", items, lambda item: item.position, self._index, discovery_stage="index")
 
         records = self._retry_records
         self._retry_records = []
         if discover and not self.stop.is_set():
-            found = self._attempt("selection-discovery", lambda: self._read(lambda view: view.records_awaiting_selection(limit)))
-            records = list(dict.fromkeys(records + list(found or ())))
-        self._batch("reconcile", records, lambda record_id: record_id, self._reconcile)
+            found = self._discover("selection", lambda view, window: view.records_awaiting_selection(window),
+                                   lambda record_id: record_id)
+            # Discovery gets first choice of the bounded turn; evidence-moved
+            # retries fill spare slots. Any remainder stays discoverable in
+            # the store, keeping the in-memory retry list bounded too.
+            pending = list(dict.fromkeys(list(found) + records))
+            records = pending[:limit]
+        self._batch("reconcile", records, lambda record_id: record_id, self._reconcile,
+                    discovery_stage="selection")
 
         if discover and not self.stop.is_set():
-            selections = self._attempt("processing-discovery", lambda: self._read(
-                lambda view: view.selections_awaiting_processing(self.settings.processor_versions, limit)))
+            selections = self._discover("processing", lambda view, window: view.selections_awaiting_processing(
+                self.settings.processor_versions, window), lambda selection: selection.record_id)
             self._batch("enqueue", selections or (), lambda selection: selection.record_id,
                         lambda selection: self.writer.run(lambda store: store.enqueue_processing(
                     selection.record_id, selection.selection_id, selection.processor_version,
-                    self.settings.max_attempts, self.clock())))
+                    self.settings.max_attempts, self.clock())), discovery_stage="processing")
 
         claimed = 0
         if self.handler is not None:
@@ -227,8 +268,11 @@ class Worker:
             if self.stop.is_set() or (max_cycles is not None and cycles >= max_cycles):
                 break
             if not claimed or self._retryable:
-                # Never oversleep the next discovery turn under idle backoff.
-                self.sleep(min(idle_delay, max(0.0, next_discovery - self.monotonic())))
+                # Retry backoff remains positive even when a slow cycle has
+                # passed the discovery deadline. Only idle waits are capped.
+                delay = idle_delay if self._retryable else min(
+                    idle_delay, max(0.0, next_discovery - self.monotonic()))
+                self.sleep(delay)
                 idle_delay = min(idle_delay * 2, self.settings.max_idle_seconds)
             else:
                 idle_delay = self.settings.idle_seconds

@@ -51,7 +51,9 @@ Optional configuration fields and defaults:
 | --- | --- | --- |
 | `job_handler` | `null` | Importable `package.module:callable` receiving a `Lease`; absent disables claims |
 | `processor_versions` | `{}` | Record type to processor version for enqueue discovery |
-| `batch_size` | `100` | Maximum items per discovery stage (1–1000) |
+| `batch_size` | `100` | Maximum item attempts per discovery stage (1–1000) |
+| `max_discovery_window` | `10000` | Maximum results requested per stage read (1–10000, at least `batch_size`) |
+| `refusal_retry_seconds` | `60` | Positive minimum seconds before a remembered discovery failure is eligible for retry |
 | `claim_batch_size` | `10` | Maximum claims before yielding another scheduling turn (1–1000) |
 | `discovery_interval` | `30` | Minimum seconds between global discovery reads |
 | `idle_seconds` | `1` | Initial idle/retryable backoff in seconds |
@@ -62,12 +64,35 @@ Optional configuration fields and defaults:
 Each discovery turn indexes, reconciles, and enqueues bounded batches, then gives
 the processing claim queue a bounded turn. Sustained claims cannot suppress
 periodic discovery; discovery cannot drain an unbounded backlog before claims
-run. No global counts are polled. Idle waits stop at the next discovery deadline.
-Evidence that moves during reconciliation is retried on the next turn without
-another global scan. Discovery reads at most one extra item per stage so a
-refusing head can be deferred for one turn, allowing progress even with a
-one-item batch. Refusals are isolated per item; store-busy and reserve
-retryables trigger backoff. Logs contain only stage names and allowlisted failure
+run. No global counts are polled. Idle waits stop at the next discovery deadline;
+retryable failures always wait for the current positive backoff, even when a slow
+cycle has passed that deadline. Evidence that moves during reconciliation is
+retried on the next turn without another global scan, subject to the stage's
+batch bound. Discovery calls only the published store reads, once per stage per
+discovery interval, with their published parameters. Claiming stays the hot path
+between discovery turns (DEV-os4-01).
+
+Each stage remembers failed item keys and retry deadlines on the injected
+monotonic clock. The set holds at most `max_discovery_window - batch_size` keys;
+a read requests `batch_size + remembered keys` results, capped by the configured
+window. Remembered keys whose deadline has not arrived are skipped. Fresh work
+and due retries alternate priority when both exist, and retries rotate in attempt
+order, so even a one-item batch makes progress behind multiple refusers while
+retrying them. Each turn attempts at most `batch_size` items per stage. Successful
+items and remembered keys absent from the next read leave the set. Evidence-moved
+retries can run between discovery turns, still within the reconciliation batch
+bound. All scheduling memory resets on process restart; it changes no durable
+refusal or job semantics.
+
+There is a residual discovery limit: more persistent refusers than
+`max_discovery_window - batch_size` can hide later work beyond the bounded prefix.
+When an additional failed key cannot be remembered, the worker stops adding keys
+and logs `worker <stage> discovery window saturated` once per stage per process
+(`index`, `reconcile`, or `enqueue`). Operators can resolve the underlying refusals
+or raise the configured window within its limit; governed cursor reads would need
+an operational-store successor. Memory and per-turn read results remain bounded
+at saturation. Refusals are isolated per item; store-busy and reserve retryables
+trigger backoff. Logs contain only fixed stage diagnostics and allowlisted failure
 names, without projection values, Source Identities, exception text, or tracebacks.
 
 `SIGINT` and `SIGTERM` stop between operations and interrupt idle waits. A handler
