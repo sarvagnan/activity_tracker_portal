@@ -194,7 +194,7 @@ Proposed tests: `test_plans_and_results_are_health_data_free`, `test_failures_ca
 
 - **Data.** Python only: the standard library, the pinned `tzdata`, and the published store. Tests use real Operational Store databases in temporary directories. Source Records, selections, and outcomes are built through `@3`'s and `@4`'s own operations, as `@5`'s suite does. Every value is synthetic.
 - **Database checks.** "Writes nothing" compares the whole database, with rowids, using the `@5` suite's snapshot method. "One write" replays the same store call on a copy, as `execute-processing-job@1` does.
-- **Faults.** A delegating store injects `store-busy`, `storage-reserve-exhausted`, and a policy written between this unit's read and its write.
+- **Faults.** `storage-reserve-exhausted` comes from the store's own reserve check with a zero free-space reading. `store-busy` comes from a real write lock held by another SQLite connection. A delegating store (`Interleaved`) writes through a second store handle between this unit's read and its write. Abort triggers fail the store's write partway through.
 - **Markers.** Synthetic markers in Source Identities, origins, and projection values show that no plan, result, failure, or traceback carries them.
 - **Unbound inputs, reviewed rather than frozen.** The binding is the contract, this spec, the suite, the runner, and the effects declaration. These stay outside it:
   - `docs/governance/scope-map.md`, which R1's scope-map test reads;
@@ -205,25 +205,82 @@ Proposed tests: `test_plans_and_results_are_health_data_free`, `test_failures_ca
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_set_fallback_timezone_policy_1.py`, one test per proposed name in R1–R12;
-- the runner `tests/acceptance/run_set_fallback_timezone_policy_1.sh`, which runs only this suite. The store's suites run under their own bound runners;
-- no fixture files. Each test builds its store through published operations;
-- the Interface stub `src/activity_tracker_portal/set_fallback_timezone_policy.py`:
-  - real frozen `FallbackTimezonePlan` and `FallbackTimezoneResult` dataclasses, and the real `FallbackTimezoneRefusal` exception;
+- **The suite.** `tests/acceptance/test_set_fallback_timezone_policy_1.py` has 45 tests, one class per requirement, R1–R12. They are exactly the 45 proposed names above, with none added.
+- **The runner.** `tests/acceptance/run_set_fallback_timezone_policy_1.sh` runs only this suite. The store's suites run under their own bound runners.
+- **No fixture files.** Each test builds its store through the published `operational-store@5` API. Source Records, selections, jobs, and hand-written outcomes come from `@3`'s and `@4`'s operations.
+- **The Interface stub,** `src/activity_tracker_portal/set_fallback_timezone_policy.py`:
+  - real frozen `FallbackTimezonePlan` and `FallbackTimezoneResult` dataclasses, and the real `FallbackTimezoneRefusal` exception, whose `args` is `(failure,)`;
+  - two real constants: `FAILURES`, this unit's seven names, and `EXCLUDED_ZONES`, which is `{"Factory"}`;
   - `available_zones`, `plan_fallback_timezone_policy`, and `set_fallback_timezone_policy`, each raising `NotImplementedError("set-fallback-timezone-policy@1")`.
 
-**RED, against the stub.** The three R1 tests pass, because they read only the contract, the effects declaration, and the scope map. Every other test fails, and every failure is the stub's `NotImplementedError`. `run_operational_store_5.sh`, `run_interpret_source_projection_1.sh`, `tests/unit`, and `tests/governance` still pass.
+**RED, through the runner, against the stub.**
+- 3 tests pass: the R1 tests. They read only the contract, the effects declaration, the scope map, and the stub's `FAILURES`.
+- 42 tests fail, and every failure is the stub's `NotImplementedError("set-fallback-timezone-policy@1")`. No failure has another cause. unittest prints `FAILED (errors=47)` because it counts subtests separately.
 
-Before the read-only review, a throwaway reference implementation, kept out of the repository, passes every test, and a set of incorrect implementations each fails at least one. They cover at least:
-- zones checked against the host database, by file existence (which ignores case on macOS), or by the store's form check only; links refused; `Factory` allowed;
-- a future start allowed, a naive start allowed, and the start kept in its local offset;
-- a first policy with a start allowed;
-- every later policy replaced, a later policy kept when named, an earlier policy replaced, and a same-start policy kept;
-- an unchanged request recorded;
-- a stale plan recorded, a plan built by hand accepted, and the store's concurrent-change refusals passed through;
-- a repeat that writes, or that reports counts, or a repeat refused as stale;
-- reprocessing settings dropped or replaced;
-- a store failure wrapped or swallowed, a refusal carrying the zone, and a log record written.
+In the worktree, with the stub, these all pass:
+- `run_operational_store_5.sh`, which chains `@1`–`@4`;
+- `run_interpret_source_projection_1.sh`;
+- `tests/unit` (135 tests) and `tests/governance` (57 tests).
+
+**Passability.** A throwaway reference, kept out of the repository, passes all 45 tests. It:
+- reads the zone list from the `tzdata` package's `zones` resource;
+- plans as R3–R6 describe;
+- in `set`, checks the request, reads the timeline once, returns a live identical plan as a repeat, plans again, and compares the result's `supersedes` with the plan's;
+- writes with one `record_fallback_timezone_policy` call, and maps the store's three concurrent-change refusals to `plan-stale`.
+
+**Mutants.** The drafter ran 36 wrong implementations against the reference, and the suite kills all 36. Two survived the first run, and the suite was strengthened to kill them:
+- a zone list taken from `zoneinfo.available_timezones()` and cached before the test changed the host path. R2 now also runs a fresh process with `PYTHONTZPATH` pointing at a synthetic host database;
+- a repeat that calls the store, which writes nothing on an identical repeat. R9 now confirms a repeat while another connection holds the write lock.
+
+The mutants cover:
+- **Zones:** checked against the host database, by `ZoneInfo(name)` or `available_timezones()`; matched case-insensitively; checked by file existence with the store's form check (which accepts `leapseconds`, and case variants on macOS); links canonicalised to their target; links refused; and `Factory` allowed.
+- **Start:** a future start allowed; the future compared with the wall clock instead of `at`; the start kept in its local offset; and an out-of-range start left as an `OverflowError`.
+- **Timeline:** a first policy with a start allowed; every later policy replaced automatically; a same-start policy not replaced; an earlier policy replaceable; `replacing` left unsorted; and the all-history check placed after the replacement check.
+- **Unchanged requests:** an unchanged request recorded; and "unchanged" judged by the zone that applies at the start rather than a policy starting there.
+- **Stale plans:** a stale plan recorded; a stale plan silently re-planned; the store's concurrent-change refusals passed through; and `plan-stale` raised with the store's refusal as context.
+- **Repeats:** no repeat check; a repeat written through the store; a repeat reporting counts; `repeated` always false; and a concurrent repeat not flagged.
+- **Store failures and settings:** store failures swallowed; retryables wrapped; settings refusals wrapped; reprocessing settings replaced with the worker's defaults; and the request not checked again in `set`.
+- **Surfaces:** the zone leaked into a refusal's `args`; a log record written; and planning that reads a store method other than the timeline.
+
+**Refinements.** The tests pin the refinements below beyond the approved text. None changes approved semantics. Items that settle a point the text left open are marked *settles*.
+- **Zones (R2).**
+  - The list is the package's `zones` resource minus `EXCLUDED_ZONES`, returned as a sorted tuple. The suite compares it with that resource, not with a fixed count.
+  - These are refused as `timezone-unknown`:
+    - whitespace or a newline around a name, `./` segments, a backslash, and a leading or trailing `/`;
+    - a non-string zone, including bytes and a tuple;
+    - every non-zone file in the package (`zone.tab`, `zone1970.tab`, `zonenow.tab`, `iso3166.tab`, `tzdata.zi`, `__init__.py`);
+    - `localtime` and `posixrules`.
+  - A name that exists only in a host database is refused, both in-process (after `zoneinfo.reset_tzpath`) and in a fresh process started with `PYTHONTZPATH`. Emptying the host database does not affect a pinned name.
+- **Times (R3).**
+  - A non-`datetime` `at`, including `None`, a `date`, and a string, is `timestamp-invalid`.
+  - A start equal to `at`, written in another offset, is accepted. A start one microsecond after `at` is refused.
+  - A start in year 1 is accepted when its UTC value is still in range (`0001-01-01T00:30+00:30`). A start whose UTC value is out of range (`0001-01-01T00:30+01:00`) is `effective-time-invalid`.
+  - The plan's start has `tzinfo` exactly `timezone.utc`.
+- **Refusal order (R3).** `at`, zone, start, and the form of `replacing` come first. Then, among the timeline checks: `all-history-policy-required` before a `replacing` entry that is not live, and that before `policy-unchanged`.
+- **`replacing` (R5).** These are `replacement-invalid`:
+  - a `bool`, `float`, `str`, `0`, a negative, or `2**63` element;
+  - a set, a list, a scalar, or `None` in place of the tuple;
+  - a Source Selection Policy's identity, a superseded policy, and a duplicate.
+
+  Input in any order is planned ascending. An all-earlier-history request may name every later policy, leaving one policy in the timeline.
+- **Unchanged (R6).**
+  - *Settles:* only a live policy starting at exactly the same start counts. A zone that an earlier policy already gives, such as Asia/Kolkata from March under an all-history Asia/Kolkata, is a new policy, not `policy-unchanged`.
+  - A link name for the zone that already applies at that start (`Europe/Amsterdam` where `Europe/London` starts) is a change.
+- **Planning (R7).** A view that offers only `fallback_timezone_timeline` is enough to plan, so planning reads nothing else.
+- **Confirmation (R8).**
+  - When re-planning fails a timeline check (R4–R6), the result is `plan-stale` with no other name. This also applies to a hand-built plan that never matched, for example a first plan with a start on an empty timeline.
+  - A `supersedes` that is a list rather than a tuple is `plan-stale`.
+- **Repeats (R9).**
+  - A repeat ignores the reprocessing settings: a different mapping or bound is still a repeat.
+  - *Settles:* a repeat is recognised only while the recorded policy is live. Once a later request replaces it, the old plan is `plan-stale`.
+  - *Settles:* a repeat reads and never writes. It succeeds below the reserve and while another connection holds the write lock.
+  - On a concurrent repeat, the returned policy's `requested_at` is the other call's time.
+- **Concurrent change (R9).** Two interleavings are injected between the read and the write: a policy with the plan's start (the store's `policy-overlap`), and the supersession of a policy the plan names (`policy-supersession-invalid`). Each gives `plan-stale`, with `__cause__` and `__context__` both `None`, exactly one store write attempt, and the database exactly as the injected write left it. `policy-unknown` cannot be produced by an injected write, because policies are never deleted. So it is not exercised, though the mapping covers it.
+- **Store failures (R10).** Each of the store's refusals keeps its exact type, `StoreRefusal`, and the same holds for `StoreRetryable`. A `max_attempts` of 101 is `processing-request-invalid`. A fault injected partway through the store's write propagates as the store's `sqlite3.Error` and commits nothing.
+- **Surfaces (R12).**
+  - Every refusal of this unit has `__cause__` and `__context__` both `None`, which is stricter than the approved text.
+  - Its formatted traceback carries no marker.
+  - Its text does not carry the zone.
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration matches the contract, and that the residuals below are complete.
 
