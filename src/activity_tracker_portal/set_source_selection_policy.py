@@ -114,10 +114,16 @@ def _validated_request(request: SourceSelectionRequest) -> SourceSelectionReques
     ):
         raise SourceSelectionRefusal("selection-request-invalid")
     _validate_measure_pair(request.measure, request.record_type)
+    # Accepted string subclasses may carry caller-owned evidence as instance
+    # state. Rebuild the settings from their underlying, exact string values.
+    origins = (
+        OriginKey(str.__str__(origin.source_system_kind), str.__str__(origin.origin))
+        for origin in request.origins
+    )
     return SourceSelectionRequest(
-        request.measure,
-        request.record_type,
-        tuple(sorted(request.origins, key=lambda origin: (origin.source_system_kind, origin.origin))),
+        str.__str__(request.measure),
+        str.__str__(request.record_type),
+        tuple(sorted(origins, key=lambda origin: (origin.source_system_kind, origin.origin))),
         request.first_date,
         request.last_date,
     )
@@ -171,6 +177,7 @@ def _inspect_request(
 def source_selection_choices(store: object, measure: str, record_type: str) -> SourceSelectionChoices:
     """Offer the known origins and live policies without reading health evidence."""
     _validate_measure_pair(measure, record_type)
+    measure, record_type = str.__str__(measure), str.__str__(record_type)
     with store.read() as view:
         return SourceSelectionChoices(
             measure, record_type,
