@@ -50,6 +50,8 @@ jobs:
         run: tests/acceptance/run_interpret_weight_1.sh
       - name: Run execute-processing-job@1 acceptance
         run: tests/acceptance/run_execute_processing_job_1.sh
+      - name: Run set-source-selection-policy@1 acceptance
+        run: tests/acceptance/run_set_source_selection_policy_1.sh
       - name: Run set-fallback-timezone-policy@1 acceptance
         run: tests/acceptance/run_set_fallback_timezone_policy_1.sh
       - name: Run manage-sender-installation@1 acceptance

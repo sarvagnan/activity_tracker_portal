@@ -1,0 +1,1 @@
+{"actor":"claude","event":"WorkStarted","event_format":2,"origin":"7e60eef4a5b5515ad7da40434eb77c781d40ff16aa0808b02f6ebeaba51703ff","origin_format":2,"pack_digest":"","payload":{"name":"set-fallback-timezone-policy"},"prev":"4ef2be2e8164adb3179532999f234bd715e7a79576707f0f9b34e4313116aef2","recorded_at":"2026-11-25T17:28:48+00:00","revision":637,"run_id":""}
