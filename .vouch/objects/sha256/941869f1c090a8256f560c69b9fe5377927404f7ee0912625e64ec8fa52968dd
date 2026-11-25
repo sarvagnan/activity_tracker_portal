@@ -1,0 +1,1 @@
+{"actor":"claude","event":"UnitMarkedDone","event_format":2,"origin":"3655f03449a5799ecbb9254e95c8e432b586527b5e0cb37401e3d1cbb0bc78ef","origin_format":2,"pack_digest":"","payload":{"name":"set-source-selection-policy"},"prev":"703577d3f4ad566eaaa4c4ad04888c5f7e7b949ac74d6335ae4fe48c87115b92","recorded_at":"2026-11-25T17:17:27+00:00","revision":628,"run_id":""}
