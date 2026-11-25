@@ -1,0 +1,65 @@
+{
+  "contract_schema": 1,
+  "scope": "interpret-steps",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Interpret one schema-valid Steps projection, schema version 1, into the type-specific body of a Canonical Revision through the interpret-source-projection@1 processor interface: the source step count in its canonical count unit, checked against the pinned Health Connect SDK's bounds, without deriving totals, allocating counts across local days, merging records, or converting units.",
+  "inputs": [
+    {
+      "name": "steps_record",
+      "mode": "pure",
+      "description": "The decoded record object of one Steps projection, schema version 1, as interpret-source-projection@1 passes it after closed-schema validation, the year-range and reversed-interval checks, and time attribution: start and end instants with their optional offsets, and the step count."
+    },
+    {
+      "name": "temporal_header",
+      "mode": "pure",
+      "description": "The interval temporal header interpret-source-projection@1 built for the projection, with exact instants, applied offsets, local dates, and attribution for each endpoint."
+    },
+    {
+      "name": "sdk_bounds",
+      "mode": "pure",
+      "description": "The step-count bounds and the start-before-end rule that the pinned Health Connect SDK 1.1.0 StepsRecord constructor enforces, recorded in this unit's pack."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "steps_body",
+      "description": "The Steps body, version 1: the source count as an integer in the canonical unit count, with no total, rate, duration, local-day allocation, or copy of the header."
+    },
+    {
+      "name": "quarantine_outcome",
+      "description": "A Quarantine with one of this processor's declared health-data-free reasons, steps-interval-empty or steps-count-out-of-range, and the JSON pointer of the offending source field, never a value."
+    }
+  ],
+  "named_failures": [],
+  "observable_effects": [],
+  "authority": {
+    "owns": [
+      "the Steps body, version 1, and its declared numeric field",
+      "the Steps validity rules beyond the closed schema: the pinned SDK's count bounds and its start-before-end rule",
+      "the Steps quarantine reasons and the source field each one names"
+    ],
+    "does_not_own": [
+      "envelope decoding, schema validation, the revision header, time attribution, Policy-Pending, or canonical bytes, which interpret-source-projection@1 owns",
+      "persisting outcomes, Processing Jobs, or Processor Generations",
+      "daily totals, overlap handling, day-crossing allocation, source selection, or duplicate grouping, which Phase 5 summaries own",
+      "display units or presentation"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "interpret-source-projection",
+      "version": "1"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/interpret-steps-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_interpret_steps_1.py"
+    },
+    "runner": "tests/acceptance/run_interpret_steps_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}

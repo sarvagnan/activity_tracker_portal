@@ -1,0 +1,66 @@
+{
+  "contract_schema": 1,
+  "scope": "interpret-heart-rate",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Interpret one schema-valid Heart Rate series projection, schema version 1, into the type-specific body of a Canonical Revision through the interpret-source-projection@1 processor interface: every sample in source order with its exact instant, its beats per minute in the canonical unit, and a local date only where the series' two endpoint offsets agree on it, checked against the series interval and the pinned Health Connect SDK's bounds, without interpolation, resampling, sorting, deduplication, statistics, or unit conversion.",
+  "inputs": [
+    {
+      "name": "heart_rate_record",
+      "mode": "pure",
+      "description": "The decoded record object of one Heart Rate projection, schema version 1, as interpret-source-projection@1 passes it after closed-schema validation, the year-range and reversed-interval checks, and time attribution: start and end instants with their optional offsets, and the samples, each an instant without an offset and an integer beats per minute."
+    },
+    {
+      "name": "temporal_header",
+      "mode": "pure",
+      "description": "The interval temporal header interpret-source-projection@1 built for the projection; each endpoint's exact instant and applied offset bound the samples and bracket their local dates."
+    },
+    {
+      "name": "sdk_bounds",
+      "mode": "pure",
+      "description": "The beats-per-minute bounds that the pinned Health Connect SDK 1.1.0 HeartRateRecord sample constructor enforces, recorded in this unit's pack."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "heart_rate_body",
+      "description": "The Heart Rate body, version 1: every sample in source order with its exact instant text, its beats per minute as an integer in the canonical unit 1/min, and its local date when the start and end applied offsets give the same date; no sum, count, minimum, maximum, mean, interpolation, or copy of the header."
+    },
+    {
+      "name": "quarantine_outcome",
+      "description": "A Quarantine with one of this processor's declared health-data-free reasons, heart-rate-sample-outside-interval or heart-rate-bpm-out-of-range, and the JSON pointer of the offending sample field, never a value."
+    }
+  ],
+  "named_failures": [],
+  "observable_effects": [],
+  "authority": {
+    "owns": [
+      "the Heart Rate body, version 1, and its declared numeric field",
+      "bracketed local-date attribution of samples from the endpoints' applied offsets",
+      "the Heart Rate validity rules beyond the closed schema: samples within the series interval and the pinned SDK's beats-per-minute bounds",
+      "the Heart Rate quarantine reasons and the source field each one names"
+    ],
+    "does_not_own": [
+      "envelope decoding, schema validation, the revision header, endpoint time attribution, Fallback Timezone Policy evaluation, Policy-Pending, or canonical bytes, which interpret-source-projection@1 owns",
+      "persisting outcomes, Processing Jobs, or Processor Generations",
+      "sample statistics, equal-time duplicate grouping, unresolved equal-time values, source selection, or daily summaries, which Phase 5 owns",
+      "display units or presentation"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "interpret-source-projection",
+      "version": "1"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/interpret-heart-rate-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_interpret_heart_rate_1.py"
+    },
+    "runner": "tests/acceptance/run_interpret_heart_rate_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}
