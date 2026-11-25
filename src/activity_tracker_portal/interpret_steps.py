@@ -37,7 +37,14 @@ class _StepsProcessor:
     )
 
     def interpret_body(self, record: Mapping[str, Any], temporal: TemporalHeader) -> Mapping[str, Any] | Quarantine:
-        raise NotImplementedError("interpret-steps@1")
+        # The parent supplies both interval endpoints after its common checks.
+        if temporal.start.instant.epoch_ns == temporal.end.instant.epoch_ns:
+            return Quarantine("steps-interval-empty", "/record/end_time")
+        count = record["count"]
+        if not COUNT_MIN <= count <= COUNT_MAX:
+            return Quarantine("steps-count-out-of-range", "/record/count")
+        # An integral JSON float is schema-valid; the body requires a Python int.
+        return {"count": int(count)}
 
 
 PROCESSOR = _StepsProcessor()

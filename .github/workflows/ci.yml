@@ -38,6 +38,14 @@ jobs:
         run: tests/acceptance/run_reconcile_source_record_1.sh
       - name: Run interpret-source-projection@1 acceptance
         run: tests/acceptance/run_interpret_source_projection_1.sh
+      - name: Run interpret-steps@1 acceptance
+        run: tests/acceptance/run_interpret_steps_1.sh
+      - name: Run interpret-heart-rate@1 acceptance
+        run: tests/acceptance/run_interpret_heart_rate_1.sh
+      - name: Run interpret-sleep-session@1 acceptance
+        run: tests/acceptance/run_interpret_sleep_session_1.sh
+      - name: Run interpret-weight@1 acceptance
+        run: tests/acceptance/run_interpret_weight_1.sh
       - name: Run manage-sender-installation@1 acceptance
         run: tests/acceptance/run_manage_sender_installation_1.sh
       - name: Run accept-ingest-batch@1 acceptance

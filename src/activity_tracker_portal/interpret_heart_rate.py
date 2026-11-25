@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from ._interpret_nested_time import local_date, offset_seconds, parse_instant_ns
 from .interpret_source_projection import BodySchema, NumericField, Quarantine, TemporalHeader
 
 BPM_MIN = 1
@@ -41,7 +42,26 @@ class _HeartRateProcessor:
     )
 
     def interpret_body(self, record: Mapping[str, Any], temporal: TemporalHeader) -> Mapping[str, Any] | Quarantine:
-        raise NotImplementedError("interpret-heart-rate@1")
+        start_ns = temporal.start.instant.epoch_ns
+        end_ns = temporal.end.instant.epoch_ns
+        start_offset = offset_seconds(temporal.start.applied_offset)
+        end_offset = offset_seconds(temporal.end.applied_offset)
+        samples: list[dict[str, Any]] = []
+        for index, sample in enumerate(record["samples"]):
+            time_text = sample["time"]
+            instant_ns = parse_instant_ns(time_text)
+            if not start_ns <= instant_ns <= end_ns:
+                return Quarantine("heart-rate-sample-outside-interval", f"/record/samples/{index}/time")
+            bpm = sample["beats_per_minute"]
+            if not BPM_MIN <= bpm <= BPM_MAX:
+                return Quarantine("heart-rate-bpm-out-of-range", f"/record/samples/{index}/beats_per_minute")
+            entry = {"time": time_text, "beats_per_minute": int(bpm)}
+            start_date = local_date(instant_ns, start_offset)
+            end_date = local_date(instant_ns, end_offset)
+            if start_date is not None and start_date == end_date:
+                entry["local_date"] = start_date
+            samples.append(entry)
+        return {"samples": samples}
 
 
 PROCESSOR = _HeartRateProcessor()

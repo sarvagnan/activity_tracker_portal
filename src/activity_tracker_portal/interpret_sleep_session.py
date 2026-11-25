@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from ._interpret_nested_time import parse_instant_ns
 from .interpret_source_projection import BodySchema, NumericField, Quarantine, TemporalHeader
 
 
@@ -43,7 +44,33 @@ class _SleepSessionProcessor:
     )
 
     def interpret_body(self, record: Mapping[str, Any], temporal: TemporalHeader) -> Mapping[str, Any] | Quarantine:
-        raise NotImplementedError("interpret-sleep-session@1")
+        start_ns = temporal.start.instant.epoch_ns
+        end_ns = temporal.end.instant.epoch_ns
+        if start_ns == end_ns:
+            return Quarantine("sleep-session-empty", "/record/end_time")
+        stages: list[dict[str, Any]] = []
+        for index, stage in enumerate(record["stages"]):
+            stage_start = parse_instant_ns(stage["start_time"])
+            if not start_ns <= stage_start <= end_ns:
+                return Quarantine("sleep-stage-outside-session", f"/record/stages/{index}/start_time")
+            stage_end = parse_instant_ns(stage["end_time"])
+            # End faults follow the specified order after an accepted start.
+            if stage_end < stage_start:
+                return Quarantine("sleep-stage-reversed", f"/record/stages/{index}/end_time")
+            if stage_end == stage_start:
+                return Quarantine("sleep-stage-empty", f"/record/stages/{index}/end_time")
+            if stage_end > end_ns:
+                return Quarantine("sleep-stage-outside-session", f"/record/stages/{index}/end_time")
+            stages.append({
+                "start_time": stage["start_time"],
+                "end_time": stage["end_time"],
+                "stage": int(stage["stage"]),
+            })
+        body: dict[str, Any] = {"stages": stages}
+        for name in ("title", "notes"):
+            if name in record:
+                body[name] = record[name]
+        return body
 
 
 PROCESSOR = _SleepSessionProcessor()
