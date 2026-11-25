@@ -1,0 +1,131 @@
+{
+  "contract_schema": 1,
+  "scope": "set-source-selection-policy",
+  "version": "1",
+  "kind": "leaf",
+  "purpose": "Record the Operator's confirmed decision about which origins may contribute to one derived measure and record type on an inclusive range of local dates, as one append-only pending Source Selection Policy through the operational-store@5 operations. The unit owns the closed vocabulary of derived measures, offers the known origins and the live policies to choose among, previews which live policies a request replaces and which dates it leaves without a policy, and records the request only while the live policies still match what the Operator confirmed. The pending policy is itself the durable request to rebuild the affected summaries; activation, rebuilding, and Cutover Records belong to later units.",
+  "inputs": [
+    {
+      "name": "selection_request",
+      "mode": "pure",
+      "description": "The Operator's request: a derived measure, its record type, one or more origins as operational-store@5 OriginKey values, and optional inclusive first and last local dates, where an absent bound is open."
+    },
+    {
+      "name": "confirmed_supersession",
+      "mode": "pure",
+      "description": "The identities of the live Source Selection Policies the Operator saw in the preview and confirmed the request replaces; empty when it replaces none."
+    },
+    {
+      "name": "measure_vocabulary",
+      "mode": "pure",
+      "description": "This unit's closed vocabulary of derived measures, each with the record types it may name: daily-steps with steps, heart-rate-summary with heart-rate, sleep-summary with sleep-session, and weight-series with weight."
+    },
+    {
+      "name": "operational_store",
+      "mode": "effectful",
+      "description": "The Operational Store through operational-store@5: known_origins and source_selection_timeline read in one read view, and one record_source_selection_policy write."
+    },
+    {
+      "name": "clock",
+      "mode": "volatile",
+      "description": "The caller's timezone-aware Portal time source, read at most once per request, immediately before the write."
+    },
+    {
+      "name": "free_space",
+      "mode": "volatile",
+      "description": "Free bytes on the store's filesystem, which the store compares with its reserve before the policy write."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "selection_choices",
+      "description": "For one measure and record type: the known origins of that record type, each with its source-system kind, origin, and Source Record count, and the live Source Selection Policies in date order. No Source Identity, record time, or value."
+    },
+    {
+      "name": "selection_preview",
+      "description": "For one request, without writing: the request with its origins sorted; the live policy it repeats, if one is identical; the live policies of the same measure and record type it would supersede, ascending; and the date ranges those policies cover that the request would leave without a policy."
+    },
+    {
+      "name": "recorded_policy",
+      "description": "The pending operational-store@5 SourceSelectionPolicyRecord recorded or repeated; whether this call took the write path, which is also the case when an identical request recorded the same policy between this call's read and its write; and the date ranges left without a policy by its supersession."
+    },
+    {
+      "name": "selection_refusal",
+      "description": "A refusal carrying one of this unit's names and nothing else: selection-request-invalid, selection-measure-unknown, selection-origin-unknown, or selection-changed. Nothing is written."
+    },
+    {
+      "name": "store_failure",
+      "description": "The store's timestamp-invalid refusal, or its store-busy or storage-reserve-exhausted retryable failure, passed through unchanged; it carries only the failure name. A failure raised before the store's write commits, including one from a read, leaves nothing written. A failure raised after the write commits, while delivering the result, leaves the policy committed, and a retry of the same request is then a repeat."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "selection-request-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "selection-measure-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "selection-origin-unknown",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "selection-changed",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "timestamp-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "store-busy",
+      "outcome": "retryable"
+    },
+    {
+      "name": "storage-reserve-exhausted",
+      "outcome": "retryable"
+    }
+  ],
+  "observable_effects": [
+    {
+      "name": "source-selection-policy-write",
+      "description": "One pending Source Selection Policy appended through operational-store@5's record_source_selection_policy, superseding exactly the live policies of the same measure and record type whose dates it shares; a request identical to a live policy writes nothing, a store failure before commit writes nothing, and a failure after commit leaves the policy committed. No Processing Job, summary work, or activation is written."
+    }
+  ],
+  "authority": {
+    "owns": [
+      "the closed vocabulary of derived measures for Source Selection Policies and the record type each may name",
+      "the Operator's choices for one measure: the known origins of its record type and the live policies",
+      "computing which live policies a request supersedes and which dates it leaves without a policy",
+      "checking that the supersession the Operator confirmed still matches the live policies before recording",
+      "recognizing a request identical to a live policy, and recording any other valid request as one pending Source Selection Policy",
+      "this unit's refusal vocabulary"
+    ],
+    "does_not_own": [
+      "policy storage, identities, the overlap and supersession invariants, known-origin evidence, or the storage reserve, which operational-store@5 owns",
+      "the confirmation page, its form and CSRF protection, or rendering origins and policies, which the Phase 7 Portal presentation units own",
+      "Summary Refresh Jobs, Cutover Targets, Candidate Builds, Cutover Records, policy activation, or the active timeline, which operational-store@6 and refresh-summary-state own",
+      "how a Health Summary applies a policy, when overlapping origins leave a result unresolved, or Duplicate Groups, which summary-contract, duplicate-observation-contract, and the derive units own",
+      "Fallback Timezone Policies, which set-fallback-timezone-policy owns",
+      "withdrawing a policy without a replacement, or erasing policies under privacy deletion"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "operational-store",
+      "version": "5"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/set-source-selection-policy-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_set_source_selection_policy_1.py"
+    },
+    "runner": "tests/acceptance/run_set_source_selection_policy_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}

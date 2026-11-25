@@ -1,0 +1,1 @@
+{"command_line":"bash tests/acceptance/run_set_source_selection_policy_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"fc6cd397ea4e28143ca0a16e056059c9024580803aa384a515656199994ea1b6","parent":"GENESIS","recorded_at":"2026-11-25T17:13:55+00:00","sequence":1,"unit":{"name":"set-source-selection-policy","version":"1"}}
