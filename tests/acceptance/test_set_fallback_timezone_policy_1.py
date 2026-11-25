@@ -324,17 +324,23 @@ class SetterCase(unittest.TestCase):
         already handling when it calls the unit (ambient caller context) is out of scope, so no test
         calls the unit inside an except block."""
         self.assertIsNone(error.__cause__)
-        context = error.__context__
-        while context is not None:
-            self.assertEqual(str(context), "", "a refusal's context must carry no other exception's text")
-            self.assertTrue(all(str(arg) == "" for arg in context.args),
+        # Every exception reachable through __cause__ or __context__, each visited once, so a
+        # branch behind a cause is not skipped and a cycle cannot loop.
+        reachable, seen, pending = [], {id(error)}, [error.__context__]
+        while pending:
+            link = pending.pop()
+            if link is None or id(link) in seen:
+                continue
+            seen.add(id(link))
+            reachable.append(link)
+            pending.extend((link.__cause__, link.__context__))
+        for link in reachable:
+            self.assertEqual(str(link), "", "a refusal's context must carry no other exception's text")
+            self.assertTrue(all(str(arg) == "" for arg in link.args),
                             "a refusal's context must carry no other exception's text")
-            context = context.__cause__ or context.__context__
         text = "".join(traceback.format_exception(error))
-        link = error
-        while link is not None:
+        for link in (error, *reachable):
             text += str(link) + repr(link)
-            link = link.__cause__ or link.__context__
         for marker in MARKERS:
             self.assertNotIn(marker, text)
 
