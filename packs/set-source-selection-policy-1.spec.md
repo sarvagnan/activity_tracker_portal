@@ -211,7 +211,7 @@ Proposed tests: `test_refusals_are_health_data_free`, `test_results_carry_no_sou
 ## Ground rules
 
 - **Data.** Python only, standard library plus the pinned runtime. Tests use real temporary Operational Store databases through the published `operational-store@5` module. Source Records are created through the store's own operations (enrollment, archival, and `index_items`) from synthetic projections, as the `@5` suite does. Origins and record types are synthetic.
-- **Faults.** A delegating store records a competing policy between the read and the write, and raises `store-busy` on the write. The reserve is exhausted through the store's `free_bytes` hook. A test clock counts its calls.
+- **Faults.** A delegating store records a competing policy between the read and the write, raises an injected failure on the write, or raises one after the write commits. The reserve is exhausted through the store's `free_bytes` hook, and a real lock held by another connection gives `store-busy`. A test clock counts its calls.
 - **Database checks.** Every "writes nothing" assertion compares the whole database, including rowids, as the `@5` suite does.
 - **Markers.** Identity markers in origins and Source Identities, and a health-data marker in projection values, show that refusals and logs carry none of them, and that results carry no Source Identity or value.
 - **Unbound inputs, reviewed rather than frozen.** The binding is the contract, the spec, the suite, the runner, and the effects declaration. These stay outside it:
@@ -224,36 +224,129 @@ Proposed tests: `test_refusals_are_health_data_free`, `test_results_carry_no_sou
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_set_source_selection_policy_1.py`, one test per proposed name in R1–R12;
-- the runner `tests/acceptance/run_set_source_selection_policy_1.sh`, which runs only this suite. `operational-store@5`'s suites run under their own bound runner;
-- the Interface stub `src/activity_tracker_portal/set_source_selection_policy.py`:
-  - the real `MEASURES`, because it is the vocabulary this draft approves;
-  - the real dataclasses and `SourceSelectionRefusal`;
-  - the three operations raising `NotImplementedError("set-source-selection-policy@1")`.
+- **The suite.** `tests/acceptance/test_set_source_selection_policy_1.py` has 40 tests across R1–R12, one per proposed name above and no others, grouped in one class per requirement.
+- **The runner.** `tests/acceptance/run_set_source_selection_policy_1.sh` runs only this suite. `operational-store@5`'s suites run under their own bound runner.
+- **The Interface stub,** `src/activity_tracker_portal/set_source_selection_policy.py`:
+  - the real `MEASURES`, a read-only mapping, because it is the vocabulary the Operator approved;
+  - the five real frozen dataclasses: `SourceSelectionRequest`, `DateRange`, `SourceSelectionChoices`, `SourceSelectionPreview`, and `SourceSelectionResult`;
+  - the real `SourceSelectionRefusal`;
+  - the three operations, each raising `NotImplementedError("set-source-selection-policy@1")`.
 
-**RED, against the stub.** The three R1 tests and the four R2 tests pass, because they read only the contract, the scope map, the effects declaration, the schemas, and `MEASURES`. Every other test fails, and every failure traces to the stub's `NotImplementedError`, raised directly or seen as a missing policy after the call. Every upstream bound runner still passes.
+**How the suite checks.**
+- **Stores.** Each store is a real temporary database opened through the published `operational-store@5` API. Known origins come from archiving and indexing synthetic Source Records: two `steps` records from one origin, one from a second origin, and one record each for `weight`, `heart-rate`, and `sleep-session`. Live policies are recorded directly through the store, as an earlier request would have left them.
+- **Whole-database comparisons.** Every refusal, no-write, and read-only assertion compares the whole database. Rowid tables are compared with their rowids, in rowid order, and `WITHOUT ROWID` tables as sorted rows. The helper is copied from the `@5` suite and reads the table kind from `PRAGMA table_list`, so it pins no table, failure, or migration list.
+- **One exact write.** R7 copies the database with SQLite's backup API, makes the expected store call on the copy, and requires the two databases to be identical.
+- **Delegating store.** A delegating store logs each read view, clock read, and write, in order. It can also:
+  - run another write between the unit's read and its write;
+  - raise an injected failure instead of writing;
+  - raise one after a write commits.
+- **Interleavings.** Both race orders are deterministic:
+  - a write that lands between the preview and the set, in R7;
+  - a write that lands between the set's read and its write, in R9: one that overlaps the request, and one that supersedes the confirmed policy.
+- **Real store faults.** These are not injected:
+  - a reserve shortfall through the store's `free_bytes` hook;
+  - `store-busy` from another connection holding `BEGIN IMMEDIATE`, against a store opened with a 50 ms busy timeout.
+- **Uncovered dates.** These are checked three ways:
+  - a table of 37 cases covering open ends, single days, nested policies both ways, adjacent policies, gaps, and the limits of Python dates. Each case is previewed in R6's first test, and previewed and then recorded in its second;
+  - a brute-force oracle over a six-day window, with sentinels for open ends. It checks 24 random disjoint timelines against every one of the 34 request ranges with two origin sets, 1,632 previews in all, including repeats. Each preview reports at most two ranges;
+  - 30 random recorded requests in R7. Each checks the result, the policy's supersession, and the timeline afterwards.
+- **Time.** Every time comes from a caller clock. No test reads the wall clock.
 
-Before freeze, a throwaway reference implementation, kept out of the repository, passes every test. A set of incorrect implementations covers at least:
-- an open measure vocabulary, and a pair check that ignores the record type;
-- origins checked for any record type, or not checked before the write;
-- a supersession that misses a straddling policy, takes another measure's or record type's policy, or uses exclusive date bounds;
-- uncovered dates that are missing, off by one day, or include dates the request covers;
-- the confirmed supersession ignored, or compared in order rather than as a set;
-- a repeat that writes, reads the clock, or depends on the confirmed supersession;
-- a retry that records a second policy;
-- the store's race refusals passed through, or retried;
-- a clock read during a preview or a refusal;
-- a Processing Job queued, or a second write;
-- an origin or date in refusal text.
+**RED, through the runner, against the stub:**
+- 7 tests pass: the three R1 tests and the four R2 tests. They read only the contract, the scope map, the effects declaration, the schemas, `MEASURES`, and the published store.
+- 33 tests fail, and every failure, at the test or subtest level (1,843 errors), is `NotImplementedError: set-source-selection-policy@1`. No other cause appears.
 
-Each must fail at least one test.
+In the worktree, with the stub, these all pass:
+- `tests/unit`;
+- `tests/governance`;
+- `tests/acceptance/run_operational_store_5.sh`, including `@1`–`@4`'s bound runners.
 
-The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration matches the contract, and that the residuals below are complete.
+**Passability.** A throwaway reference, kept out of the repository, passes all 40 tests.
+
+**Mutants.** The drafter ran 41 wrong-implementation mutants against the reference, and the suite kills all of them. They cover:
+- **Measures:** an open measure list; a pair check that ignores the record type; choices that skip the pair check.
+- **Origins:**
+  - unknown origins allowed;
+  - origins known for any record type;
+  - the source-system kind ignored;
+  - choices listing every record type's origins.
+- **Supersession:** exclusive start or end dates; replacing only policies inside the request; superseded policies considered.
+- **Uncovered dates:** off by one day; the later range missing; the earlier range made open; the date limits ignored; dropped from the result.
+- **Confirmation:**
+  - the `selection-changed` check missing;
+  - the confirmation compared in order rather than as a set;
+  - its shape checked only after the repeat check;
+  - booleans allowed in it.
+- **Repeats:**
+  - a repeat not detected;
+  - a repeat that writes or reads the clock;
+  - reordered origins not recognized as a repeat;
+  - the preview echoing the given origin order.
+- **Requests:** `datetime` bounds, reversed dates, and duplicate origins allowed.
+- **Store failures:**
+  - `policy-overlap` or `policy-supersession-invalid` passed through raw;
+  - every store refusal translated;
+  - store retryable failures swallowed;
+  - `store-busy` retried once;
+  - the race retried.
+- **Leaks:** an origin in the refusal's arguments, or in an extra attribute on it; a translated refusal chained to the store's.
+- **Writes and time:**
+  - the clock read before the read view;
+  - a second clock read for the write;
+  - a second identical write;
+  - the supersession passed to the store unsorted.
+
+One mutant first survived: the supersession passed unsorted. The store sorts it, so the database is identical, but R7 step 4 says the call passes it ascending. R7's single-write test now also checks the store call's arguments, and the mutant fails.
+
+**Refinements.** The tests pin these beyond the approved text. None changes approved semantics. Items marked *settles* decide a point the approved text left open, and are flagged for the approver.
+- **Request shapes (R4).**
+  - These are `selection-request-invalid`:
+    - a measure or record type that is `None` or an integer;
+    - origins that are `()`, a list, `None`, a bare `OriginKey`, a plain tuple, a string, a duplicate, or an `OriginKey` with a non-string field;
+    - an aware or naive `datetime`, a string, or an integer as a date bound;
+    - reversed dates, including `date.max` to `date.min`.
+  - These confirmations are `selection-request-invalid`: a list, a set, `None`, a scalar, `0`, a negative, a string, a float, a duplicate, `True`, and a nested tuple. That matches the store's rule for `supersedes`.
+  - *Settles:* the confirmation's shape is checked before the repeat check. A malformed confirmation is refused even when the request is identical to a live policy, because R4 says every operation checks its inputs first. R8's "whatever `confirmed_supersedes` says" covers any well-formed value.
+- **Measure pairs (R3, R4).** A string pair that is not in `MEASURES`, including an empty string or a different letter case, is `selection-measure-unknown`. A non-string measure or record type is `selection-request-invalid`, for the choices as well as for requests.
+- **Origins (R5).** "Known" means a Source Record with exactly that source-system kind, origin, and record type. An origin seen only under another record type or another kind is unknown until it is indexed for this record type. An unknown origin is refused before the confirmation is compared, as R7's order of steps states.
+- **Date limits (R6, Decision 5).** *Settles:* there are no dates before `date.min` or after `date.max`, so no uncovered range reaches past them:
+  - a request from `date.min` over an open-start policy leaves nothing uncovered before it;
+  - a request from 2 January of year 1 leaves `(None, date.min)`;
+  - the same holds at `date.max`.
+
+  A request from `date.min` to `date.max` is not a repeat of an all-dates policy. It supersedes that policy and leaves nothing uncovered.
+- **Gaps (R6).** Dates that already had no policy are never reported as uncovered. Only dates the request takes from a replaced policy are.
+- **One read view (R3, R6, R7, R11).** Through the delegating store:
+  - choices and previews each open one read view and nothing else;
+  - a new policy is exactly a read, then a clock read, then a write;
+  - refusals and repeats never write or read the clock.
+
+  This makes part of the first residual mechanical, for calls through the store it is given.
+- **The store call (R7 step 4).** The call is checked with its arguments bound by name:
+  - the measure, record type, and dates of the request;
+  - the origins, compared as a set;
+  - the computed supersession, ascending;
+  - the clock's time.
+- **Store failures (R10, Decision 10).**
+  - An injected `store-busy`, `storage-reserve-exhausted`, `policy-request-invalid`, or `policy-origin-unknown` reaches the caller as the very same object, after one write attempt.
+  - A naive clock gives the store's own `StoreRefusal("timestamp-invalid")`, not a `SourceSelectionRefusal`.
+- **Uncertain commit (R8).** A retryable failure raised after the write commits passes through. Retries then return the committed policy with `recorded` `False` and write nothing.
+- **Race (R9).**
+  - The `selection-changed` raised for a store refusal is not a `StoreRefusal`. It has no `__cause__`, and its context is suppressed.
+  - The write was attempted once and the clock read once.
+  - The database holds exactly the landed write.
+- **Refusal surfaces (R12).**
+  - A refusal's only attribute is `failure`. Its `args` is `(failure,)`, its `str` is the failure name, and neither its `str` nor its `repr` carries an origin, date, policy identity, Source Identity, or health marker.
+  - Every one of the four names is produced in the test.
+  - The five dataclasses have the Interface's field names, in order, and are frozen.
+- **Logs (R12).** No log record at any level is emitted during choices, previews, recordings, repeats, or any refusal.
+
+The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries the approved draft, that RED is genuine, that the effects declaration matches the contract, and that the residuals below are complete.
 
 ## Residuals
 
 Not mechanically provable here, so the approver confirms these in implementation review:
-- each operation reads one view and makes at most one store write;
+- each operation reads one view and makes at most one store write. The tests check this through the delegating store, but not for a store reached any other way;
 - only published `operational-store@5` operations are used: no SQL and no private store helpers;
 - no clock other than the injected one, and no logging;
 - `MEASURES` matches the Phase 5 derive units; `summary-contract@1` confirms it when drafted.
