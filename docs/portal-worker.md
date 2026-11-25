@@ -20,15 +20,36 @@ directory, as for ingress. The smallest configuration is:
 This indexes archived items through the published envelope decoder, quarantines
 unusable envelopes, and reconciles Source Records. `processor_versions` defaults
 to an empty object. A configured map such as `{"steps": "interpret-steps@1"}`
-enqueues work under that version, but the command currently has no job handler
-and therefore never claims jobs. The injected `Worker(handler=...)` seam is for
-`execute-processing-job@1`: that handler will own interpretation, lease renewal,
-completion, and failure classification. The supervisor does not implement them.
+enqueues work under that version. To enable claiming, configure `job_handler`
+as an importable `package.module:callable`, for example:
+
+```json
+{
+  "store_path": "/path/to/portal.db",
+  "reserve_bytes": 1000000000,
+  "processor_versions": {"steps": "interpret-steps@1"},
+  "job_handler": "my_deployment.processing:handle"
+}
+```
+
+The named synchronous callable receives one `Lease` per claim, outside the writer
+executor and shared lock. It owns interpretation, lease renewal, completion, and
+failure classification, using the published store APIs and the lease's fence.
+The deployment provides its store access and configuration; the supervisor does
+not inject a store or decide outcomes. `execute-processing-job@1` will supply the
+governed processing semantics; no production handler ships with this supervisor.
+The entry point is trusted deployment code: importing its module runs Python code.
+Import or callable lookup failures exit with a fixed configuration diagnostic,
+before opening the writer. With `job_handler` omitted or null, claiming remains
+disabled and a fixed warning is logged once at startup; discovery still runs.
+A handler can consume existing jobs without a `processor_versions` map; that map
+only controls discovery enqueueing.
 
 Optional configuration fields and defaults:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
+| `job_handler` | `null` | Importable `package.module:callable` receiving a `Lease`; absent disables claims |
 | `processor_versions` | `{}` | Record type to processor version for enqueue discovery |
 | `batch_size` | `100` | Maximum items per discovery stage (1–1000) |
 | `claim_batch_size` | `10` | Maximum claims before yielding another scheduling turn (1–1000) |

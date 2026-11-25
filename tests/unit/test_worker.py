@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import signal
 import subprocess
@@ -339,9 +340,9 @@ class ProcessTests(WorkerCase):
             finally:
                 lock.close()
 
-    def config_file(self):
+    def config_file(self, **options):
         path = self.path.with_suffix(".json")
-        path.write_text(json.dumps({"store_path": str(self.path), "reserve_bytes": 0}))
+        path.write_text(json.dumps({"store_path": str(self.path), "reserve_bytes": 0, **options}))
         return path
 
     def test_real_entry_point_help_and_default_bounded_synthetic_loop(self):
@@ -351,13 +352,87 @@ class ProcessTests(WorkerCase):
         self.assertIn("--config", help_result.stdout)
         self.archive(BatchItem(projection=self.projection()))
         self.writer.close()
-        result = subprocess.run(["uv", "run", "--frozen", "portal-worker", "--config", str(self.config_file()),
+        result = subprocess.run(["uv", "run", "--frozen", "portal-worker", "--config", str(self.config_file(processor_versions={"steps": PV})),
                                  "--max-cycles", "2"], capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr.count("worker claiming disabled: no job handler configured"), 1)
         with store_module.open_store(self.path, reserve_bytes=0) as store:
             with store.read() as view:
                 self.assertEqual(view.items_awaiting_index(100), ())
                 self.assertEqual(view.records_awaiting_selection(100), ())
+                counts = view.processing_counts(datetime.now(timezone.utc))
+                self.assertEqual((counts.jobs_ready, counts.jobs_leased), (1, 0))
+
+    def test_real_entry_point_claims_dispatches_and_completes_seeded_jobs(self):
+        for number in (10, 11):
+            self.archive(BatchItem(projection=self.projection(number)))
+        self.loop(settings=replace(self.settings, processor_versions={"steps": PV})).run(max_cycles=1)
+        with self.writer.store.read() as view:
+            self.assertEqual(view.processing_counts(NOW).jobs_ready, 2)
+        self.writer.close()
+        module = self.path.parent / "synthetic_job_handler.py"
+        receipts = self.path.with_suffix(".leases.jsonl")
+        module.write_text(f"""from datetime import datetime, timezone
+import json
+from pathlib import Path
+from activity_tracker_portal.ingress import PortalWriter
+from activity_tracker_portal.operational_store import Lease, OutcomeEntry
+
+def handle(lease):
+    assert isinstance(lease, Lease)
+    with Path({str(receipts)!r}).open("a") as output:
+        output.write(json.dumps({{"job_id": lease.job_id, "fence": lease.fence,
+                                 "owner": lease.owner, "record_id": lease.record_id,
+                                 "selection_id": lease.selection_id}}) + "\\n")
+    writer = PortalWriter({str(self.path)!r}, reserve_bytes=0)
+    try:
+        outcome = OutcomeEntry("unmodeled", lease.processor_version, "0" * 64,
+                               "synthetic-unmodeled-shape", None, None, None)
+        writer.run(lambda store: store.complete_processing_job(
+            lease.job_id, lease.fence, outcome, datetime.now(timezone.utc)))
+    finally:
+        writer.close()
+""")
+        environment = dict(os.environ)
+        environment["PYTHONPATH"] = os.pathsep.join(filter(None, (str(module.parent), environment.get("PYTHONPATH"))))
+        result = subprocess.run(["uv", "run", "--frozen", "portal-worker", "--config",
+                                 str(self.config_file(job_handler="synthetic_job_handler:handle", claim_batch_size=1)),
+                                 "--max-cycles", "2"], env=environment,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((result.stdout, result.stderr), ("", ""))
+        delivered = [json.loads(line) for line in receipts.read_text().splitlines()]
+        self.assertEqual(len(delivered), 2)
+        self.assertEqual(len({item["job_id"] for item in delivered}), 2)
+        with store_module.open_store(self.path, reserve_bytes=0) as store:
+            with store.read() as view:
+                for item in delivered:
+                    job = view.processing_job(item["job_id"])
+                    self.assertEqual((job.state, job.attempts), ("completed", 1))
+                    attempt, = job.history
+                    self.assertEqual((attempt.fence, attempt.owner, attempt.result),
+                                     (item["fence"], item["owner"], "completed"))
+                    outcome, = view.processing_outcomes(item["record_id"])
+                    self.assertEqual((outcome.job_id, outcome.fence, outcome.selection_id, outcome.kind),
+                                     (item["job_id"], item["fence"], item["selection_id"], "unmodeled"))
+        replacement = ingress.PortalWriter(self.path, reserve_bytes=0, role="worker")
+        replacement.close()
+
+    def test_handler_resolution_failure_is_health_data_free_and_precedes_store_open(self):
+        for entry_point, module in (("missing_synthetic_module:handle", None),
+                                    ("synthetic_module:missing", object()),
+                                    ("synthetic_module:handle", type("Module", (), {"handle": 42})())):
+            with self.subTest(entry_point=entry_point), patch.object(worker.importlib, "import_module", return_value=module):
+                config = self.config_file(job_handler=entry_point)
+                with patch.object(worker, "PortalWriter") as writer, self.assertLogs(worker.LOG, level="ERROR") as logs:
+                    self.assertEqual(worker.main(["--config", str(config)]), 1)
+                writer.assert_not_called()
+                self.assertEqual(logs.output, ["ERROR:activity_tracker_portal.worker:invalid worker configuration"])
+        with patch.object(worker.importlib, "import_module", side_effect=RuntimeError("synthetic-health-marker")):
+            with self.assertLogs(worker.LOG, level="ERROR") as logs:
+                self.assertEqual(worker.main(["--config", str(self.config_file(job_handler="synthetic_module:handle"))]), 1)
+            self.assertNotIn("synthetic-health-marker", repr(logs.records))
+            self.assertTrue(all(record.exc_info is None for record in logs.records))
 
     def test_entry_point_sigterm_exits_and_releases_singleton(self):
         self.writer.close()
@@ -387,7 +462,9 @@ class ProcessTests(WorkerCase):
         path = self.path.with_suffix(".json")
         for value in ({}, [], {"store_path": "synthetic-health-marker", "reserve_bytes": True},
                       {"store_path": "synthetic-health-marker", "reserve_bytes": 0, "idle_seconds": 0},
-                      {"store_path": "synthetic-health-marker", "reserve_bytes": 0, "processor_versions": {"steps": "BAD"}}):
+                      {"store_path": "synthetic-health-marker", "reserve_bytes": 0, "processor_versions": {"steps": "BAD"}},
+                      *({"store_path": "synthetic-health-marker", "reserve_bytes": 0, "job_handler": value}
+                        for value in (42, "", "module", "module:", "module:function:extra", "../module:handle"))):
             path.write_text(json.dumps(value))
             with self.assertRaisesRegex(ValueError, "^invalid worker configuration$"):
                 worker.WorkerSettings.from_file(path)

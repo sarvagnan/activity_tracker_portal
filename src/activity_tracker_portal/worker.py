@@ -11,6 +11,7 @@ import argparse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import importlib
 import json
 import logging
 import math
@@ -45,6 +46,7 @@ class WorkerSettings:
     max_idle_seconds: float = 30.0
     lease_seconds: int = 60
     max_attempts: int = 3
+    job_handler: str | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -60,6 +62,11 @@ class WorkerSettings:
                 if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                     raise ValueError
             if self.max_idle_seconds < self.idle_seconds:
+                raise ValueError
+            if self.job_handler is not None and (
+                not isinstance(self.job_handler, str)
+                or re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*", self.job_handler, re.ASCII) is None
+            ):
                 raise ValueError
             for record_type, version in self.processor_versions.items():
                 if not isinstance(record_type, str) or re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", record_type) is None:
@@ -227,6 +234,20 @@ class Worker:
                 idle_delay = self.settings.idle_seconds
 
 
+def _load_handler(entry_point: str | None) -> Callable[[Lease], None] | None:
+    if entry_point is None:
+        return None
+    try:
+        module_name, name = entry_point.split(":")
+        handler = getattr(importlib.import_module(module_name), name)
+        if not callable(handler):
+            raise ValueError
+        return handler
+    except Exception:
+        # Imports may raise arbitrary errors containing configuration or data.
+        raise ValueError("invalid worker configuration") from None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="portal-worker", description="Run the supervised Portal lease worker")
     parser.add_argument("--config", required=True, help="Path to the worker JSON configuration")
@@ -236,9 +257,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--max-cycles must be non-negative")
     try:
         settings = WorkerSettings.from_file(args.config)
+        handler = _load_handler(settings.job_handler)
     except ValueError:
         LOG.error("invalid worker configuration")
         return 1
+
+    if handler is None:
+        LOG.warning("worker claiming disabled: no job handler configured")
 
     stop = threading.Event()
     previous = {sig: signal.signal(sig, lambda *_: stop.set()) for sig in (signal.SIGINT, signal.SIGTERM)}
@@ -257,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             return 0
         try:
-            Worker(writer, settings, stop=stop).run(max_cycles=args.max_cycles)
+            Worker(writer, settings, handler=handler, stop=stop).run(max_cycles=args.max_cycles)
         finally:
             writer.close()
     finally:
