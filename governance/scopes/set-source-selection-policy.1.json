@@ -47,7 +47,7 @@
     },
     {
       "name": "recorded_policy",
-      "description": "The pending operational-store@5 SourceSelectionPolicyRecord recorded or repeated, whether this request wrote it, and the date ranges left without a policy by its supersession."
+      "description": "The pending operational-store@5 SourceSelectionPolicyRecord recorded or repeated; whether this call took the write path, which is also the case when an identical request recorded the same policy between this call's read and its write; and the date ranges left without a policy by its supersession."
     },
     {
       "name": "selection_refusal",
@@ -55,7 +55,7 @@
     },
     {
       "name": "store_failure",
-      "description": "The store's timestamp-invalid refusal, or its store-busy or storage-reserve-exhausted retryable failure, passed through unchanged when nothing could be written; it carries only the failure name."
+      "description": "The store's timestamp-invalid refusal, or its store-busy or storage-reserve-exhausted retryable failure, passed through unchanged; it carries only the failure name. A failure raised before the store's write commits, including one from a read, leaves nothing written. A failure raised after the write commits, while delivering the result, leaves the policy committed, and a retry of the same request is then a repeat."
     }
   ],
   "named_failures": [
@@ -91,7 +91,7 @@
   "observable_effects": [
     {
       "name": "source-selection-policy-write",
-      "description": "One pending Source Selection Policy appended through operational-store@5's record_source_selection_policy, superseding exactly the live policies of the same measure and record type whose dates it shares; a request identical to a live policy writes nothing, and no Processing Job, summary work, or activation is written."
+      "description": "One pending Source Selection Policy appended through operational-store@5's record_source_selection_policy, superseding exactly the live policies of the same measure and record type whose dates it shares; a request identical to a live policy writes nothing, a store failure before commit writes nothing, and a failure after commit leaves the policy committed. No Processing Job, summary work, or activation is written."
     }
   ],
   "authority": {

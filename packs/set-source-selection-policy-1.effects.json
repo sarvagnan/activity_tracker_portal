@@ -6,7 +6,7 @@
       "name": "source-selection-policy-write",
       "system": "Portal Operational Store SQLite database, through operational-store@5",
       "outcome": "confirmed",
-      "detail": "Appends one pending Source Selection Policy that supersedes exactly the live policies of its measure and record type that share a date with it; a request identical to a live policy writes nothing, and a refusal or retryable failure commits nothing. It queues no Processing Job and activates nothing."
+      "detail": "Appends one pending Source Selection Policy that supersedes exactly the live policies of its measure and record type that share a date with it; a request identical to a live policy in the unit's read writes nothing, and a refusal, or a store failure before the write commits, commits nothing. A failure raised after the write commits propagates unchanged and leaves the policy committed, and a retry is then a repeat. It queues no Processing Job and activates nothing."
     }
   ]
 }

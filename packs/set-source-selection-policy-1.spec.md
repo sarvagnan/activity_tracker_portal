@@ -102,7 +102,7 @@ Proposed tests: `test_malformed_requests_are_refused`, `test_unknown_measure_or_
 
 An origin with no Source Record of the request's record type is `selection-origin-unknown`, in the preview and before any write (Decision 4). An origin known only for another record type is unknown here. One known origin is enough; several are an explicit combination (Decision 6).
 
-Proposed tests: `test_unknown_origin_is_refused_before_writing`, `test_origin_of_another_record_type_is_unknown`, `test_single_and_combined_origins_are_accepted`.
+Proposed tests: `test_unknown_origin_is_refused_before_writing`, `test_origin_of_another_record_type_is_unknown`, `test_single_and_combined_origins_are_accepted`, `test_every_measure_takes_single_and_combined_origins`.
 
 ### R6 — Preview
 
@@ -121,15 +121,15 @@ Proposed tests: `test_preview_supersedes_every_overlapping_live_policy`, `test_p
 3. computes the supersession as the preview does. If it differs from `confirmed_supersedes` as a set, it refuses with `selection-changed` and writes nothing (Decision 8);
 4. reads the clock once and calls `record_source_selection_policy` with the request, the computed supersession ascending, and that time.
 
-The result has `recorded` `True`, the store's record, and the preview's `uncovered`. Afterwards the store reads the new policy as live and pending, and each superseded policy as superseded by it. The write changes only `operational-store@5`'s policy tables: no Processing Job, no other policy, and no earlier table.
+The result has `recorded` `True`, the store's record, and the preview's `uncovered`. `recorded` `True` means this call took the write path and the store returned the identical policy. That is either the policy this call inserted, or an identical one that another request recorded between this call's read and its write, which the store returns from its own repeat check (`operational-store@5` R46). The published store does not say which. Afterwards the store reads the new policy as live and pending, and each superseded policy as superseded by it. The write changes only `operational-store@5`'s policy tables: no Processing Job, no other policy, and no earlier table.
 
 Proposed tests: `test_request_is_recorded_pending`, `test_recording_supersedes_the_confirmed_policies`, `test_stale_confirmation_is_refused`, `test_recording_writes_only_the_policy`, `test_result_reports_uncovered_dates`.
 
 ### R8 — Repeats
 
-A request whose measure, record type, origins, and dates equal a live policy returns that policy with `recorded` `False` and empty `uncovered`. It writes nothing and reads no clock, whatever `confirmed_supersedes` says. So a retry after an uncertain commit returns the first result and never records a second policy (Decision 9). A request equal to a superseded policy is new, and supersedes the live one in its place.
+A request whose measure, record type, origins, and dates equal a live policy in this call's read view returns that policy with `recorded` `False` and empty `uncovered`. It writes nothing and reads no clock, whatever `confirmed_supersedes` says. These guarantees apply to repeats visible in that read. An identical request that lands after the read and before the write is returned through the write path instead (R7): `recorded` is `True`, `uncovered` is what this call computed, and the clock was read once. Either way only one policy is recorded. So a retry after an uncertain commit returns the first result and never records a second policy (Decision 9). A request equal to a superseded policy is new, and supersedes the live one in its place.
 
-Proposed tests: `test_identical_request_writes_nothing`, `test_retry_after_commit_returns_the_same_policy`, `test_request_equal_to_a_superseded_policy_is_new`.
+Proposed tests: `test_identical_request_writes_nothing`, `test_retry_after_commit_returns_the_same_policy`, `test_request_equal_to_a_superseded_policy_is_new`, `test_identical_request_landing_before_the_write_is_returned`.
 
 ### R9 — The timeline changes before the write
 
@@ -141,9 +141,12 @@ Proposed tests: `test_concurrent_overlapping_policy_is_selection_changed`, `test
 
 - A naive clock time raises the store's `timestamp-invalid`.
 - `store-busy` and `storage-reserve-exhausted` raise the store's `StoreRetryable` unchanged.
-- In each case nothing is written. A repeat still succeeds below the reserve, because it writes nothing.
+- A store failure raised by a read, on entering the read view or by any read in it, propagates unchanged. Nothing is written and no clock is read. This holds for choices, previews, and recordings.
+- **Before commit.** A failure the store raises before its write commits leaves the whole database unchanged. This covers every case above.
+- **After commit.** A failure raised after the store's write has committed, while the result is being delivered, propagates unchanged. The policy stays committed, and the unit does not undo it. A retry of the same request is then a repeat (R8), so no second policy is recorded.
+- A repeat still succeeds below the reserve, because it writes nothing.
 
-Proposed tests: `test_naive_clock_is_timestamp_invalid`, `test_busy_and_reserve_pass_through_and_write_nothing`, `test_repeat_succeeds_below_the_reserve`.
+Proposed tests: `test_naive_clock_is_timestamp_invalid`, `test_busy_and_reserve_pass_through_and_write_nothing`, `test_repeat_succeeds_below_the_reserve`, `test_read_failures_pass_through_and_write_nothing`.
 
 ### R11 — Time
 
@@ -155,7 +158,8 @@ Proposed tests: `test_clock_is_read_once_only_when_writing`.
 
 - Every refusal's `args` is exactly `(failure,)`, and its text is the failure name. It carries no origin, date, measure value, or policy identity.
 - A `selection-changed` raised for a store refusal (R9) has no `__cause__`, and its context is suppressed.
-- Results carry the Operator's own policy settings, that is the measure, record type, origins, and dates, and Source Record counts. They carry no Source Identity, record time, value, or bytes.
+- Results carry the Operator's own policy settings, that is the measure, record type, origins, and dates, and Source Record counts. They carry no Source Identity, record time, value, or bytes, either in their declared fields or as any other instance state, including in nested policy and origin records.
+- `recorded` reports the path the call took (R7, R8), not whether this call inserted a row; it carries no other information.
 - The unit writes no log records.
 
 Tests place markers in origins and Source Identities and check every refusal and log.
@@ -224,7 +228,7 @@ Proposed tests: `test_refusals_are_health_data_free`, `test_results_carry_no_sou
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- **The suite.** `tests/acceptance/test_set_source_selection_policy_1.py` has 40 tests across R1–R12, one per proposed name above and no others, grouped in one class per requirement.
+- **The suite.** `tests/acceptance/test_set_source_selection_policy_1.py` has 43 tests across R1–R12, one per proposed name above and no others, grouped in one class per requirement. The implementer's review added three of them.
 - **The runner.** `tests/acceptance/run_set_source_selection_policy_1.sh` runs only this suite. `operational-store@5`'s suites run under their own bound runner.
 - **The Interface stub,** `src/activity_tracker_portal/set_source_selection_policy.py`:
   - the real `MEASURES`, a read-only mapping, because it is the vocabulary the Operator approved;
@@ -239,10 +243,13 @@ After Gate A, the executable pack adds:
 - **Delegating store.** A delegating store logs each read view, clock read, and write, in order. It can also:
   - run another write between the unit's read and its write;
   - raise an injected failure instead of writing;
-  - raise one after a write commits.
+  - raise one after a write commits;
+  - raise an injected failure on calling `read()`, on entering the view, or from any read in the view. The view proxy is generic, so it allows any published read.
 - **Interleavings.** Both race orders are deterministic:
   - a write that lands between the preview and the set, in R7;
-  - a write that lands between the set's read and its write, in R9: one that overlaps the request, and one that supersedes the confirmed policy.
+  - a write that lands between the set's read and its write, in R9: one that overlaps the request, and one that supersedes the confirmed policy;
+  - in R8, an identical request that lands between the set's read and its write, both alone and superseding a prior policy.
+- **Every measure.** R5 indexes a second origin for each record type. For each of the four measures it runs choices, previews, recordings, and repeats, for one origin and for a combination.
 - **Real store faults.** These are not injected:
   - a reserve shortfall through the store's `free_bytes` hook;
   - `store-busy` from another connection holding `BEGIN IMMEDIATE`, against a store opened with a 50 ms busy timeout.
@@ -254,16 +261,19 @@ After Gate A, the executable pack adds:
 
 **RED, through the runner, against the stub:**
 - 7 tests pass: the three R1 tests and the four R2 tests. They read only the contract, the scope map, the effects declaration, the schemas, `MEASURES`, and the published store.
-- 33 tests fail, and every failure, at the test or subtest level (1,843 errors), is `NotImplementedError: set-source-selection-policy@1`. No other cause appears.
+- 36 tests fail, and every failure, at the test or subtest level (1,874 errors), is `NotImplementedError: set-source-selection-policy@1`. No other cause appears.
 
 In the worktree, with the stub, these all pass:
 - `tests/unit`;
 - `tests/governance`;
 - `tests/acceptance/run_operational_store_5.sh`, including `@1`–`@4`'s bound runners.
 
-**Passability.** A throwaway reference, kept out of the repository, passes all 40 tests.
+**Passability.** All 43 tests pass with each of these, kept out of the repository:
+- a throwaway reference;
+- the implementer's independent implementation, unchanged since its review;
+- the implementer's two legitimate variants: one that calls the store with keyword arguments, and one that finds live policies from the filtered history read.
 
-**Mutants.** The drafter ran 41 wrong-implementation mutants against the reference, and the suite kills all of them. They cover:
+**Mutants.** The drafter ran 41 wrong-implementation mutants against the reference, and the suite kills all of them, before and after the review changes. The implementer's eight review mutants were also re-run against its implementation: the six wrong ones fail, and the two legitimate variants pass. The drafter's 41 cover:
 - **Measures:** an open measure list; a pair check that ignores the record type; choices that skip the pair check.
 - **Origins:**
   - unknown origins allowed;
@@ -340,6 +350,24 @@ One mutant first survived: the supersession passed unsorted. The store sorts it,
   - Every one of the four names is produced in the test.
   - The five dataclasses have the Interface's field names, in order, and are frozen.
 - **Logs (R12).** No log record at any level is emitted during choices, previews, recordings, repeats, or any refusal.
+- **Identical landing (R7, R8, R12).** **For the approver: this narrows Decision 12.** Decision 12 describes `recorded` as "whether this request wrote it". The published store cannot report that: when an identical request lands between this call's read and its write, the store's repeat check returns the landed policy. The coordinator therefore decided what the flag means:
+  - `recorded` `True` means this call took the write path and the store returned the identical policy, whether this call inserted it or an identical request landed first;
+  - the repeat guarantees, which are `recorded` `False`, empty `uncovered`, and no clock read, apply to repeats visible in the call's read;
+  - an identical landing returns the landed policy with `recorded` `True`, the uncovered dates this call computed, and events read, clock, write. The database holds only the landed write, and a later identical request is an ordinary repeat.
+
+  If the flag must mean actual insertion, the store would have to report it in a later version.
+- **Before and after commit (R10, effects, contract).** This is wording only, and the approved behaviour is unchanged. A failure before the store's write commits leaves the whole database unchanged. A failure raised after the commit, while the result is being delivered, propagates as the same object and leaves the policy committed, and a retry is a repeat.
+- **Read failures (R10).** A failure raised by a read, on calling `read()`, on entering the view, or from any read in it, reaches the caller as the same object. This holds for choices, previews, new recordings, and repeats. Nothing is written, no clock is read, and the database is unchanged. Besides `store-busy`, the test injects a store refusal, `store-schema-unsupported`, which passes through under Decision 10 as well.
+- **Instance state (R12).** Every returned value holds only its declared fields, recursively: the choices, previews, results, and repeats, with their nested policy, origin, and date-range records. Neither instance dictionaries nor slots may hold anything else, so no evidence can be attached to a result.
+
+**Implementer review resolved.** GPT 6.1 Sol reviewed the pack read-only at `9de998d`. Its independent implementation passed all 40 tests then, and it passes all 43 now without change. RED was confirmed. The coordinator decided the following:
+1. **Blocking: uncertain commit against the "commits nothing" wording.** The effects declaration, R10, and the contract's `store_failure`, `recorded_policy`, and observable-effect descriptions now separate a failure before commit (nothing written) from one after commit (the policy stays committed, the same exception propagates, and a retry is a repeat). This is wording only.
+2. **Concurrent identical request.** Settled as the identical-landing refinement above, and flagged for the approver. R7, R8, and R12 state it, and `test_identical_request_landing_before_the_write_is_returned` covers it, alone and superseding a prior policy. The implementer's implementation already behaves this way.
+3. **Every measure.** Added `test_every_measure_takes_single_and_combined_origins`. Its mutants `reject_heart_rate_recording` and `reject_nonsteps_combinations` now fail.
+4. **Instance state.** The result oracle now checks the instance state of every returned value, recursively. The mutant `extra_output_evidence` now fails.
+5. **Read faults.** Added `test_read_failures_pass_through_and_write_nothing`, through a generic view proxy. The mutants `translate_read_retryable` and `read_failure_translated` now fail.
+6. **Uncovered dates and races.** The review found no passability error and no flakiness. No change.
+7. **Call style and inventories.** The review found nothing pinned that should not be. No change.
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries the approved draft, that RED is genuine, that the effects declaration matches the contract, and that the residuals below are complete.
 

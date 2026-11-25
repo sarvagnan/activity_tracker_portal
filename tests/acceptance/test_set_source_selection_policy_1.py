@@ -149,21 +149,64 @@ class Clock:
         return self.value
 
 
+class FaultyView:
+    """A read view whose every read raises the injected failure, whichever published read the unit uses."""
+
+    def __init__(self, view, failure: BaseException) -> None:
+        self._view = view
+        self._failure = failure
+
+    def __getattr__(self, name: str):
+        getattr(self._view, name)  # Only published reads exist.
+
+        def read(*_args, **_kwargs):
+            raise self._failure
+
+        return read
+
+
+class FaultyRead:
+    """A read-view context whose entry raises, or whose view's reads raise, the injected failure."""
+
+    def __init__(self, context, failure: BaseException, where: str) -> None:
+        self._context = context
+        self._failure = failure
+        self._where = where
+
+    def __enter__(self):
+        if self._where == "enter":
+            raise self._failure
+        return FaultyView(self._context.__enter__(), self._failure)
+
+    def __exit__(self, *exc_info):
+        if self._where == "enter":
+            return False
+        return self._context.__exit__(*exc_info)
+
+
 class Spy:
-    """A delegating store that logs reads and writes and can inject an interleaving or a failure at the write."""
+    """A delegating store that logs reads and writes and can inject an interleaving or a failure at the write,
+    or a failure at a read: on calling read(), on entering the view, or on any read in it."""
 
     def __init__(self, store, events: list[str], *, before_write: Callable[[], None] | None = None,
-                 fail_with: BaseException | None = None, fail_after: BaseException | None = None) -> None:
+                 fail_with: BaseException | None = None, fail_after: BaseException | None = None,
+                 read_fault: tuple[str, BaseException] | None = None) -> None:
         self._store = store
         self.events = events
         self.before_write = before_write
         self.fail_with = fail_with
         self.fail_after = fail_after
+        self.read_fault = read_fault
         self.writes: list[dict[str, object]] = []
 
     def read(self):
         self.events.append("read")
-        return self._store.read()
+        if self.read_fault is None:
+            return self._store.read()
+        where, failure = self.read_fault
+        if where == "call":
+            raise failure
+        return FaultyRead(self._store.read(), failure, where)
 
     def record_source_selection_policy(self, *args, **kwargs):
         self.events.append("write")
@@ -267,6 +310,28 @@ class StoreCase(unittest.TestCase):
         self.assertEqual(clock.calls, 0)
         self.assertNotIn("write", events)
         return refusal
+
+
+PLAIN = (str, int, bool, date, datetime, type(None))
+
+
+def instance_state(test: unittest.TestCase, value: object, path: str = "result") -> None:
+    """A returned value holds only its declared fields, recursively: no extra instance state anywhere."""
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        declared = [field.name for field in dataclasses.fields(value)]
+        state = set(getattr(value, "__dict__", {}))
+        for klass in type(value).__mro__:
+            slots = getattr(klass, "__slots__", ())
+            state |= {name for name in ((slots,) if isinstance(slots, str) else slots)
+                      if name not in ("__dict__", "__weakref__") and hasattr(value, name)}
+        test.assertEqual(sorted(state), sorted(declared), path)
+        for name in declared:
+            instance_state(test, getattr(value, name), f"{path}.{name}")
+    elif type(value) is tuple:
+        for index, item in enumerate(value):
+            instance_state(test, item, f"{path}[{index}]")
+    else:
+        test.assertIn(type(value), PLAIN, path)
 
 
 def interval(first: date | None, last: date | None, window: int) -> set[int]:
@@ -570,6 +635,58 @@ class R5OriginsMustBeKnown(StoreCase):
         self.assertEqual((one.policy.origins, both.policy.origins, sleep.policy.origins), ((OB,), (OB, OA), (OB,)))
         self.assertTrue(one.recorded and both.recorded and sleep.recorded)
         self.assertEqual(self.timeline(), (one.policy, both.policy))
+
+    def test_every_measure_takes_single_and_combined_origins(self) -> None:
+        # A second origin for each record type, so every measure has a combination to choose.
+        second = {"steps": None, "weight": OA, "heart-rate": OB, "sleep-session": OA}
+        for record_type, origin in second.items():
+            if origin is not None:
+                self.index(self.store, record_type, origin, 1)
+        for measure, (record_type,) in MEASURES.items():
+            first_origin = next(origin for kind, origin, _count in SEED if kind == record_type)
+            other = second[record_type] or OB
+            both = tuple(sorted((first_origin, other), key=lambda origin: (origin.source_system_kind, origin.origin)))
+            with self.subTest(measure=measure):
+                choices = source_selection_choices(self.store, measure, record_type)
+                self.assertEqual({(origin.source_system_kind, origin.origin) for origin in choices.origins},
+                                 {(first_origin.source_system_kind, first_origin.origin),
+                                  (other.source_system_kind, other.origin)})
+                self.assertEqual(choices.timeline, ())
+                single = request((first_origin,), None, day(4), measure, record_type)
+                preview = preview_source_selection(self.store, single)
+                self.assertEqual((preview.repeat_of, preview.supersedes, preview.uncovered), (None, (), ()))
+                recorded = set_source_selection_policy(self.store, single, preview.supersedes, Clock())
+                self.assertTrue(recorded.recorded)
+                self.assertEqual((recorded.policy.measure, recorded.policy.record_type, recorded.policy.origins,
+                                  recorded.policy.first_date, recorded.policy.last_date),
+                                 (measure, record_type, (first_origin,), None, day(4)))
+                before = contents(self.path)
+                again = set_source_selection_policy(self.store, single, (), Clock())
+                self.assertEqual((again.policy, again.recorded, again.uncovered), (recorded.policy, False, ()))
+                self.assertEqual(contents(self.path), before)
+                combined = request(tuple(reversed(both)), day(5), None, measure, record_type)
+                preview = preview_source_selection(self.store, combined)
+                self.assertEqual((preview.request.origins, preview.supersedes), (both, ()))
+                joined = set_source_selection_policy(self.store, combined, (), Clock())
+                self.assertTrue(joined.recorded)
+                self.assertEqual(joined.policy.origins, both)
+                repeat = set_source_selection_policy(self.store, request(both, day(5), None, measure, record_type),
+                                                     (), Clock())
+                self.assertEqual((repeat.policy, repeat.recorded), (joined.policy, False))
+                # A combination over every date replaces both, and its repeat writes nothing.
+                everything = request(both, None, None, measure, record_type)
+                preview = preview_source_selection(self.store, everything)
+                self.assertEqual(preview.supersedes, (recorded.policy.policy_id, joined.policy.policy_id))
+                replaced = set_source_selection_policy(self.store, everything, preview.supersedes, Clock())
+                self.assertEqual((replaced.recorded, replaced.policy.supersedes, replaced.uncovered),
+                                 (True, preview.supersedes, ()))
+                self.assertEqual(source_selection_choices(self.store, measure, record_type).timeline,
+                                 (replaced.policy,))
+                before = contents(self.path)
+                self.assertFalse(set_source_selection_policy(self.store, everything, (), Clock()).recorded)
+                self.assertEqual(contents(self.path), before)
+                for value in (choices, preview, recorded, again, joined, replaced):
+                    instance_state(self, value)
 
 
 # ---------------------------------------------------------------------------
@@ -887,6 +1004,41 @@ class R8Repeats(StoreCase):
         self.assertEqual(result.policy.supersedes, (second.policy_id,))
         self.assertEqual(self.timeline(), (result.policy,))
 
+    def test_identical_request_landing_before_the_write_is_returned(self) -> None:
+        # Decision 12 as the published store can report it: recorded=True means this call took the write
+        # path and the store returned the identical policy, whether this call inserted it or not (R7, R8).
+        prior = self.live((OA,), None, None)
+        cases = [
+            (request((OB, OA), day(2), day(3)), (prior.policy_id,),
+             (DateRange(None, day(1)), DateRange(day(4), None))),
+            (request((OB,), None, None, "weight-series", "weight"), (), ()),
+        ]
+        self.index(self.store, "weight", OB, 1)
+        for req, supersedes, uncovered in cases:
+            with self.subTest(request=req):
+                landed: list[SourceSelectionPolicyRecord] = []
+                after_landing: dict[str, object] = {}
+
+                def landing() -> None:
+                    landed.append(self.live(req.origins, req.first_date, req.last_date, supersedes, req.measure,
+                                            req.record_type))
+                    after_landing["contents"] = contents(self.path)
+
+                spy, events = self.spy(before_write=landing)
+                clock = Clock(events)
+                result = set_source_selection_policy(spy, req, supersedes, clock)
+                self.assertEqual(events, ["read", "clock", "write"])
+                self.assertEqual((result.policy, result.recorded, result.uncovered), (landed[0], True, uncovered))
+                self.assertEqual(contents(self.path), after_landing["contents"])
+                self.assertEqual(self.timeline(measure=req.measure, record_type=req.record_type), (landed[0],))
+                # A later identical request sees it in its read: a repeat with no write and no clock.
+                before = contents(self.path)
+                spy, events = self.spy()
+                again = set_source_selection_policy(spy, req, supersedes, Clock(events))
+                self.assertEqual((again.policy, again.recorded, again.uncovered, events),
+                                 (landed[0], False, (), ["read"]))
+                self.assertEqual(contents(self.path), before)
+
 
 # ---------------------------------------------------------------------------
 # R9 — The timeline changes before the write
@@ -1000,6 +1152,33 @@ class R10StoreFailuresPassThrough(StoreCase):
         # Once space returns and the lock is gone, the same request records.
         self.assertTrue(set_source_selection_policy(store, req, (old.policy_id,), Clock()).recorded)
 
+    def test_read_failures_pass_through_and_write_nothing(self) -> None:
+        old = self.live((OA,), None, day(3))
+        calls = {
+            "choices": lambda spy, clock: source_selection_choices(spy, *STEPS),
+            "preview": lambda spy, clock: preview_source_selection(spy, request((OB,), day(3), day(5))),
+            "set": lambda spy, clock: set_source_selection_policy(spy, request((OB,), day(3), day(5)),
+                                                                   (old.policy_id,), clock),
+            "set repeat": lambda spy, clock: set_source_selection_policy(spy, request((OA,), None, day(3)), (), clock),
+        }
+        before = contents(self.path)
+        for label, call in calls.items():
+            for where in ("call", "enter", "view"):
+                for failure in (StoreRetryable("store-busy"), StoreRefusal("store-schema-unsupported")):
+                    with self.subTest(operation=label, where=where, failure=failure.failure):
+                        spy, events = self.spy(read_fault=(where, failure))
+                        clock = Clock(events)
+                        with self.assertRaises(type(failure)) as caught:
+                            call(spy, clock)
+                        self.assertIs(caught.exception, failure)
+                        self.assertEqual(clock.calls, 0)
+                        self.assertNotIn("write", events)
+                        self.assertNotIn("clock", events)
+                        self.assertEqual(contents(self.path), before)
+        # Without a fault the same calls succeed.
+        self.assertTrue(set_source_selection_policy(self.store, request((OB,), day(3), day(5)), (old.policy_id,),
+                                                    Clock()).recorded)
+
     def test_repeat_succeeds_below_the_reserve(self) -> None:
         live = self.live((OA,), day(1), day(2))
         before = contents(self.path)
@@ -1098,9 +1277,12 @@ class R12HealthDataFreeSurfaces(StoreCase):
         choices = source_selection_choices(self.store, *STEPS)
         preview = preview_source_selection(self.store, request((OB,), day(1), day(1)))
         result = set_source_selection_policy(self.store, request((OB,), day(1), day(1)), (old.policy_id,), Clock())
-        for value in (choices, preview, result):
+        repeat = set_source_selection_policy(self.store, request((OB,), day(1), day(1)), (), Clock())
+        self.assertTrue(preview.uncovered and result.uncovered)
+        for value in (choices, preview, result, repeat):
             for marker in (IDENTITY_MARKER, HEALTH_MARKER):
                 self.assertNotIn(marker, repr(value))
+            instance_state(self, value)
         for origin in choices.origins:
             self.assertIs(type(origin), KnownOrigin)
         self.assertEqual([field.name for field in dataclasses.fields(SourceSelectionChoices)],
