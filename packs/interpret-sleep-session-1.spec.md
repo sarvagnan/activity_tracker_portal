@@ -1,6 +1,6 @@
 # Draft acceptance pack — `interpret-sleep-session@1`
 
-**Status:** Draft for the Operator's Gate A review. The Operator made the decisions marked below on 2026-11-24, before drafting. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
+**Status:** Draft approved by the Operator on 2026-11-24, with every decision as recommended and the follow-ups recorded below; the executable pack adds the refinements its tests pin down. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
 
 **Acceptance owner:** Operator, who approves the draft semantics. **Pack drafter:** Claude. **Implementer after freeze:** GPT 6.1 Sol through a T3 delegated task. **Approver for freeze, implementation review, merge, and publication:** GPT 6 Astra through a T3 delegated task, as a separate agent from the drafter and implementer.
 
@@ -102,7 +102,7 @@ Proposed tests: `test_schema_valid_edges_never_raise`, `test_processor_is_pure`,
 2. **A stage outside the session quarantines the record.** A stage outside its session contradicts the session it belongs to, and the session's wake date would no longer cover it. The alternatives:
    - clip the stage, which changes source evidence;
    - keep it, which lets a session's stages reach outside the session's own interval.
-3. **Overlaps are kept.** ADR 0041 assigns overlap handling to the summary: same-class overlaps union, differently classified overlaps are unresolved. The processor keeps every stage so that rule can run. The drafter does not remember whether SDK 1.1.0 also rejects overlapping stages; the executable pack records the answer. If it does, real data has no internal overlaps, and keeping them changes nothing.
+3. **Overlaps are kept, whatever the SDK does (Operator decision, 2026-11-24).** ADR 0041 assigns overlap handling to the summary: same-class overlaps union, differently classified overlaps are unresolved. The processor keeps every stage so that rule can run. The drafter does not remember whether SDK 1.1.0 also rejects overlapping stages; the executable pack records the answer. If it does, real data has no internal overlaps, and keeping them changes nothing. The Operator chose to keep overlaps even if the SDK forbids them, as a stated exception to Decision 6: evidence is never discarded, and the summary owns overlap handling.
 4. **Stage codes are SDK integers (Operator decision, 2026-11-24).** The code is lossless and uses the parent's `code` kind. Names such as "light" are presentation. The alternative, symbolic strings, adds a mapping that a future SDK constant would also have to update.
 5. **Title and notes are included verbatim (Operator decision, 2026-11-24).** ADR 0024 keeps each type's meaning in its body, and erasure already covers bodies (ADR 0022). They never appear in reasons, pointers, or failures. The alternative, leaving them only in the retained projection, would make the revision an incomplete interpretation of the session.
 6. **Shared conventions for the four processors (Operator decision, 2026-11-24).** These hold for `interpret-steps@1`, `interpret-heart-rate@1`, `interpret-sleep-session@1`, and `interpret-weight@1` alike:

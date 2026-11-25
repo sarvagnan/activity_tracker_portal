@@ -1,6 +1,6 @@
 # Draft acceptance pack — `interpret-heart-rate@1`
 
-**Status:** Draft for the Operator's Gate A review. The Operator made the decisions marked below on 2026-11-24, before drafting. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
+**Status:** Draft approved by the Operator on 2026-11-24, with every decision as recommended and the follow-ups recorded below; the executable pack adds the refinements its tests pin down. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
 
 **Acceptance owner:** Operator, who approves the draft semantics. **Pack drafter:** Claude. **Implementer after freeze:** GPT 6.1 Sol through a T3 delegated task. **Approver for freeze, implementation review, merge, and publication:** GPT 6 Astra through a T3 delegated task, as a separate agent from the drafter and implementer.
 
@@ -87,7 +87,7 @@ Each sample is checked in index order, its `time` before its `beats_per_minute` 
 - **Inside the interval.** A sample before the series start or after its end is quarantined as `heart-rate-sample-outside-interval` with the pointer `/record/samples/<i>/time` (Decision 2). Both ends are inclusive. Instants compare by exact nanoseconds, so equal instants written with different fractions are equal.
 - **Bounds.** A `beats_per_minute` below `BPM_MIN` or above `BPM_MAX` is quarantined as `heart-rate-bpm-out-of-range` with the pointer `/record/samples/<i>/beats_per_minute`. The bounds are the pinned SDK 1.1.0 sample constructor's, both inclusive (Decision 1). The drafter remembers them as 1 and 300, **to be confirmed** from the SDK source.
 - **Year 0000.** A sample in year 0000 is before any start the parent accepts, so it is `heart-rate-sample-outside-interval`. It never raises.
-- **Equal start and end.** A series whose start equals its end is accepted, with every sample at that instant. The drafter remembers that the SDK requires only that the start is not after the end; this is **to be confirmed** with the bounds.
+- **Equal start and end.** A series whose start equals its end is accepted, with every sample at that instant. The drafter remembers that the SDK requires only that the start is not after the end; this is **to be confirmed** with the bounds. The Operator decided on 2026-11-24 to follow the SDK. If the SDK requires the start to be before the end, the executable pack adds the reason `heart-rate-interval-empty`, with the pointer `/record/end_time`, and the contract's quarantine output names it.
 - **Common outcomes come first.** A reversed interval, a missing policy, or an invalid schema is the parent's outcome, even when a sample is also faulty (parent R4).
 
 Proposed tests: `test_sample_outside_interval_is_quarantined`, `test_interval_bounds_are_inclusive`, `test_bpm_bounds_are_the_pinned_sdk_bounds`, `test_bpm_outside_bounds_is_quarantined`, `test_year_zero_sample_is_outside_the_interval`, `test_zero_length_series_is_accepted`, `test_first_fault_follows_traversal_order`, `test_common_outcomes_take_precedence`.
