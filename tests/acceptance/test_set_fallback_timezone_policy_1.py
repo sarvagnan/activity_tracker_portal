@@ -31,7 +31,6 @@ from pathlib import Path
 import tzdata
 
 from activity_tracker_portal import interpret_steps
-from activity_tracker_portal import operational_store as store_module
 from activity_tracker_portal.interpret_source_projection import (
     CanonicalRevision,
     FallbackTimezonePolicy,
@@ -318,21 +317,17 @@ class SetterCase(unittest.TestCase):
         self.assertRefusal(failure, self.plan, store, zone, start, replacing, when)
 
     def assertCleanChain(self, error: BaseException) -> None:
-        """Operator decision on exception context: no cause; any context is suppressed and holds only
-        the store's failure names; and neither the formatted traceback nor any message in the chain
-        carries a marker. An exception the caller is already handling when it calls the unit (ambient
-        caller context) is out of scope, so no test calls the unit inside an except block."""
+        """R12 as approved: no __cause__, and no __context__ that carries another exception's text. A
+        store exception the unit handled must not stay attached, suppressed or not, so the unit raises
+        its refusal outside the handler; `raise ... from None` inside it does not meet R12. Neither the
+        formatted traceback nor any message in the chain carries a marker. An exception the caller is
+        already handling when it calls the unit (ambient caller context) is out of scope, so no test
+        calls the unit inside an except block."""
         self.assertIsNone(error.__cause__)
-        if error.__context__ is not None:
-            self.assertTrue(error.__suppress_context__, "a context must be suppressed")
-        link, depth = error.__context__, 0
-        while link is not None:
-            depth += 1
-            self.assertLess(depth, 20)
-            self.assertIn(type(link), (StoreRefusal, StoreRetryable))
-            self.assertEqual(link.args, (link.failure,))  # type: ignore[attr-defined]
-            self.assertIn(link.failure, store_module.FAILURES)  # type: ignore[attr-defined]
-            link = link.__cause__ or link.__context__
+        context = error.__context__
+        if context is not None:
+            self.assertEqual((context.args, str(context), context.__cause__, context.__context__), ((), "", None, None),
+                             "a refusal's context must carry no other exception's text")
         text = "".join(traceback.format_exception(error))
         link = error
         while link is not None:
@@ -598,7 +593,8 @@ class R3StartAndRequestTime(SetterCase):
     def test_naive_request_time_is_refused(self) -> None:
         store = self.ready()
         plan = self.plan(store, "Asia/Kolkata", None)
-        # An aware time whose UTC value is out of range is timestamp-invalid too (Operator decision).
+        # An aware time whose UTC value is out of range is timestamp-invalid too (drafter's resolution
+        # of implementer review finding 5, accepted at Gate B).
         low = datetime(1, 1, 1, 0, 30, tzinfo=timezone(timedelta(hours=1)))
         high = datetime(9999, 12, 31, 23, 30, tzinfo=timezone(timedelta(hours=-1)))
         for when in (NAIVE, date(2026, 6, 1), "2026-11-25T09:00:00Z", None, low, high):
@@ -859,7 +855,8 @@ class R8ConfirmingAPlan(SetterCase):
         for plan in stale:
             with self.subTest(plan=plan):
                 self.assertRefusal("plan-stale", self.confirm, store, plan)
-        # Operator decision: a plan must be internally consistent, with replacing a subset of supersedes.
+        # Drafter's resolution of implementer review finding 4, accepted at Gate B: a plan must be
+        # internally consistent, with replacing a subset of supersedes.
         # Otherwise it is replacement-invalid before repeat detection, so a forged repeat is refused.
         for forged in (FallbackTimezonePlan("Asia/Kolkata", None, (999,), ()),
                        FallbackTimezonePlan("Asia/Kolkata", None, (june.policy_id,), ()),
