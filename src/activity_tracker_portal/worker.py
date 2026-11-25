@@ -11,19 +11,17 @@ import argparse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-import importlib
 import json
 import logging
 import math
 from pathlib import Path
-import re
 import signal
 import threading
 import time
 from types import MappingProxyType
 from uuid import uuid4
 
-from activity_tracker_portal import operational_store as store_module
+from activity_tracker_portal import execute_processing_job, operational_store as store_module
 from activity_tracker_portal.ingress import PortalWriter, PortalWriterBusy
 from activity_tracker_portal.interpret_source_projection import Quarantine, decode_envelope
 from activity_tracker_portal.operational_store import Lease, ProjectionEntry, RetractionEntry, StoreRefusal, StoreRetryable
@@ -38,7 +36,7 @@ class WorkerSettings:
 
     store_path: Path
     reserve_bytes: int
-    processor_versions: Mapping[str, str] = field(default_factory=dict)
+    processor_versions: Mapping[str, str] = field(default_factory=lambda: dict(execute_processing_job.PROCESSOR_VERSIONS))
     batch_size: int = 100
     claim_batch_size: int = 10
     max_discovery_window: int = 10000
@@ -48,7 +46,6 @@ class WorkerSettings:
     max_idle_seconds: float = 30.0
     lease_seconds: int = 60
     max_attempts: int = 3
-    job_handler: str | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -69,15 +66,9 @@ class WorkerSettings:
                     raise ValueError
             if self.max_idle_seconds < self.idle_seconds:
                 raise ValueError
-            if self.job_handler is not None and (
-                not isinstance(self.job_handler, str)
-                or re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*", self.job_handler, re.ASCII) is None
-            ):
-                raise ValueError
             for record_type, version in self.processor_versions.items():
-                if not isinstance(record_type, str) or re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", record_type) is None:
-                    raise ValueError
-                if not isinstance(version, str) or re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*@[0-9]+", version) is None:
+                if (not isinstance(record_type, str) or not isinstance(version, str)
+                    or execute_processing_job.PROCESSOR_VERSIONS.get(record_type) != version):
                     raise ValueError
             object.__setattr__(self, "processor_versions", MappingProxyType(dict(self.processor_versions)))
             object.__setattr__(self, "store_path", Path(self.store_path))
@@ -98,14 +89,15 @@ class WorkerSettings:
 class Worker:
     """One synchronous lease loop with injectable time, wait, stop, and handler.
 
-    The handler receives only a Lease, outside the writer executor and all
-    locks. It owns renewal, outcomes, and failure classification. An unexpected
-    handler exception is logged without its text; its lease is left untouched
+    With no handler, this low-level seam skips claims. The command always builds
+    the governed handler with its own writer and clock. The handler receives a
+    Lease, outside the writer executor and all locks. It owns the lease lifecycle,
+    outcomes, and failure classification. An unexpected handler exception is logged without its text; its lease is left untouched
     for the governed expiry/recovery path.
     """
 
     def __init__(self, writer: PortalWriter, settings: WorkerSettings, *,
-                 handler: Callable[[Lease], None] | None = None,
+                 handler: Callable[[Lease], object] | None = None,
                  worker_id: str | None = None,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                  monotonic: Callable[[], float] = time.monotonic,
@@ -278,21 +270,8 @@ class Worker:
                 idle_delay = self.settings.idle_seconds
 
 
-def _load_handler(entry_point: str | None) -> Callable[[Lease], None] | None:
-    if entry_point is None:
-        return None
-    try:
-        module_name, name = entry_point.split(":")
-        handler = getattr(importlib.import_module(module_name), name)
-        if not callable(handler):
-            raise ValueError
-        return handler
-    except Exception:
-        # Imports may raise arbitrary errors containing configuration or data.
-        raise ValueError("invalid worker configuration") from None
-
-
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *,
+         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> int:
     parser = argparse.ArgumentParser(prog="portal-worker", description="Run the supervised Portal lease worker")
     parser.add_argument("--config", required=True, help="Path to the worker JSON configuration")
     parser.add_argument("--max-cycles", type=int, help="Exit after this many bounded cycles")
@@ -301,13 +280,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--max-cycles must be non-negative")
     try:
         settings = WorkerSettings.from_file(args.config)
-        handler = _load_handler(settings.job_handler)
     except ValueError:
         LOG.error("invalid worker configuration")
         return 1
-
-    if handler is None:
-        LOG.warning("worker claiming disabled: no job handler configured")
 
     stop = threading.Event()
     previous = {sig: signal.signal(sig, lambda *_: stop.set()) for sig in (signal.SIGINT, signal.SIGTERM)}
@@ -326,7 +301,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             return 0
         try:
-            Worker(writer, settings, handler=handler, stop=stop).run(max_cycles=args.max_cycles)
+            handler = execute_processing_job.make_job_handler(writer, clock=clock)
+            Worker(writer, settings, handler=handler, clock=clock, stop=stop).run(max_cycles=args.max_cycles)
         finally:
             writer.close()
     finally:

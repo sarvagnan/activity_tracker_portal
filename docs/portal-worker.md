@@ -17,40 +17,39 @@ directory, as for ingress. The smallest configuration is:
 }
 ```
 
-This indexes archived items through the published envelope decoder, quarantines
-unusable envelopes, and reconciles Source Records. `processor_versions` defaults
-to an empty object. A configured map such as `{"steps": "interpret-steps@1"}`
-enqueues work under that version. To enable claiming, configure `job_handler`
-as an importable `package.module:callable`, for example:
+The command indexes archived items through the published envelope decoder,
+quarantines unusable envelopes, reconciles Source Records, and discovers and
+claims Processing Jobs. It builds `execute_processing_job.make_job_handler`
+with its own worker-role `PortalWriter` and the same clock used for claims.
+The governed handler interprets each leased job and records its outcome or
+failure. The supervisor ignores the handler's result and owns no job semantics.
+No second writer is opened by the handler.
 
-```json
-{
-  "store_path": "/path/to/portal.db",
-  "reserve_bytes": 1000000000,
-  "processor_versions": {"steps": "interpret-steps@1"},
-  "job_handler": "my_deployment.processing:handle"
-}
-```
+Discovery defaults to the published `execute_processing_job.PROCESSOR_VERSIONS`
+map: the four modeled record types use their published processors and the other
+projection types use the common interpreter to record Unmodeled. An explicit
+`processor_versions` object **replaces** that map; it is not merged with defaults.
+For example, `{"steps": "interpret-steps@1"}` discovers only Steps, and `{}`
+disables discovery enqueueing while existing jobs can still be claimed. Every
+configured entry must match that record type's published mapping. Unknown types,
+unregistered versions, and processor substitutions are rejected with the fixed
+configuration diagnostic. The processor registry remains governed code.
 
-The named synchronous callable receives one `Lease` per claim, outside the writer
-executor and shared lock. It owns interpretation, lease renewal, completion, and
-failure classification, using the published store APIs and the lease's fence.
-The deployment provides its store access and configuration; the supervisor does
-not inject a store or decide outcomes. `execute-processing-job@1` will supply the
-governed processing semantics; no production handler ships with this supervisor.
-The entry point is trusted deployment code: importing its module runs Python code.
-Import or callable lookup failures exit with a fixed configuration diagnostic,
-before opening the writer. With `job_handler` omitted or null, claiming remains
-disabled and a fixed warning is logged once at startup; discovery still runs.
-A handler can consume existing jobs without a `processor_versions` map; that map
-only controls discovery enqueueing.
+The former importable `job_handler` configuration field has been removed; a file
+containing it is rejected, including a null value. Deployments cannot replace the
+governed execution semantics through configuration. For tests and acceptance
+packs, `Worker(writer, settings, handler=...)` still accepts a synchronous callable
+receiving a `Lease`. That callable runs outside the writer executor and shared
+lock and may return any result; the supervisor ignores it. Omitting the handler
+on this low-level constructor skips claims. The command always supplies the
+governed handler. `main(..., clock=...)` supplies an injected clock to both the
+handler and the worker for synthetic checks.
 
 Optional configuration fields and defaults:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `job_handler` | `null` | Importable `package.module:callable` receiving a `Lease`; absent disables claims |
-| `processor_versions` | `{}` | Record type to processor version for enqueue discovery |
+| `processor_versions` | Published `PROCESSOR_VERSIONS` | Replacement subset of the governed discovery map; `{}` disables enqueueing |
 | `batch_size` | `100` | Maximum item attempts per discovery stage (1–1000) |
 | `max_discovery_window` | `10000` | Maximum results requested per stage read (1–10000, at least `batch_size`) |
 | `refusal_retry_seconds` | `60` | Positive minimum seconds before a remembered discovery failure is eligible for retry |
@@ -104,5 +103,6 @@ Ingress retains its `.writer-lock` singleton, and the worker uses `.worker-lock`
 Both use `.store-write-lock` for individual store mutations with a five-second
 acquire limit, matching the store's default busy timeout. Contention raises
 `store-busy` through the existing retryable adapters. Decoding, other computation,
-and handlers hold no shared write lock. Lock files are retained on disk to keep
-their inode identities stable.
+and handler computation hold no shared write lock. The governed handler uses
+the worker writer for its individual mutations. Lock files are retained on disk
+to keep their inode identities stable.
