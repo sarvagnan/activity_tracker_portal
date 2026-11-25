@@ -208,7 +208,7 @@ Proposed tests: `test_refusals_are_health_data_free`, `test_results_carry_no_sou
 11. **No withdrawal yet.** `operational-store@5` cannot withdraw a policy without replacing it. The Operator changes a policy by requesting another one. Returning dates to "no policy", so that overlapping origins become unresolved again, is not offered.
     - **Recommended:** defer withdrawal to a later version of this unit and the store, if the Operator needs it.
     - Alternative: add it now. That needs a new store version first.
-12. **What the result reports.** The recorded or repeated policy, whether this request wrote it, and the uncovered dates. It does not count affected summaries, because summary identities come with `summary-contract`.
+12. **What the result reports.** The recorded or repeated policy, whether this request took the write path (`recorded`; Operator decision at Gate B, 2026-11-25: it means the call went through the write and the store returned the identical policy, whether this call inserted it or an identical request landed first, because the published store cannot report which), and the uncovered dates. It does not count affected summaries, because summary identities come with `summary-contract`.
     - **Recommended:** as above.
     - Alternative: also report the number of Source Records of the selected origins in the dates. That needs a new store read and adds nothing the choices do not already show.
 
@@ -350,7 +350,7 @@ One mutant first survived: the supersession passed unsorted. The store sorts it,
   - Every one of the four names is produced in the test.
   - The five dataclasses have the Interface's field names, in order, and are frozen.
 - **Logs (R12).** No log record at any level is emitted during choices, previews, recordings, repeats, or any refusal.
-- **Identical landing (R7, R8, R12).** **For the approver: this narrows Decision 12.** Decision 12 describes `recorded` as "whether this request wrote it". The published store cannot report that: when an identical request lands between this call's read and its write, the store's repeat check returns the landed policy. The coordinator therefore decided what the flag means:
+- **Identical landing (R7, R8, R12).** **Operator decision, 2026-11-25 (escalated by the approver at Gate B): `recorded` means the write path was taken.** Decision 12 describes `recorded` as "whether this request wrote it". The published store cannot report that: when an identical request lands between this call's read and its write, the store's repeat check returns the landed policy. The coordinator therefore decided what the flag means:
   - `recorded` `True` means this call took the write path and the store returned the identical policy, whether this call inserted it or an identical request landed first;
   - the repeat guarantees, which are `recorded` `False`, empty `uncovered`, and no clock read, apply to repeats visible in the call's read;
   - an identical landing returns the landed policy with `recorded` `True`, the uncovered dates this call computed, and events read, clock, write. The database holds only the landed write, and a later identical request is an ordinary repeat.
