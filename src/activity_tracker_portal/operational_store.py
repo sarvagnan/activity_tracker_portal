@@ -1177,6 +1177,230 @@ def _item_quarantine(connection: sqlite3.Connection, position: ItemPosition) -> 
     return None if row is None else ItemQuarantine(position, row["reason"], row["pointer"], _datetime(row["recorded_at"]))
 
 
+# operational-store@6: Processor Generations, Summary Refresh Jobs, candidate
+# Health Summaries, policy summary work, the evidence-change bookmark, and
+# summary evidence reads (packs/operational-store-6.spec.md).
+
+RefreshJobState = Literal["queued", "leased", "completed", "failed"]
+RefreshAttemptResult = Literal["completed", "stale", "transient-failure", "deterministic-failure", "lease-expired"]
+EvidenceChangeKind = Literal["outcome", "selection", "failed-job"]
+
+
+@dataclass(frozen=True)
+class ProcessorGeneration:
+    """An immutable manifest of (record_type, processor_version) pairs sorted by record type; never activated in @6."""
+
+    generation_id: int
+    manifest: tuple[tuple[str, str], ...]
+    manifest_sha256: str
+    registered_at: datetime
+
+
+@dataclass(frozen=True)
+class SummaryKey:
+    """One summary per measure, record type, and local date (summary-contract@1 Decision 2)."""
+
+    measure: str
+    record_type: str
+    local_date: date
+
+
+@dataclass(frozen=True)
+class SummaryTarget:
+    """A Processor Generation plus the highest policy identity the summary considers, or 0 for none."""
+
+    generation_id: int
+    policy_horizon: int
+
+
+@dataclass(frozen=True)
+class ProcessedPosition:
+    """One installation's processed delivery position for a record type and processor version."""
+
+    installation_id: str
+    sequence: int
+    receipt_time: datetime
+    processed_at: datetime
+
+
+@dataclass(frozen=True)
+class SummaryEntry:
+    """The caller's summary: opaque bytes the store never parses, plus indexed header fields; repr omits the bytes."""
+
+    header_bytes: bytes = field(repr=False)
+    evidence_bytes: bytes = field(repr=False)
+    body_bytes: bytes | None = field(repr=False)
+    contract_version: str
+    derivation_version: str
+    processor_version: str
+    source_selection_policy: int | None
+    primary_state: str
+    evidence_conditions: tuple[str, ...]
+    watermark: tuple[ProcessedPosition, ...]
+    contributors: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class StoredSummary:
+    """An immutable candidate summary revision with the store's digests; repr omits its bytes."""
+
+    summary_id: int
+    key: SummaryKey
+    target: SummaryTarget
+    token: int
+    header_bytes: bytes = field(repr=False)
+    evidence_bytes: bytes = field(repr=False)
+    body_bytes: bytes | None = field(repr=False)
+    contract_version: str
+    derivation_version: str
+    processor_version: str
+    source_selection_policy: int | None
+    primary_state: str
+    evidence_conditions: tuple[str, ...]
+    watermark: tuple[ProcessedPosition, ...]
+    contributors: tuple[int, ...]
+    summary_sha256: str
+    evidence_sha256: str
+    body_sha256: str | None
+    job_id: int
+    fence: int
+    recorded_at: datetime
+
+
+@dataclass(frozen=True)
+class RefreshAttempt:
+    """One claim of a Summary Refresh Job and the token it carried; result is None while open."""
+
+    fence: int
+    owner: str
+    token: int
+    claimed_at: datetime
+    expires_at: datetime
+    finished_at: datetime | None
+    result: RefreshAttemptResult | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class SummaryRefreshJob:
+    """A Summary Refresh Job for one key and target, with its attempts in order."""
+
+    job_id: int
+    key: SummaryKey
+    target: SummaryTarget
+    state: RefreshJobState
+    max_attempts: int
+    attempts: int
+    not_before: datetime
+    fence: int
+    lease_owner: str | None
+    lease_expires_at: datetime | None
+    failure: str | None
+    enqueued_at: datetime
+    closed_at: datetime | None
+    history: tuple[RefreshAttempt, ...]
+
+
+@dataclass(frozen=True)
+class RefreshLease:
+    """An expiring lease on one refresh job, fenced by its claim, with the evidence token current at the claim."""
+
+    job_id: int
+    fence: int
+    owner: str
+    key: SummaryKey
+    target: SummaryTarget
+    token: int
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class RefreshRequest:
+    """Health-data-free counts of one refresh request."""
+
+    jobs_enqueued: int
+    jobs_coalesced: int
+    leases_rearmed: int
+
+
+@dataclass(frozen=True)
+class RefreshCompletion:
+    """The stored summary, or None with requeued True when the lease's token was stale."""
+
+    summary: StoredSummary | None
+    requeued: bool
+
+
+@dataclass(frozen=True)
+class EvidenceChange:
+    """One processing outcome, selection, or failed Processing Job that no refresh request has acknowledged."""
+
+    kind: EvidenceChangeKind
+    change_id: int
+    record_id: int
+    record_type: str
+    processor_version: str | None
+
+
+@dataclass(frozen=True)
+class EvidenceBookmark:
+    outcomes_through: int
+    selections_through: int
+
+
+@dataclass(frozen=True)
+class EvidenceChanges:
+    bookmark: EvidenceBookmark
+    changes: tuple[EvidenceChange, ...]
+
+
+@dataclass(frozen=True)
+class EvidenceAcknowledgement:
+    """Moves the bookmark and acknowledges failed Processing Jobs in the same transaction as a request."""
+
+    outcomes_through: int
+    selections_through: int
+    failed_jobs: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SummaryEvidenceItem:
+    """One Source Record placed in a range: facts, not standings, and never its Source Identity."""
+
+    record_id: int
+    source_system_kind: str
+    origin: str
+    selection_id: int
+    selection_kind: Literal["projection", "conflict"]
+    outcome: ProcessingOutcome | None
+    job_failed: bool
+    last_revision: ProcessingOutcome
+
+
+@dataclass(frozen=True)
+class SummaryEvidence:
+    items: tuple[SummaryEvidenceItem, ...]
+    source_selection_policies: tuple[SourceSelectionPolicyRecord, ...]
+    next_after: int | None
+
+
+@dataclass(frozen=True)
+class RefreshCounts:
+    """Health-data-free summary-work counts at one caller time."""
+
+    jobs_ready: int
+    jobs_delayed: int
+    jobs_leased: int
+    jobs_lease_expired: int
+    jobs_completed: int
+    jobs_failed: int
+    stale_results: int
+    summaries: int
+    processor_generations: int
+    policies_awaiting_refresh: int
+    evidence_changes_pending: int
+
+
 class StoreView:
     """Reads bound to one SQLite read transaction."""
 
@@ -1606,6 +1830,42 @@ class StoreView:
             "ORDER BY record_type, source_system_kind, origin",
             () if record_type is None else (record_type,),
         ))
+
+    def processor_generation(self, generation_id: int) -> ProcessorGeneration | None:
+        raise NotImplementedError("operational-store@6")
+
+    def processor_generations(self) -> tuple[ProcessorGeneration, ...]:
+        raise NotImplementedError("operational-store@6")
+
+    def summary_refresh_job(self, job_id: int) -> SummaryRefreshJob | None:
+        raise NotImplementedError("operational-store@6")
+
+    def summary_refresh_jobs(self, key: SummaryKey) -> tuple[SummaryRefreshJob, ...]:
+        raise NotImplementedError("operational-store@6")
+
+    def summaries(self, key: SummaryKey) -> tuple[StoredSummary, ...]:
+        raise NotImplementedError("operational-store@6")
+
+    def latest_summary(self, key: SummaryKey, target: SummaryTarget) -> StoredSummary | None:
+        raise NotImplementedError("operational-store@6")
+
+    def policies_awaiting_refresh(self) -> tuple[int, ...]:
+        raise NotImplementedError("operational-store@6")
+
+    def evidence_changes(self, limit: int) -> EvidenceChanges:
+        raise NotImplementedError("operational-store@6")
+
+    def processed_positions(self, record_type: str, processor_version: str) -> tuple[ProcessedPosition, ...]:
+        raise NotImplementedError("operational-store@6")
+
+    def summary_evidence(
+        self, measure: str, record_type: str, first_date: date, last_date: date, target: SummaryTarget,
+        after: int, limit: int,
+    ) -> SummaryEvidence:
+        raise NotImplementedError("operational-store@6")
+
+    def refresh_counts(self, at: datetime) -> RefreshCounts:
+        raise NotImplementedError("operational-store@6")
 
     def storage_reserve(self) -> ReserveStatus:
         free = _sample_free_bytes(self._free_bytes, self._path)
@@ -2410,6 +2670,29 @@ class OperationalStore:
             policy = _policy(self._connection, policy_id)
             assert isinstance(policy, SourceSelectionPolicyRecord)
             return policy
+
+    def register_processor_generation(self, manifest: Mapping[str, str], at: datetime) -> ProcessorGeneration:
+        raise NotImplementedError("operational-store@6")
+
+    def request_summary_refresh(
+        self, keys: tuple[SummaryKey, ...], target: SummaryTarget, max_attempts: int, at: datetime, *,
+        policy_id: int | None = None, acknowledge: EvidenceAcknowledgement | None = None,
+    ) -> RefreshRequest:
+        raise NotImplementedError("operational-store@6")
+
+    def claim_summary_refresh(self, owner: str, lease_seconds: int, at: datetime) -> RefreshLease | None:
+        raise NotImplementedError("operational-store@6")
+
+    def renew_summary_refresh_lease(self, job_id: int, fence: int, lease_seconds: int, at: datetime) -> RefreshLease:
+        raise NotImplementedError("operational-store@6")
+
+    def complete_summary_refresh(self, job_id: int, fence: int, entry: SummaryEntry, at: datetime) -> RefreshCompletion:
+        raise NotImplementedError("operational-store@6")
+
+    def fail_summary_refresh(
+        self, job_id: int, fence: int, kind: FailureKind, reason: str, retry_at: datetime | None, at: datetime
+    ) -> SummaryRefreshJob:
+        raise NotImplementedError("operational-store@6")
 
     def read(self) -> AbstractContextManager[StoreView]:
         return self._read_view()

@@ -355,25 +355,125 @@ Unbound inputs, reviewed rather than frozen:
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- **The suite.** `tests/acceptance/test_operational_store_6.py`, covering R54–R71 with every proposed test name above (67 tests).
-- **The fixture.** `tests/acceptance/fixtures/operational-store-5-policies.sql`, written as the `@4` fixture was: a throwaway script imports the published `@5` module and writes a database through its public API only. It is dumped with `iterdump`, with `PRAGMA user_version=4` appended, and its header comment records the method. It holds:
-  - two installations, with ingest batches of two record types and one completion;
-  - revisions with local dates, a Policy-Pending outcome, a quarantine, a failed job, an open job, a retraction, and a Source Conflict;
-  - an unindexed item and a quarantined item;
-  - one Fallback Timezone and two Source Selection Policies, one superseded.
+- **The suite.** `tests/acceptance/test_operational_store_6.py` has 67 tests across R54–R71, exactly the proposed test names above. It has no timing limits; the race tests only wait up to 60 seconds for their threads.
+- **The fixture.** `tests/acceptance/fixtures/operational-store-6/operational-store-5-policies.sql`. It sits under the version's own fixture directory, not at the top-level path the draft named, because the drafter's brief limited fixtures to that directory. A throwaway script outside the repository imported the published `@5` module (extracted with `git archive d9a5aee`; the module is unchanged since `9b77c79`) and wrote the database through its public API only. The database was dumped with `iterdump`, and `PRAGMA user_version=4` was appended. The header comment records the method. The fixture holds:
+  - installation A, retired after draining, and installation B, active. A delivered a steps and a weight snapshot, a snapshot completion, and a steps change cycle. B delivered a steps and a weight snapshot;
+  - an inferred and an experienced steps revision, a Policy-Pending outcome on a record later retracted, a weight revision, a weight Quarantine, and a revision from B's other origin. B re-observed one record, whose latest selection is now a Source Conflict;
+  - one failed weight job and one queued steps job;
+  - one never-indexed item and one quarantined item;
+  - two Source Selection Policies, the first superseded, and one Fallback Timezone Policy.
+
+  R55's expected positions and evidence come from R66 and R67 applied to this fixture by hand. For steps, A stops at its completion (sequence 3) before the queued change batch; B reaches sequence 2. For weight, A's unsettled steps batches do not hold its weight position back (sequence 6).
 - **The runner.** `tests/acceptance/run_operational_store_6.sh` runs `@5`'s bound runner unchanged (it runs `@4`'s, `@3`'s, `@2`'s, and `@1`'s), then the new suite.
-- **The Interface stub,** added to the published module: the new frozen dataclasses (real, with bytes left out of `repr`), and the seventeen operations, each raising `NotImplementedError("operational-store@6")`: six on `OperationalStore` and eleven on `StoreView`. The stub adds no `FAILURES` entries and no migration; the implementer adds both.
+- **The Interface stub,** added to the published module:
+  - three type aliases (`RefreshJobState`, `RefreshAttemptResult`, and `EvidenceChangeKind`);
+  - the eighteen Interface dataclasses, real and frozen. Byte fields are `field(repr=False)`. `SummaryEvidenceItem.outcome` and `last_revision` are `ProcessingOutcome`s, and `SummaryEvidence.source_selection_policies` is a tuple of `SourceSelectionPolicyRecord`;
+  - the seventeen operations, each raising `NotImplementedError("operational-store@6")`: six on `OperationalStore` and eleven on `StoreView`.
+
+  The stub adds no `FAILURES` entries, no migration, and no change to any `@1`–`@5` code path. `_operational_store_sql.py` is unchanged. The implementer adds the names and migration 5.
 
 **RED, through the runner, against the stub:**
 - `@1`–`@5`'s 222 bound tests (53, 15, 45, 59, and 50) pass.
-- Of the 67 new tests, 2 pass: the two pure contract tests, `test_contract_6_extends_version_5` and `test_scope_map_row_does_not_contradict_contract_6`.
-- 4 fail on an `AssertionError`, because the stub has no new names and no migration 5: `test_failures_match_contract_6`, and the three R55 tests. A migration-4 database opens without refusing, and no table is added.
-- The other 61 fail with `NotImplementedError("operational-store@6")`. The race tests re-raise their workers' unexpected errors, so their failures are the stub's too.
-- Any test the executable pack adds must also fail against the stub.
+- Of the 67 new tests, 2 pass: the pure contract tests `test_contract_6_extends_version_5` and `test_scope_map_row_does_not_contradict_contract_6`.
+- 4 fail on an `AssertionError`, because the stub has no new names and no migration 5:
+  - `test_failures_match_contract_6`;
+  - `test_new_database_records_migrations_1_to_5`;
+  - `test_version_5_database_requires_migration_and_is_untouched`, because the stub opens a migration-4 database without refusing;
+  - `test_migrated_version_5_database_takes_summary_work`, because no table is added.
+- The other 61 fail with `NotImplementedError("operational-store@6")`. The race tests re-raise their workers' unexpected errors. The fault-injection helper treats only `sqlite3.DatabaseError` as an injected fault, so the stub's error is never mistaken for one.
 
-In the worktree, with the stub, these all pass: `tests/unit`, `tests/governance`, and the published runners that chain off the store (`execute-processing-job@1`, `reconcile-source-record@1`, the four `accept-*` units, `manage-sender-installation@1`, `receipt-bound-delivery@1`, `interpret-source-projection@1`, `set-source-selection-policy@1`, and `set-fallback-timezone-policy@1`).
+In the worktree, with the stub, these all pass: `tests/unit` (145), `tests/governance` (65), and every other acceptance suite under `tests/acceptance`. The one exception is `receipt_bound_delivery_1`, whose 9 tests need the Sender's `node_modules`, which the drafting worktree lacks (`ERR_MODULE_NOT_FOUND`). It is unrelated to the store.
 
-Before the read-only review, the drafter builds a throwaway reference outside the repository that passes all six suites, and runs wrong-implementation mutants against it. They cover at least: a backfilling or altering migration; unsorted manifest digests and duplicate generations; two open jobs per key and target, or a token that does not advance; stale results stored or completing, stale re-queues that keep attempts, and stale failures left failed; watermarks ahead of processing or with other times, and positions held back by other types or moving back; contributors of another type, version, or date; the applied policy or "live" judged now instead of at the horizon; policy links without the horizon check, and superseded or linked policies listed as awaiting; a bookmark moved without its request, backward, or ignoring failed jobs; evidence placed by any revision, retracted records included, or Source Identities exposed; and bytes in a refusal or `repr`, split writes, and reserve bypass.
+**Passability.** A throwaway reference outside the repository passes all six suites through the runner, `tests/unit`, `tests/governance`, and the dependent acceptance suites. It has:
+- migration 5: eleven tables and seven indexes, none on an earlier table;
+- the eight names;
+- the seventeen operations.
+
+**Mutants.** The drafter ran 49 wrong-implementation mutants against the reference. The final suite kills all 49. They cover:
+- the token: a stale result stored, a token that does not advance, a token advanced by a refused request, and a renewal that reports the current token;
+- re-runs for newer evidence: a stale failure left failed; stale completions or failures that keep their attempts; an exhausted expired lease that ignores the token or never fails;
+- coalescing: two open jobs per key and target (index dropped), and a coalesced request that moves `not_before`;
+- the bookmark: moved in its own transaction, or moved backward;
+- evidence changes that miss selections, retractions, or failed jobs, or ignore acknowledgements;
+- contributors of any type, version, or date, or checked only against the start date;
+- watermarks: positions held back by other record types (Decision 10), a watermark ahead of processing accepted, and processed times unchecked;
+- positions: settled by any selection, settled only by the latest selection (positions move back), the latest settlement time, or the highest settled batch;
+- generations: a duplicate generation for an identical manifest, digests over unsorted keys, and keys in code point order instead of UTF-16 order;
+- policies: a policy above the horizon, "live" judged now (in the entry check and in the evidence read), links without the horizon check, superseded policies listed as awaiting, and the applied policy unchecked;
+- evidence placed by its first revision, and retracted records included;
+- the reserve: skipped on renewal, on a stale completion, or on a claim, and checked before the identical-manifest repeat;
+- a read that writes, a migration that alters an earlier table, a backfilling migration, entry bytes in a refusal's `args`, and identical results appended twice or matched against any earlier revision.
+
+One mutant survived the first run: contributors of any record type. The only other-type contributor also had another processor version, so the version check refused it first. The contributor test now includes a weight revision recorded under the steps version.
+
+**Refinements.** The tests pin these points beyond the approved text. None changes approved semantics. Items marked *settles* decide a point the text left open, for the approver to confirm.
+- **Generations (R56).**
+  - Any `Mapping` is accepted. An empty mapping is `processor-generation-invalid`, as is a list or tuple of pairs, `None`, a string, or a key that is empty or not a string. The key check comes before the version check.
+  - The digest is RFC 8785 in full: non-ASCII as literal UTF-8, `"` and `\` escaped, and keys in UTF-16 code-unit order, so a key outside the Basic Multilingual Plane sorts before U+FB01.
+  - `manifest` is sorted in code point order. `registered_at` is UTC.
+  - A subset, a superset, or a changed version is a new generation.
+- **Request shapes (R57).**
+  - `keys` must be a tuple of `SummaryKey`.
+  - A `local_date` that is a `datetime` (aware or naive), a string, or an integer is refused.
+  - `target` must be a `SummaryTarget`, with `type(...) is int` fields.
+  - `max_attempts` accepts 1 and 100, and refuses 0, 101, `2.5`, `"3"`, and `None`.
+  - An acknowledgement must be an `EvidenceAcknowledgement` with integer `through` values and a tuple of integer job identities.
+  - A request with no keys and only `policy_id` returns `RefreshRequest(0, 0, 0)`.
+- **Coalescing (R57).** A coalesced queued job keeps its `max_attempts`, `not_before`, and `enqueued_at`, so a job delayed by a transient failure stays delayed.
+- **Claims and leases (R58).**
+  - A queued job is eligible exactly at `not_before`, and an expired lease exactly at its expiry.
+  - Expiry is computed in UTC.
+  - A claim with nothing eligible returns `None` and writes nothing, also below the reserve. A claim that only fails an exhausted expired lease is gated by the reserve, and returns `None` when it succeeds.
+  - An exhausted expired lease whose token advanced is re-queued and claimed in the same call: attempts 1, the next fence, and the current token.
+  - The attempt keeps its claim-time `expires_at` after renewal.
+  - Renewal accepts 1 and 86,400 seconds.
+  - *Settles:* a renewal returns the claim's token, not the current one.
+- **Completion (R59).**
+  - A stale completion keeps the job's fence until the next claim and leaves `max_attempts` unchanged. No byte of the stale entry is stored anywhere in the database.
+  - An identical result adds no row to any table. It is compared only with the highest-token summary for the key and target, so a result equal to an older revision is appended.
+  - The reserve gates stale and identical completions too.
+- **The entry (R60).**
+  - Byte fields must be `bytes`; a `bytearray` is refused.
+  - `evidence_conditions` must be a tuple; a list or string is refused.
+  - Bytes are opaque: NUL and non-UTF-8 bytes are stored exactly.
+  - An unknown policy identity is refused.
+  - A Fallback Timezone Policy's identity can be the horizon.
+  - A policy above the horizon never applies, even if it is live now.
+- **The watermark (R61).**
+  - Times in another offset for the same instant are accepted, and stored and returned in UTC.
+  - A position at an earlier sequence at or below the current one is accepted with that sequence's own processed time.
+  - Sequence 0, an unarchived sequence, and an installation with no position are refused.
+- **Contributors (R62).**
+  - Both span ends are inclusive. An instant is placed by its start date.
+  - The record-type check stands on its own, as the survivor above showed.
+  - *Settles:* "indexed by outcome" is checked as some migration-5 index or primary key whose leading column name contains `outcome`. This names a column, so the approver may prefer to drop it.
+- **Failure (R63).** `retry_at` equal to `at` is allowed. A naive `retry_at` is `timestamp-invalid`.
+- **Evidence changes (R65).**
+  - `limit` truncates across the three groups in order.
+  - `evidence_changes_pending` counts every pending change.
+  - Leased, queued, and completed jobs are not changes.
+  - Acknowledgement refusals apply with and without keys. A listed job that is not failed is refused, also next to a failed one.
+- **Positions (R66).**
+  - An installation with no settled batch of the type is absent.
+  - Settlement times: the first outcome's `recorded_at` (a later outcome does not move it), the quarantine's `recorded_at`, the retraction or Source Conflict selection's `recorded_at`, the failed job's `closed_at`, and an unnamed retraction's `indexed_at`.
+  - Settlements of other types never count.
+- **Summary evidence (R67).**
+  - `after` is an integer of at least 0, and `limit` an integer of at least 1. `datetime` bounds and a malformed target are `summary-request-invalid`.
+  - *Settles:* `source_selection_policies` are the records `policy()` returns now, so `superseded_by` may name a policy above the horizon. Policies are ordered by first date, an unbounded start first.
+  - `next_after` is the last identity when another record follows. The tests avoid the exactly-at-limit case, so a look-ahead and a "full page" rule both pass.
+- **Reads (R68).** `processor_generation` returns `None` for 0, negatives, and unknown identities. `refresh_counts` with a naive time is `timestamp-invalid`.
+- **Surfaces (R69).** The operations emit no log record at any level. Refusals carry no key, date, identity, or marker in `repr` or `str`.
+- **Races (R70).** A racing request that gets `store-busy` retries, so the totals are exact: `RefreshRequest(1, 2n - 1, 0)` over n rounds, and the next claim's token is 2n.
+
+**Left open, not pinned.** These are ambiguities in the approved text; the suite accepts either reading:
+- whether a non-exhausted expired lease whose token advanced resets its attempts at claim;
+- whether a request with no keys, whose acknowledgement and link change nothing, needs the reserve;
+- argument validation for `evidence_changes(limit)` and `processed_positions`;
+- R66 says positions never move back, but two cases can move one back:
+  - a retraction indexed before any Source Record with its identity exists, which a later projection then names;
+  - a failed job whose selection is re-enqueued.
+
+  No test exercises either. The approver may want R66's wording settled before freeze.
 
 The implementer then reviews the pack read-only for tests a correct implementation could not pass, and those findings are resolved before freeze.
 
