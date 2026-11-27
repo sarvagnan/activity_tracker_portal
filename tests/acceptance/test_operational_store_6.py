@@ -2050,8 +2050,10 @@ class R65EvidenceChangesAndTheBookmark(StoreCase):
         # A crash part-way through the request moves nothing either.
         faults = self.install_fault_triggers()
         faults.execute("UPDATE test_fault SET remaining = 1")
+        before = contents(self.path)
         with self.assertRaises(sqlite3.DatabaseError):
             self.request(store, (self.key(),), target, acknowledge=acknowledgement)
+        self.assertEqual(contents(self.path), before)
         faults.execute("UPDATE test_fault SET remaining = 1000000")
         self.assertEqual(self.changes(store), everything)
         self.assertEqual(self.jobs(store, self.key()), ())

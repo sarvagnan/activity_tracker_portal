@@ -371,6 +371,10 @@ After Gate A, the executable pack adds:
 
   R55's expected positions and evidence come from R66 and R67 applied to this fixture by hand. For steps, A stops at its completion (sequence 3) before the queued change batch; B reaches sequence 2. For weight, A's unsettled steps batches do not hold its weight position back (sequence 6).
 - **The runner.** `tests/acceptance/run_operational_store_6.sh` runs `@5`'s bound runner unchanged (it runs `@4`'s, `@3`'s, `@2`'s, and `@1`'s), then the new suite.
+- **The binding.** As with `@5`, the pack binds the whole chain its runner executes: 29 files.
+  - Spec files: contracts and specs 1–6.
+  - Test files: runners and suites 1–6, plus the four fixtures (`operational-store-1-archive.sql`, `operational-store-3-index.sql`, `operational-store-4-processing.sql`, and `operational-store-6/operational-store-5-policies.sql`).
+  - The `@6` effects file.
 - **The Interface stub,** added to the published module:
   - three type aliases (`RefreshJobState`, `RefreshAttemptResult`, and `EvidenceChangeKind`);
   - the eighteen Interface dataclasses, real and frozen. Byte fields are `field(repr=False)`. `SummaryEvidenceItem.outcome` and `last_revision` are `ProcessingOutcome`s, and `SummaryEvidence.source_selection_policies` is a tuple of `SourceSelectionPolicyRecord`;
@@ -485,6 +489,10 @@ Before the review, one mutant survived the first run: contributors of any record
 - whether `next_after` is set on an exactly full last page.
 
 The reviewer would reset the retry budget on every stale expiry, to match "newer evidence gets a fresh run". This is recorded as a note only; the suite still allows a partly used budget.
+
+**Gate B resolutions (round 1).** The approver objected twice:
+1. **Binding.** The proposed binding named only the new files. It now binds the whole chain, as `@5` does.
+2. **Crash snapshot.** `test_unacknowledged_changes_survive_a_lost_request` checked only the change list and jobs after its injected crash. It now also compares a whole-database snapshot, taken after arming the fault and before resetting it.
 
 **Implementer review resolutions.** GPT 6.1 Sol reviewed the pack read-only at `08507be`, with an independent implementation that passed all 289 tests. Sol found 2 blocking and 7 should-fix findings, and gave 2 notes. They are resolved as follows:
 1. **Blocking: R66 positions could move back.** A manual retry after a failed job, and a later projection of a retracted identity, each removed a position. R66 now defines settlement historically: witnesses are append-only, any failed job is a witness, and a retraction's matching records are fixed as of its indexing.
