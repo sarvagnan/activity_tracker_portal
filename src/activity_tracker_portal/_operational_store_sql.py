@@ -323,3 +323,114 @@ CREATE TABLE policy_lease_marks (
 ) STRICT;
 CREATE INDEX known_origin_cover ON source_records (record_type, source_system_kind, origin);
 """
+
+
+_SUMMARY_SQL = """
+CREATE TABLE processor_generations (
+    generation_id INTEGER PRIMARY KEY,
+    manifest_sha256 TEXT NOT NULL UNIQUE,
+    registered_at TEXT NOT NULL
+) STRICT;
+CREATE TABLE processor_manifest (
+    generation_id INTEGER NOT NULL REFERENCES processor_generations (generation_id),
+    record_type TEXT NOT NULL,
+    processor_version TEXT NOT NULL,
+    PRIMARY KEY (generation_id, record_type)
+) STRICT;
+CREATE TABLE summary_tokens (
+    work_id INTEGER PRIMARY KEY,
+    measure TEXT NOT NULL,
+    record_type TEXT NOT NULL,
+    local_date TEXT NOT NULL,
+    generation_id INTEGER NOT NULL REFERENCES processor_generations (generation_id),
+    policy_horizon INTEGER NOT NULL CHECK (policy_horizon >= 0),
+    token INTEGER NOT NULL CHECK (token > 0),
+    UNIQUE (measure, record_type, local_date, generation_id, policy_horizon)
+) STRICT;
+CREATE TABLE summary_refresh_jobs (
+    job_id INTEGER PRIMARY KEY,
+    work_id INTEGER NOT NULL REFERENCES summary_tokens (work_id),
+    state TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'completed', 'failed')),
+    max_attempts INTEGER NOT NULL CHECK (max_attempts BETWEEN 1 AND 100),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    not_before TEXT NOT NULL,
+    fence INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    failure TEXT,
+    enqueued_at TEXT NOT NULL,
+    closed_at TEXT
+) STRICT;
+CREATE UNIQUE INDEX summary_open_job ON summary_refresh_jobs (work_id)
+    WHERE state IN ('queued', 'leased');
+CREATE INDEX summary_job_history ON summary_refresh_jobs (work_id, job_id);
+CREATE INDEX summary_job_ready ON summary_refresh_jobs (state, not_before, job_id);
+CREATE INDEX summary_job_expiry ON summary_refresh_jobs (state, lease_expires_at, job_id);
+CREATE TABLE summary_refresh_attempts (
+    job_id INTEGER NOT NULL REFERENCES summary_refresh_jobs (job_id),
+    fence INTEGER NOT NULL,
+    owner TEXT NOT NULL,
+    token INTEGER NOT NULL,
+    claimed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    finished_at TEXT,
+    result TEXT CHECK (result IN ('completed', 'stale', 'transient-failure', 'deterministic-failure', 'lease-expired')),
+    reason TEXT,
+    PRIMARY KEY (job_id, fence)
+) STRICT;
+CREATE TABLE health_summaries (
+    summary_id INTEGER PRIMARY KEY,
+    work_id INTEGER NOT NULL REFERENCES summary_tokens (work_id),
+    token INTEGER NOT NULL,
+    header_bytes BLOB NOT NULL,
+    evidence_bytes BLOB NOT NULL,
+    body_bytes BLOB,
+    contract_version TEXT NOT NULL,
+    derivation_version TEXT NOT NULL,
+    processor_version TEXT NOT NULL,
+    source_selection_policy INTEGER REFERENCES source_selection_policies (policy_id),
+    primary_state TEXT NOT NULL,
+    summary_sha256 TEXT NOT NULL,
+    evidence_sha256 TEXT NOT NULL,
+    body_sha256 TEXT,
+    job_id INTEGER NOT NULL,
+    fence INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    UNIQUE (work_id, token),
+    FOREIGN KEY (job_id, fence) REFERENCES summary_refresh_attempts (job_id, fence)
+) STRICT;
+CREATE TABLE summary_conditions (
+    summary_id INTEGER NOT NULL REFERENCES health_summaries (summary_id),
+    condition TEXT NOT NULL,
+    PRIMARY KEY (summary_id, condition)
+) STRICT;
+CREATE TABLE summary_watermarks (
+    summary_id INTEGER NOT NULL REFERENCES health_summaries (summary_id),
+    installation_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    receipt_time TEXT NOT NULL,
+    processed_at TEXT NOT NULL,
+    PRIMARY KEY (summary_id, installation_id),
+    FOREIGN KEY (installation_id, sequence) REFERENCES archived_messages (installation_id, sequence)
+) STRICT;
+CREATE TABLE summary_contributors (
+    outcome_id INTEGER NOT NULL REFERENCES canonical_revisions (outcome_id),
+    summary_id INTEGER NOT NULL REFERENCES health_summaries (summary_id),
+    PRIMARY KEY (outcome_id, summary_id)
+) STRICT;
+CREATE INDEX summary_contributor_summary ON summary_contributors (summary_id, outcome_id);
+CREATE TABLE summary_policy_links (
+    link_id INTEGER PRIMARY KEY,
+    policy_id INTEGER NOT NULL REFERENCES policies (policy_id),
+    requested_at TEXT NOT NULL
+) STRICT;
+CREATE INDEX summary_policy_link_policy ON summary_policy_links (policy_id);
+CREATE TABLE summary_evidence_bookmark (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    outcomes_through INTEGER NOT NULL,
+    selections_through INTEGER NOT NULL
+) STRICT;
+CREATE TABLE summary_failed_acknowledgements (
+    job_id INTEGER PRIMARY KEY REFERENCES processing_jobs (job_id)
+) STRICT;
+"""

@@ -13,6 +13,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 import hashlib
+import json
 import os
 import re
 from os import PathLike
@@ -21,7 +22,9 @@ import sqlite3
 import time
 from typing import Literal, cast
 
-from ._operational_store_sql import _BASELINE_SQL, _POLICY_SQL, _PROCESSING_SQL, _SOURCE_INDEX_SQL
+from ._operational_store_sql import (
+    _BASELINE_SQL, _POLICY_SQL, _PROCESSING_SQL, _SOURCE_INDEX_SQL, _SUMMARY_SQL,
+)
 
 STARTUP_FAILURES = frozenset(
     {
@@ -74,6 +77,14 @@ INVARIANT_FAILURES = frozenset(
         "policy-supersession-invalid",
         "policy-overlap",
         "policy-origin-unknown",
+        "processor-generation-invalid",
+        "processor-generation-unknown",
+        "summary-request-invalid",
+        "summary-target-invalid",
+        "summary-refresh-job-unknown",
+        "summary-entry-invalid",
+        "summary-watermark-invalid",
+        "summary-contributor-invalid",
     }
 )
 FAILURES = STARTUP_FAILURES | RETRYABLE_FAILURES | INVARIANT_FAILURES
@@ -81,7 +92,7 @@ FAILURES = STARTUP_FAILURES | RETRYABLE_FAILURES | INVARIANT_FAILURES
 # Ordered (version, exact SQL) pairs; store_migrations records the SHA-256 of each
 # migration's UTF-8 SQL. The baseline is migration 1.
 MIGRATIONS: tuple[tuple[int, str], ...] = (
-    (1, _BASELINE_SQL), (2, _SOURCE_INDEX_SQL), (3, _PROCESSING_SQL), (4, _POLICY_SQL),
+    (1, _BASELINE_SQL), (2, _SOURCE_INDEX_SQL), (3, _PROCESSING_SQL), (4, _POLICY_SQL), (5, _SUMMARY_SQL),
 )
 
 InstallationState = Literal["pending", "active", "draining", "retired", "withdrawn"]
@@ -1400,6 +1411,380 @@ class RefreshCounts:
     policies_awaiting_refresh: int
     evidence_changes_pending: int
 
+# @6 queries use only scalar evidence until a bounded result is materialized.
+_REFRESH_JOB_SELECT = (
+    "SELECT j.*, t.measure, t.record_type, t.local_date, t.generation_id, t.policy_horizon, t.token "
+    "FROM summary_refresh_jobs j JOIN summary_tokens t USING (work_id) "
+)
+_SUMMARY_SELECT = (
+    "SELECT s.*, t.measure, t.record_type, t.local_date, t.generation_id, t.policy_horizon "
+    "FROM health_summaries s JOIN summary_tokens t USING (work_id) "
+)
+_SUMMARY_KEY_WHERE = "t.measure = ? AND t.record_type = ? AND t.local_date = ?"
+_AWAITING_REFRESH_SQL = (
+    "SELECT p.policy_id FROM policies p WHERE " + _LIVE_POLICY_SQL +
+    " AND NOT EXISTS (SELECT 1 FROM summary_policy_links l WHERE l.policy_id = p.policy_id)"
+)
+_EVIDENCE_CHANGES_SQL = """
+SELECT 0 AS group_order, 'outcome' AS kind, o.outcome_id AS change_id,
+       o.record_id, r.record_type, o.processor_version
+FROM processing_outcomes o JOIN source_records r USING (record_id)
+WHERE o.outcome_id > ?
+UNION ALL
+SELECT 1, 'selection', s.selection_id, s.record_id, r.record_type, NULL
+FROM source_selections s JOIN source_records r USING (record_id)
+WHERE s.selection_id > ?
+UNION ALL
+SELECT 2, 'failed-job', j.job_id, j.record_id, r.record_type, j.processor_version
+FROM processing_jobs j JOIN source_records r USING (record_id)
+WHERE j.state = 'failed' AND NOT EXISTS (
+    SELECT 1 FROM summary_failed_acknowledgements a WHERE a.job_id = j.job_id)
+"""
+
+# Settlement is historical. In particular, neither a newer selection nor a
+# manual retry removes a witness. Retraction obligations are fixed by evidence
+# order, not by today's set of Source Records. All timestamps are canonical UTC.
+_PROCESSED_PREFIX_SQL = """
+WITH typed_batches AS MATERIALIZED (
+    SELECT installation_id, sequence FROM ingest_batches WHERE record_type = ?
+), typed_evidence AS MATERIALIZED (
+    SELECT e.* FROM source_evidence e
+    JOIN typed_batches b USING (installation_id, sequence)
+), obligations AS MATERIALIZED (
+    SELECT evidence_id, record_id FROM typed_evidence WHERE kind = 'projection'
+    UNION ALL
+    SELECT e.evidence_id, r.record_id FROM typed_evidence e
+    JOIN source_records r ON r.record_type = e.record_type AND r.source_identity = e.source_identity
+    WHERE e.kind = 'retraction' AND EXISTS (
+        SELECT 1 FROM source_evidence p WHERE p.record_id = r.record_id AND p.evidence_id < e.evidence_id)
+), witnesses AS MATERIALIZED (
+    SELECT selection_id, min(witness_at) AS witness_at FROM (
+        SELECT s.selection_id, s.recorded_at AS witness_at FROM source_selections s
+        JOIN source_records r USING (record_id)
+        WHERE r.record_type = ? AND s.outcome IN ('retraction', 'conflict')
+        UNION ALL
+        SELECT o.selection_id, o.recorded_at FROM processing_outcomes o
+        JOIN source_records r USING (record_id) WHERE r.record_type = ? AND o.processor_version = ?
+        UNION ALL
+        SELECT j.selection_id, j.closed_at FROM processing_jobs j
+        JOIN source_records r USING (record_id)
+        WHERE r.record_type = ? AND j.processor_version = ? AND j.state = 'failed'
+    ) GROUP BY selection_id
+), record_settlements AS MATERIALIZED (
+    SELECT o.evidence_id, o.record_id, min(w.witness_at) AS settled_at
+    FROM obligations o
+    LEFT JOIN source_selections s ON s.record_id = o.record_id AND s.evidence_head >= o.evidence_id
+    LEFT JOIN witnesses w USING (selection_id)
+    GROUP BY o.evidence_id, o.record_id
+), evidence_times AS MATERIALIZED (
+    SELECT e.evidence_id, CASE
+        WHEN count(rs.record_id) = 0 AND e.kind = 'retraction' THEN e.indexed_at
+        WHEN count(rs.record_id) = count(rs.settled_at) THEN max(rs.settled_at)
+        ELSE NULL END AS settled_at
+    FROM typed_evidence e LEFT JOIN record_settlements rs USING (evidence_id)
+    GROUP BY e.evidence_id
+), item_times AS MATERIALIZED (
+    SELECT i.installation_id, i.sequence, i.item_index,
+        CASE WHEN q.recorded_at IS NULL THEN et.settled_at
+             WHEN et.settled_at IS NULL THEN q.recorded_at
+             ELSE min(q.recorded_at, et.settled_at) END AS settled_at
+    FROM typed_batches b JOIN batch_items i USING (installation_id, sequence)
+    LEFT JOIN source_evidence e USING (installation_id, sequence, item_index)
+    LEFT JOIN evidence_times et USING (evidence_id)
+    LEFT JOIN item_quarantines q USING (installation_id, sequence, item_index)
+), batch_times AS MATERIALIZED (
+    SELECT b.installation_id, b.sequence,
+        count(i.item_index) = count(i.settled_at) AS settled
+    FROM typed_batches b LEFT JOIN item_times i USING (installation_id, sequence)
+    GROUP BY b.installation_id, b.sequence
+), boundaries AS (
+    SELECT installation_id, min(CASE WHEN NOT settled THEN sequence END) AS first_unsettled
+    FROM batch_times GROUP BY installation_id
+), prefix_sequences AS (
+    SELECT m.installation_id, max(m.sequence) AS sequence
+    FROM boundaries b JOIN archived_messages m USING (installation_id)
+    WHERE b.first_unsettled IS NULL OR m.sequence < b.first_unsettled
+    GROUP BY m.installation_id
+), positions AS MATERIALIZED (
+    SELECT p.installation_id, p.sequence, m.receipt_time,
+        max(m.receipt_time, coalesce((SELECT max(i.settled_at) FROM item_times i
+            WHERE i.installation_id = p.installation_id AND i.sequence <= p.sequence), m.receipt_time)) AS processed_at
+    FROM prefix_sequences p JOIN archived_messages m USING (installation_id, sequence)
+    WHERE EXISTS (SELECT 1 FROM batch_times b WHERE b.installation_id = p.installation_id
+                  AND b.sequence <= p.sequence AND b.settled)
+)
+"""
+
+
+def _summary_integer(value: object, minimum: int = 0) -> bool:
+    return type(value) is int and minimum <= value <= 2**63 - 1
+
+
+def _summary_version(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*@[0-9]+", value) is not None
+
+
+def _summary_bound(value: int, maximum: int) -> None:
+    if not _summary_integer(value, 1) or value > maximum:
+        raise StoreRefusal("summary-request-invalid")
+
+
+def _summary_key_parameters(key: SummaryKey) -> tuple[str, str, str]:
+    if (not isinstance(key, SummaryKey) or not _kebab(key.measure)
+            or not isinstance(key.record_type, str) or not key.record_type or type(key.local_date) is not date):
+        raise StoreRefusal("summary-request-invalid")
+    return key.measure, key.record_type, key.local_date.isoformat()
+
+
+def _summary_key(row: sqlite3.Row) -> SummaryKey:
+    return SummaryKey(row["measure"], row["record_type"], date.fromisoformat(row["local_date"]))
+
+
+def _summary_target(row: sqlite3.Row) -> SummaryTarget:
+    return SummaryTarget(row["generation_id"], row["policy_horizon"])
+
+
+def _processor_generation(connection: sqlite3.Connection, row: sqlite3.Row) -> ProcessorGeneration:
+    manifest = tuple((item[0], item[1]) for item in _execute(
+        connection, "SELECT record_type, processor_version FROM processor_manifest WHERE generation_id = ?",
+        (row["generation_id"],),
+    ))
+    # Python's code-point order is the interface order; RFC 8785 uses UTF-16.
+    return ProcessorGeneration(row["generation_id"], tuple(sorted(manifest)), row["manifest_sha256"],
+                               _datetime(row["registered_at"]))
+
+
+def _validate_summary_target(
+    connection: sqlite3.Connection, target: SummaryTarget, record_types: tuple[str, ...] = (),
+) -> dict[str, str]:
+    if (not isinstance(target, SummaryTarget) or type(target.generation_id) is not int or target.generation_id < 1
+            or type(target.policy_horizon) is not int or target.policy_horizon < 0):
+        raise StoreRefusal("summary-request-invalid")
+    if target.generation_id > 2**63 - 1 or _execute(
+        connection, "SELECT 1 FROM processor_generations WHERE generation_id = ?", (target.generation_id,),
+    ).fetchone() is None:
+        raise StoreRefusal("processor-generation-unknown")
+    if target.policy_horizon and (target.policy_horizon > 2**63 - 1 or _execute(
+        connection, "SELECT 1 FROM policies WHERE policy_id = ?", (target.policy_horizon,),
+    ).fetchone() is None):
+        raise StoreRefusal("policy-unknown")
+    manifest = dict(_execute(connection, "SELECT record_type, processor_version FROM processor_manifest "
+                            "WHERE generation_id = ?", (target.generation_id,)))
+    if any(record_type not in manifest for record_type in record_types):
+        raise StoreRefusal("summary-target-invalid")
+    return manifest
+
+
+def _refresh_job(connection: sqlite3.Connection, row: sqlite3.Row) -> SummaryRefreshJob:
+    history = tuple(RefreshAttempt(
+        item["fence"], item["owner"], item["token"], _datetime(item["claimed_at"]), _datetime(item["expires_at"]),
+        _optional_datetime(item["finished_at"]), item["result"], item["reason"],
+    ) for item in _execute(connection, "SELECT * FROM summary_refresh_attempts WHERE job_id = ? ORDER BY fence",
+                          (row["job_id"],)))
+    return SummaryRefreshJob(
+        row["job_id"], _summary_key(row), _summary_target(row), row["state"], row["max_attempts"], row["attempts"],
+        _datetime(row["not_before"]), row["fence"], row["lease_owner"], _optional_datetime(row["lease_expires_at"]),
+        row["failure"], _datetime(row["enqueued_at"]), _optional_datetime(row["closed_at"]), history,
+    )
+
+
+def _held_refresh_job(connection: sqlite3.Connection, job_id: int, fence: int) -> sqlite3.Row:
+    row = None if not _summary_integer(job_id, 1) else _execute(
+        connection, _REFRESH_JOB_SELECT + "WHERE j.job_id = ?", (job_id,),
+    ).fetchone()
+    if row is None:
+        raise StoreRefusal("summary-refresh-job-unknown")
+    if row["state"] != "leased" or row["fence"] != fence:
+        raise StoreRefusal("lease-not-held")
+    return row
+
+
+def _refresh_claim_token(connection: sqlite3.Connection, job: sqlite3.Row) -> int:
+    return _execute(connection, "SELECT token FROM summary_refresh_attempts WHERE job_id = ? AND fence = ?",
+                    (job["job_id"], job["fence"])).fetchone()[0]
+
+
+def _refresh_lease(connection: sqlite3.Connection, row: sqlite3.Row) -> RefreshLease:
+    return RefreshLease(row["job_id"], row["fence"], row["lease_owner"], _summary_key(row), _summary_target(row),
+                        _refresh_claim_token(connection, row), _datetime(row["lease_expires_at"]))
+
+
+def _finish_refresh_attempt(
+    connection: sqlite3.Connection, job: sqlite3.Row, result: RefreshAttemptResult,
+    reason: str | None, timestamp: str,
+) -> None:
+    _execute(connection, "UPDATE summary_refresh_attempts SET finished_at = ?, result = ?, reason = ? "
+             "WHERE job_id = ? AND fence = ?", (timestamp, result, reason, job["job_id"], job["fence"]))
+
+
+def _close_refresh_job(
+    connection: sqlite3.Connection, job_id: int, state: RefreshJobState, timestamp: str, failure: str | None = None,
+) -> None:
+    _execute(connection, "UPDATE summary_refresh_jobs SET state = ?, closed_at = ?, failure = ?, "
+             "lease_owner = NULL, lease_expires_at = NULL WHERE job_id = ?", (state, timestamp, failure, job_id))
+
+
+def _requeue_refresh_job(connection: sqlite3.Connection, job: sqlite3.Row, timestamp: str, fresh: bool) -> None:
+    _execute(connection, "UPDATE summary_refresh_jobs SET state = 'queued', attempts = ?, not_before = ?, "
+             "lease_owner = NULL, lease_expires_at = NULL, failure = NULL, closed_at = NULL WHERE job_id = ?",
+             (0 if fresh else job["attempts"], timestamp, job["job_id"]))
+
+
+def _evidence_bookmark(connection: sqlite3.Connection) -> EvidenceBookmark:
+    row = _execute(connection, "SELECT outcomes_through, selections_through FROM summary_evidence_bookmark").fetchone()
+    return EvidenceBookmark(0, 0) if row is None else EvidenceBookmark(*row)
+
+
+def _validate_evidence_acknowledgement(connection: sqlite3.Connection, ack: EvidenceAcknowledgement) -> None:
+    if (not isinstance(ack, EvidenceAcknowledgement) or not _summary_integer(ack.outcomes_through)
+            or not _summary_integer(ack.selections_through) or not isinstance(ack.failed_jobs, tuple)
+            or any(not _summary_integer(job_id, 1) for job_id in ack.failed_jobs)):
+        raise StoreRefusal("summary-request-invalid")
+    old = _evidence_bookmark(connection)
+    maxima = _execute(connection, "SELECT (SELECT coalesce(max(outcome_id), 0) FROM processing_outcomes), "
+                      "(SELECT coalesce(max(selection_id), 0) FROM source_selections)").fetchone()
+    if not (old.outcomes_through <= ack.outcomes_through <= maxima[0]
+            and old.selections_through <= ack.selections_through <= maxima[1]):
+        raise StoreRefusal("summary-request-invalid")
+    if ack.failed_jobs:
+        values = ",".join("(?)" for _ in ack.failed_jobs)
+        invalid = _execute(connection, "WITH requested(job_id) AS (VALUES " + values + ") "
+                           "SELECT 1 FROM requested r LEFT JOIN processing_jobs j USING (job_id) "
+                           "WHERE j.job_id IS NULL OR j.state != 'failed' LIMIT 1", ack.failed_jobs).fetchone()
+        if invalid is not None:
+            raise StoreRefusal("summary-request-invalid")
+
+
+def _summary_policies_sql() -> str:
+    return ("SELECT p.requested_at, s.* FROM source_selection_policies s JOIN policies p USING (policy_id) "
+            "WHERE s.measure = ? AND s.record_type = ? AND s.policy_id <= ? "
+            "AND NOT EXISTS (SELECT 1 FROM policy_supersessions x WHERE x.old_id = s.policy_id AND x.new_id <= ?) "
+            "AND (s.first_date IS NULL OR s.first_date <= ?) AND (s.last_date IS NULL OR s.last_date >= ?) ")
+
+
+def _processed_parameters(record_type: str, processor_version: str) -> tuple[object, ...]:
+    return record_type, record_type, record_type, processor_version, record_type, processor_version
+
+
+def _processed_position(row: sqlite3.Row) -> ProcessedPosition:
+    return ProcessedPosition(row["installation_id"], row["sequence"], _datetime(row["receipt_time"]),
+                             _datetime(row["processed_at"]))
+
+
+def _validate_summary_watermark(
+    connection: sqlite3.Connection, watermark: tuple[ProcessedPosition, ...], record_type: str, processor_version: str,
+) -> tuple[ProcessedPosition, ...]:
+    if not isinstance(watermark, tuple) or not watermark:
+        raise StoreRefusal("summary-watermark-invalid")
+    previous = None
+    parameters: list[object] = []
+    normalized = []
+    for position in watermark:
+        if (not isinstance(position, ProcessedPosition) or not isinstance(position.installation_id, str)
+                or not position.installation_id or (previous is not None and position.installation_id <= previous)
+                or not _summary_integer(position.sequence, 1)
+                or not isinstance(position.receipt_time, datetime) or position.receipt_time.utcoffset() is None
+                or not isinstance(position.processed_at, datetime) or position.processed_at.utcoffset() is None):
+            raise StoreRefusal("summary-watermark-invalid")
+        previous = position.installation_id
+        receipt, processed = _timestamp(position.receipt_time), _timestamp(position.processed_at)
+        parameters.extend((position.installation_id, position.sequence, receipt, processed))
+        normalized.append(ProcessedPosition(position.installation_id, position.sequence, _datetime(receipt), _datetime(processed)))
+    # Validate every requested position in one query; an earlier archived sequence
+    # uses its own receipt and the settlement times through that earlier prefix.
+    values = ",".join("(?, ?, ?, ?)" for _ in watermark)
+    invalid = _execute(connection, _PROCESSED_PREFIX_SQL +
+        ", requested(installation_id, sequence, receipt_time, processed_at) AS (VALUES " + values + ") "
+        "SELECT 1 FROM requested r LEFT JOIN positions p USING (installation_id) "
+        "LEFT JOIN archived_messages m ON m.installation_id = r.installation_id AND m.sequence = r.sequence "
+        "WHERE p.sequence IS NULL OR r.sequence > p.sequence OR m.sequence IS NULL "
+        "OR r.receipt_time != m.receipt_time OR r.processed_at != max(m.receipt_time, coalesce("
+        "(SELECT max(i.settled_at) FROM item_times i WHERE i.installation_id = r.installation_id "
+        "AND i.sequence <= r.sequence), m.receipt_time)) LIMIT 1",
+        _processed_parameters(record_type, processor_version) + tuple(parameters),
+    ).fetchone()
+    if invalid is not None:
+        raise StoreRefusal("summary-watermark-invalid")
+    return tuple(normalized)
+
+
+def _validate_summary_entry(
+    connection: sqlite3.Connection, job: sqlite3.Row, entry: SummaryEntry,
+) -> tuple[ProcessedPosition, ...]:
+    version = _execute(connection, "SELECT processor_version FROM processor_manifest "
+                       "WHERE generation_id = ? AND record_type = ?", (job["generation_id"], job["record_type"])).fetchone()[0]
+    if (not isinstance(entry, SummaryEntry)
+            or any(not isinstance(value, bytes) or not value for value in (entry.header_bytes, entry.evidence_bytes))
+            or (entry.body_bytes is not None and (not isinstance(entry.body_bytes, bytes) or not entry.body_bytes))
+            or not _summary_version(entry.contract_version) or not _summary_version(entry.derivation_version)
+            or entry.processor_version != version or not _kebab(entry.primary_state)
+            or not isinstance(entry.evidence_conditions, tuple) or any(not _kebab(c) for c in entry.evidence_conditions)
+            or tuple(sorted(set(entry.evidence_conditions))) != entry.evidence_conditions):
+        raise StoreRefusal("summary-entry-invalid")
+    policy = _execute(connection, _summary_policies_sql(), (
+        job["measure"], job["record_type"], job["policy_horizon"], job["policy_horizon"], job["local_date"], job["local_date"],
+    )).fetchone()
+    applicable = None if policy is None else policy["policy_id"]
+    if (entry.source_selection_policy != applicable
+            or (entry.source_selection_policy is not None and type(entry.source_selection_policy) is not int)):
+        raise StoreRefusal("summary-entry-invalid")
+    watermark = _validate_summary_watermark(connection, entry.watermark, job["record_type"], version)
+    if (not isinstance(entry.contributors, tuple) or any(not _summary_integer(o, 1) for o in entry.contributors)
+            or tuple(sorted(set(entry.contributors))) != entry.contributors):
+        raise StoreRefusal("summary-contributor-invalid")
+    if entry.contributors:
+        values = ",".join("(?)" for _ in entry.contributors)
+        invalid = _execute(connection, "WITH requested(outcome_id) AS (VALUES " + values + ") "
+            "SELECT 1 FROM requested q LEFT JOIN processing_outcomes o USING (outcome_id) "
+            "LEFT JOIN source_records r USING (record_id) LEFT JOIN canonical_revisions c USING (outcome_id) "
+            "WHERE c.outcome_id IS NULL OR o.kind != 'revision' OR r.record_type != ? OR o.processor_version != ? "
+            "OR c.start_local_date > ? OR coalesce(c.end_local_date, c.start_local_date) < ? LIMIT 1",
+            entry.contributors + (job["record_type"], version, job["local_date"], job["local_date"]),
+        ).fetchone()
+        if invalid is not None:
+            raise StoreRefusal("summary-contributor-invalid")
+    return watermark
+
+
+def _stored_summary(connection: sqlite3.Connection, row: sqlite3.Row) -> StoredSummary:
+    summary_id = row["summary_id"]
+    conditions = tuple(item[0] for item in _execute(connection,
+        "SELECT condition FROM summary_conditions WHERE summary_id = ? ORDER BY condition", (summary_id,)))
+    watermark = tuple(_processed_position(item) for item in _execute(connection,
+        "SELECT * FROM summary_watermarks WHERE summary_id = ? ORDER BY installation_id", (summary_id,)))
+    contributors = tuple(item[0] for item in _execute(connection,
+        "SELECT outcome_id FROM summary_contributors WHERE summary_id = ? ORDER BY outcome_id", (summary_id,)))
+    return StoredSummary(
+        summary_id, _summary_key(row), _summary_target(row), row["token"], row["header_bytes"], row["evidence_bytes"],
+        row["body_bytes"], row["contract_version"], row["derivation_version"], row["processor_version"],
+        row["source_selection_policy"], row["primary_state"], conditions, watermark, contributors,
+        row["summary_sha256"], row["evidence_sha256"], row["body_sha256"], row["job_id"], row["fence"],
+        _datetime(row["recorded_at"]),
+    )
+
+
+def _summary_entry(summary: StoredSummary) -> SummaryEntry:
+    return SummaryEntry(summary.header_bytes, summary.evidence_bytes, summary.body_bytes, summary.contract_version,
+                        summary.derivation_version, summary.processor_version, summary.source_selection_policy,
+                        summary.primary_state, summary.evidence_conditions, summary.watermark, summary.contributors)
+
+
+
+def _summary_evidence_outcome(row: sqlite3.Row) -> ProcessingOutcome:
+    # The page query joins revisions in bulk; formatting a returned outcome
+    # never issues a per-record query or reads any other historical bytes.
+    revision = None if row["kind"] != "revision" else StoredRevision(
+        row["header_bytes"], row["body_bytes"], row["body_version"], row["start_epoch_ns"], row["end_epoch_ns"],
+        date.fromisoformat(row["start_local_date"]),
+        None if row["end_local_date"] is None else date.fromisoformat(row["end_local_date"]),
+        row["start_attribution"], row["end_attribution"], row["header_sha256"], row["body_sha256"],
+    )
+    return ProcessingOutcome(
+        row["outcome_id"], row["record_id"], row["selection_id"], row["evidence_id"], row["processor_version"],
+        row["policy_identity"], row["kind"], row["reason"], row["pointer"], row["policy_kind"], revision,
+        row["job_id"], row["fence"], _datetime(row["recorded_at"]),
+    )
+
 
 class StoreView:
     """Reads bound to one SQLite read transaction."""
@@ -1832,40 +2217,143 @@ class StoreView:
         ))
 
     def processor_generation(self, generation_id: int) -> ProcessorGeneration | None:
-        raise NotImplementedError("operational-store@6")
+        row = None if not _summary_integer(generation_id, 1) else _execute(
+            self._connection, "SELECT * FROM processor_generations WHERE generation_id = ?", (generation_id,),
+        ).fetchone()
+        return None if row is None else _processor_generation(self._connection, row)
 
     def processor_generations(self) -> tuple[ProcessorGeneration, ...]:
-        raise NotImplementedError("operational-store@6")
+        return tuple(_processor_generation(self._connection, row) for row in _execute(
+            self._connection, "SELECT * FROM processor_generations ORDER BY generation_id",
+        ))
 
     def summary_refresh_job(self, job_id: int) -> SummaryRefreshJob | None:
-        raise NotImplementedError("operational-store@6")
+        row = None if not _summary_integer(job_id, 1) else _execute(
+            self._connection, _REFRESH_JOB_SELECT + "WHERE j.job_id = ?", (job_id,),
+        ).fetchone()
+        return None if row is None else _refresh_job(self._connection, row)
 
     def summary_refresh_jobs(self, key: SummaryKey) -> tuple[SummaryRefreshJob, ...]:
-        raise NotImplementedError("operational-store@6")
+        return tuple(_refresh_job(self._connection, row) for row in _execute(
+            self._connection, _REFRESH_JOB_SELECT + "WHERE " + _SUMMARY_KEY_WHERE + " ORDER BY j.job_id",
+            _summary_key_parameters(key),
+        ))
 
     def summaries(self, key: SummaryKey) -> tuple[StoredSummary, ...]:
-        raise NotImplementedError("operational-store@6")
+        return tuple(_stored_summary(self._connection, row) for row in _execute(
+            self._connection, _SUMMARY_SELECT + "WHERE " + _SUMMARY_KEY_WHERE + " ORDER BY s.summary_id",
+            _summary_key_parameters(key),
+        ))
 
     def latest_summary(self, key: SummaryKey, target: SummaryTarget) -> StoredSummary | None:
-        raise NotImplementedError("operational-store@6")
+        parameters = _summary_key_parameters(key)
+        if (not isinstance(target, SummaryTarget) or type(target.generation_id) is not int or target.generation_id < 1
+                or type(target.policy_horizon) is not int or target.policy_horizon < 0):
+            raise StoreRefusal("summary-request-invalid")
+        if target.generation_id > 2**63 - 1 or target.policy_horizon > 2**63 - 1:
+            return None
+        row = _execute(self._connection, _SUMMARY_SELECT + "WHERE " + _SUMMARY_KEY_WHERE +
+                       " AND t.generation_id = ? AND t.policy_horizon = ? ORDER BY s.token DESC LIMIT 1",
+                       parameters + (target.generation_id, target.policy_horizon)).fetchone()
+        return None if row is None else _stored_summary(self._connection, row)
 
     def policies_awaiting_refresh(self) -> tuple[int, ...]:
-        raise NotImplementedError("operational-store@6")
+        return tuple(row[0] for row in _execute(self._connection, _AWAITING_REFRESH_SQL + " ORDER BY p.policy_id"))
 
     def evidence_changes(self, limit: int) -> EvidenceChanges:
-        raise NotImplementedError("operational-store@6")
+        _summary_bound(limit, 2**63 - 1)
+        bookmark = _evidence_bookmark(self._connection)
+        changes = tuple(EvidenceChange(row["kind"], row["change_id"], row["record_id"], row["record_type"],
+                                       row["processor_version"]) for row in _execute(
+            self._connection, _EVIDENCE_CHANGES_SQL + " ORDER BY group_order, change_id LIMIT ?",
+            (bookmark.outcomes_through, bookmark.selections_through, limit),
+        ))
+        return EvidenceChanges(bookmark, changes)
 
     def processed_positions(self, record_type: str, processor_version: str) -> tuple[ProcessedPosition, ...]:
-        raise NotImplementedError("operational-store@6")
+        if not isinstance(record_type, str) or not record_type:
+            raise StoreRefusal("summary-request-invalid")
+        if not _summary_version(processor_version):
+            raise StoreRefusal("processor-version-invalid")
+        return tuple(_processed_position(row) for row in _execute(
+            self._connection, _PROCESSED_PREFIX_SQL + "SELECT * FROM positions ORDER BY installation_id",
+            _processed_parameters(record_type, processor_version),
+        ))
 
     def summary_evidence(
         self, measure: str, record_type: str, first_date: date, last_date: date, target: SummaryTarget,
         after: int, limit: int,
     ) -> SummaryEvidence:
-        raise NotImplementedError("operational-store@6")
+        if (not _kebab(measure) or not isinstance(record_type, str) or not record_type
+                or type(first_date) is not date or type(last_date) is not date or first_date > last_date
+                or not _summary_integer(after) or not _summary_integer(limit, 1)):
+            raise StoreRefusal("summary-request-invalid")
+        version = _validate_summary_target(self._connection, target, (record_type,))[record_type]
+        # Select/page using scalar indexed fields first. Only the outcomes in
+        # the returned page are materialized, with their opaque revision bytes.
+        rows = _execute(self._connection, """
+            SELECT r.record_id, r.source_system_kind, r.origin, s.selection_id, s.outcome AS selection_kind,
+                revision.outcome_id AS revision_id,
+                (SELECT max(o.outcome_id) FROM processing_outcomes o
+                 WHERE o.record_id = r.record_id AND o.selection_id = s.selection_id
+                   AND o.processor_version = ?) AS outcome_id,
+                coalesce((SELECT j.state = 'failed' FROM processing_jobs j
+                 WHERE j.record_id = r.record_id AND j.selection_id = s.selection_id AND j.processor_version = ?
+                 ORDER BY j.job_id DESC LIMIT 1), 0) AS job_failed
+            FROM source_records r
+            JOIN source_selections s ON s.selection_id = (
+                SELECT max(latest.selection_id) FROM source_selections latest WHERE latest.record_id = r.record_id)
+            JOIN processing_outcomes revision ON revision.outcome_id = (
+                SELECT max(o.outcome_id) FROM processing_outcomes o
+                WHERE o.record_id = r.record_id AND o.processor_version = ? AND o.kind = 'revision')
+            JOIN canonical_revisions c ON c.outcome_id = revision.outcome_id
+            WHERE r.record_type = ? AND r.record_id > ? AND s.outcome IN ('projection', 'conflict')
+                AND c.start_local_date <= ? AND coalesce(c.end_local_date, c.start_local_date) >= ?
+            ORDER BY r.record_id LIMIT ?
+            """, (version, version, version, record_type, after, last_date.isoformat(), first_date.isoformat(),
+                  min(limit + 1, 2**63 - 1))).fetchall()
+        page = rows[:limit]
+        # Bulk-load precisely the page's outcomes, deduplicating an outcome
+        # that is both the current outcome and the last Canonical Revision.
+        identities = tuple(sorted({row[name] for row in page for name in ("outcome_id", "revision_id")
+                                   if row[name] is not None}))
+        outcomes = {} if not identities else {
+            row["outcome_id"]: _summary_evidence_outcome(row) for row in _execute(
+                self._connection, "SELECT o.*, c.header_bytes, c.body_bytes, c.body_version, c.start_epoch_ns, "
+                "c.end_epoch_ns, c.start_local_date, c.end_local_date, c.start_attribution, c.end_attribution, "
+                "c.header_sha256, c.body_sha256 FROM processing_outcomes o "
+                "LEFT JOIN canonical_revisions c USING (outcome_id) WHERE o.outcome_id IN (" +
+                ",".join("?" for _ in identities) + ")", identities,
+            )
+        }
+        items = tuple(SummaryEvidenceItem(
+            row["record_id"], row["source_system_kind"], row["origin"], row["selection_id"], row["selection_kind"],
+            outcomes.get(row["outcome_id"]), bool(row["job_failed"]), outcomes[row["revision_id"]],
+        ) for row in page)
+        policies = tuple(_selection_policy(self._connection, row) for row in _execute(
+            self._connection, _summary_policies_sql() + "ORDER BY s.first_date, s.policy_id",
+            (measure, record_type, target.policy_horizon, target.policy_horizon, last_date.isoformat(), first_date.isoformat()),
+        ))
+        return SummaryEvidence(items, policies, page[-1]["record_id"] if len(rows) > limit else None)
 
     def refresh_counts(self, at: datetime) -> RefreshCounts:
-        raise NotImplementedError("operational-store@6")
+        timestamp = _timestamp(at)
+        bookmark = _evidence_bookmark(self._connection)
+        row = _execute(self._connection, "SELECT " + ", ".join(
+            "(SELECT count(*) FROM summary_refresh_jobs WHERE " + condition + ")" for condition in (
+                "state = 'queued' AND not_before <= ?", "state = 'queued' AND not_before > ?",
+                "state = 'leased' AND lease_expires_at > ?", "state = 'leased' AND lease_expires_at <= ?",
+                "state = 'completed'", "state = 'failed'",
+            )) + ", (SELECT count(*) FROM summary_refresh_attempts WHERE result = 'stale'), "
+            "(SELECT count(*) FROM health_summaries), (SELECT count(*) FROM processor_generations), "
+            "(SELECT count(*) FROM (" + _AWAITING_REFRESH_SQL + ")), "
+            "(SELECT count(*) FROM processing_outcomes WHERE outcome_id > ?), "
+            "(SELECT count(*) FROM source_selections WHERE selection_id > ?), "
+            "(SELECT count(*) FROM processing_jobs j WHERE state = 'failed' AND NOT EXISTS "
+            "(SELECT 1 FROM summary_failed_acknowledgements a WHERE a.job_id = j.job_id))",
+            (timestamp,) * 4 + (bookmark.outcomes_through, bookmark.selections_through),
+        ).fetchone()
+        return RefreshCounts(*row[:10], sum(row[10:]))
 
     def storage_reserve(self) -> ReserveStatus:
         free = _sample_free_bytes(self._free_bytes, self._path)
@@ -2672,27 +3160,201 @@ class OperationalStore:
             return policy
 
     def register_processor_generation(self, manifest: Mapping[str, str], at: datetime) -> ProcessorGeneration:
-        raise NotImplementedError("operational-store@6")
+        timestamp = _timestamp(at)
+        if (not isinstance(manifest, Mapping) or not manifest
+                or any(not isinstance(key, str) or not key for key in manifest)):
+            raise StoreRefusal("processor-generation-invalid")
+        # RFC 8785 refuses lone surrogates before processor-version grammar.
+        if any(isinstance(value, str) and any(0xD800 <= ord(char) <= 0xDFFF for char in value)
+               for pair in manifest.items() for value in pair):
+            raise StoreRefusal("processor-generation-invalid")
+        if any(not _summary_version(version) for version in manifest.values()):
+            raise StoreRefusal("processor-version-invalid")
+        pairs = tuple(sorted(manifest.items()))
+        # A manifest contains only string keys/values: json's lowercase control
+        # escapes and literal Unicode implement RFC 8785 strings; UTF-16 orders keys.
+        canonical = "{" + ",".join(
+            json.dumps(key, ensure_ascii=False) + ":" + json.dumps(version, ensure_ascii=False)
+            for key, version in sorted(pairs, key=lambda pair: pair[0].encode("utf-16-be"))
+        ) + "}"
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        with _transaction(self._connection):
+            row = _execute(self._connection, "SELECT * FROM processor_generations WHERE manifest_sha256 = ?",
+                           (digest,)).fetchone()
+            if row is not None:
+                return _processor_generation(self._connection, row)
+            self._processing_write_reserve()
+            generation_id = _execute(self._connection, "INSERT INTO processor_generations "
+                "(manifest_sha256, registered_at) VALUES (?, ?)", (digest, timestamp)).lastrowid
+            assert generation_id is not None
+            for record_type, version in pairs:
+                _execute(self._connection, "INSERT INTO processor_manifest VALUES (?, ?, ?)",
+                         (generation_id, record_type, version))
+            return ProcessorGeneration(generation_id, pairs, digest, _datetime(timestamp))
 
     def request_summary_refresh(
         self, keys: tuple[SummaryKey, ...], target: SummaryTarget, max_attempts: int, at: datetime, *,
         policy_id: int | None = None, acknowledge: EvidenceAcknowledgement | None = None,
     ) -> RefreshRequest:
-        raise NotImplementedError("operational-store@6")
+        timestamp = _timestamp(at)
+        _summary_bound(max_attempts, 100)
+        if not isinstance(keys, tuple):
+            raise StoreRefusal("summary-request-invalid")
+        parameters = tuple(_summary_key_parameters(key) for key in keys)
+        if len(set(parameters)) != len(keys) or (not keys and policy_id is None and acknowledge is None):
+            raise StoreRefusal("summary-request-invalid")
+        with _transaction(self._connection):
+            _validate_summary_target(self._connection, target, tuple(key.record_type for key in keys))
+            if policy_id is not None:
+                if not _summary_integer(policy_id, 1) or _execute(
+                    self._connection, "SELECT 1 FROM policies WHERE policy_id = ?", (policy_id,),
+                ).fetchone() is None:
+                    raise StoreRefusal("policy-unknown")
+                if target.policy_horizon < policy_id:
+                    raise StoreRefusal("summary-target-invalid")
+            if acknowledge is not None:
+                _validate_evidence_acknowledgement(self._connection, acknowledge)
+            self._processing_write_reserve()
+            counts = [0, 0, 0]
+            for key_parameters in parameters:
+                work = _execute(self._connection, "INSERT INTO summary_tokens "
+                    "(measure, record_type, local_date, generation_id, policy_horizon, token) VALUES (?, ?, ?, ?, ?, 1) "
+                    "ON CONFLICT (measure, record_type, local_date, generation_id, policy_horizon) "
+                    "DO UPDATE SET token = token + 1 RETURNING work_id",
+                    key_parameters + (target.generation_id, target.policy_horizon)).fetchone()[0]
+                job = _execute(self._connection, "SELECT state FROM summary_refresh_jobs WHERE work_id = ? "
+                               "AND state IN ('queued', 'leased')", (work,)).fetchone()
+                if job is None:
+                    _execute(self._connection, "INSERT INTO summary_refresh_jobs "
+                        "(work_id, state, max_attempts, not_before, enqueued_at) VALUES (?, 'queued', ?, ?, ?)",
+                        (work, max_attempts, timestamp, timestamp))
+                    counts[0] += 1
+                else:
+                    counts[1 if job["state"] == "queued" else 2] += 1
+            if policy_id is not None:
+                _execute(self._connection, "INSERT INTO summary_policy_links (policy_id, requested_at) VALUES (?, ?)",
+                         (policy_id, timestamp))
+            if acknowledge is not None:
+                _execute(self._connection, "INSERT INTO summary_evidence_bookmark VALUES (1, ?, ?) "
+                    "ON CONFLICT (singleton) DO UPDATE SET outcomes_through = excluded.outcomes_through, "
+                    "selections_through = excluded.selections_through",
+                    (acknowledge.outcomes_through, acknowledge.selections_through))
+                for job_id in acknowledge.failed_jobs:
+                    _execute(self._connection, "INSERT INTO summary_failed_acknowledgements VALUES (?) "
+                             "ON CONFLICT DO NOTHING", (job_id,))
+            return RefreshRequest(*counts)
 
     def claim_summary_refresh(self, owner: str, lease_seconds: int, at: datetime) -> RefreshLease | None:
-        raise NotImplementedError("operational-store@6")
+        timestamp = _timestamp(at)
+        _summary_bound(lease_seconds, 86_400)
+        if not isinstance(owner, str) or not owner:
+            raise StoreRefusal("summary-request-invalid")
+        expiry = _timestamp(at.astimezone(timezone.utc) + timedelta(seconds=lease_seconds))
+        with _transaction(self._connection):
+            reserve_checked = False
+            while True:
+                job = _execute(self._connection, _REFRESH_JOB_SELECT + "WHERE j.job_id = (SELECT min(job_id) FROM ("
+                    "SELECT job_id FROM summary_refresh_jobs WHERE state = 'queued' AND not_before <= ? UNION ALL "
+                    "SELECT job_id FROM summary_refresh_jobs WHERE state = 'leased' AND lease_expires_at <= ?))",
+                    (timestamp, timestamp)).fetchone()
+                if job is None:
+                    return None
+                if not reserve_checked:
+                    self._processing_write_reserve()
+                    reserve_checked = True
+                attempts = job["attempts"]
+                if job["state"] == "leased":
+                    stale = _refresh_claim_token(self._connection, job) != job["token"]
+                    _finish_refresh_attempt(self._connection, job, "lease-expired", None, timestamp)
+                    if stale:
+                        attempts = 0
+                    if attempts >= job["max_attempts"]:
+                        _close_refresh_job(self._connection, job["job_id"], "failed", timestamp,
+                                           "lease-expired-retries-exhausted")
+                        continue
+                fence = job["fence"] + 1
+                _execute(self._connection, "UPDATE summary_refresh_jobs SET state = 'leased', attempts = ?, "
+                    "fence = ?, lease_owner = ?, lease_expires_at = ? WHERE job_id = ?",
+                    (attempts + 1, fence, owner, expiry, job["job_id"]))
+                _execute(self._connection, "INSERT INTO summary_refresh_attempts "
+                    "(job_id, fence, owner, token, claimed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (job["job_id"], fence, owner, job["token"], timestamp, expiry))
+                return _refresh_lease(self._connection, _held_refresh_job(self._connection, job["job_id"], fence))
 
     def renew_summary_refresh_lease(self, job_id: int, fence: int, lease_seconds: int, at: datetime) -> RefreshLease:
-        raise NotImplementedError("operational-store@6")
+        _timestamp(at)
+        _summary_bound(lease_seconds, 86_400)
+        expiry = _timestamp(at.astimezone(timezone.utc) + timedelta(seconds=lease_seconds))
+        with _transaction(self._connection):
+            _held_refresh_job(self._connection, job_id, fence)
+            self._processing_write_reserve()
+            _execute(self._connection, "UPDATE summary_refresh_jobs SET lease_expires_at = ? WHERE job_id = ?",
+                     (expiry, job_id))
+            return _refresh_lease(self._connection, _held_refresh_job(self._connection, job_id, fence))
 
     def complete_summary_refresh(self, job_id: int, fence: int, entry: SummaryEntry, at: datetime) -> RefreshCompletion:
-        raise NotImplementedError("operational-store@6")
+        timestamp = _timestamp(at)
+        with _transaction(self._connection):
+            job = _held_refresh_job(self._connection, job_id, fence)
+            watermark = _validate_summary_entry(self._connection, job, entry)
+            self._processing_write_reserve()
+            token = _refresh_claim_token(self._connection, job)
+            if token != job["token"]:
+                _finish_refresh_attempt(self._connection, job, "stale", None, timestamp)
+                _requeue_refresh_job(self._connection, job, timestamp, True)
+                return RefreshCompletion(None, True)
+            latest = _execute(self._connection, _SUMMARY_SELECT +
+                "WHERE s.work_id = ? ORDER BY s.token DESC LIMIT 1", (job["work_id"],)).fetchone()
+            summary = None if latest is None else _stored_summary(self._connection, latest)
+            normalized = SummaryEntry(entry.header_bytes, entry.evidence_bytes, entry.body_bytes, entry.contract_version,
+                entry.derivation_version, entry.processor_version, entry.source_selection_policy, entry.primary_state,
+                entry.evidence_conditions, watermark, entry.contributors)
+            if summary is None or _summary_entry(summary) != normalized:
+                summary_id = _execute(self._connection, "INSERT INTO health_summaries "
+                    "(work_id, token, header_bytes, evidence_bytes, body_bytes, contract_version, derivation_version, "
+                    "processor_version, source_selection_policy, primary_state, summary_sha256, evidence_sha256, "
+                    "body_sha256, job_id, fence, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (job["work_id"], token, entry.header_bytes, entry.evidence_bytes, entry.body_bytes,
+                     entry.contract_version, entry.derivation_version, entry.processor_version,
+                     entry.source_selection_policy, entry.primary_state, hashlib.sha256(entry.header_bytes).hexdigest(),
+                     hashlib.sha256(entry.evidence_bytes).hexdigest(),
+                     None if entry.body_bytes is None else hashlib.sha256(entry.body_bytes).hexdigest(),
+                     job_id, fence, timestamp)).lastrowid
+                for condition in entry.evidence_conditions:
+                    _execute(self._connection, "INSERT INTO summary_conditions VALUES (?, ?)", (summary_id, condition))
+                for position in watermark:
+                    _execute(self._connection, "INSERT INTO summary_watermarks VALUES (?, ?, ?, ?, ?)",
+                        (summary_id, position.installation_id, position.sequence,
+                         _timestamp(position.receipt_time), _timestamp(position.processed_at)))
+                for outcome_id in entry.contributors:
+                    _execute(self._connection, "INSERT INTO summary_contributors VALUES (?, ?)", (outcome_id, summary_id))
+                row = _execute(self._connection, _SUMMARY_SELECT + "WHERE s.summary_id = ?", (summary_id,)).fetchone()
+                summary = _stored_summary(self._connection, row)
+            _finish_refresh_attempt(self._connection, job, "completed", None, timestamp)
+            _close_refresh_job(self._connection, job_id, "completed", timestamp)
+            return RefreshCompletion(summary, False)
 
     def fail_summary_refresh(
         self, job_id: int, fence: int, kind: FailureKind, reason: str, retry_at: datetime | None, at: datetime
     ) -> SummaryRefreshJob:
-        raise NotImplementedError("operational-store@6")
+        timestamp = _timestamp(at)
+        retry_timestamp = None if retry_at is None else _timestamp(retry_at)
+        if (kind not in ("transient", "deterministic") or not _kebab(reason)
+                or (kind == "transient" and (retry_timestamp is None or retry_timestamp < timestamp))
+                or (kind == "deterministic" and retry_timestamp is not None)):
+            raise StoreRefusal("summary-request-invalid")
+        with _transaction(self._connection):
+            job = _held_refresh_job(self._connection, job_id, fence)
+            self._processing_write_reserve()
+            stale = _refresh_claim_token(self._connection, job) != job["token"]
+            _finish_refresh_attempt(self._connection, job, cast(RefreshAttemptResult, kind + "-failure"), reason, timestamp)
+            if stale or (kind == "transient" and job["attempts"] < job["max_attempts"]):
+                _requeue_refresh_job(self._connection, job, retry_timestamp if kind == "transient" else timestamp, stale)
+            else:
+                _close_refresh_job(self._connection, job_id, "failed", timestamp,
+                                   reason if kind == "deterministic" else "retries-exhausted")
+            row = _execute(self._connection, _REFRESH_JOB_SELECT + "WHERE j.job_id = ?", (job_id,)).fetchone()
+            return _refresh_job(self._connection, row)
 
     def read(self) -> AbstractContextManager[StoreView]:
         return self._read_view()
