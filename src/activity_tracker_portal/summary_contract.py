@@ -161,6 +161,10 @@ def _failure_boundary(operation: Callable[..., Any]) -> Callable[..., Any]:
                 failure = "summary-bytes-invalid"
         except Exception:
             failure = "summary-bytes-invalid" if decoding else "summary-input-invalid"
+        # Only this boundary frame survives in the new failure's traceback. Drop
+        # caller inputs before raising so formatters that capture locals are safe.
+        # bind() keeps no BoundArguments; exception targets are cleared on exit.
+        del args, kwargs
         try:
             raise SummaryContractFailure(failure)
         except SummaryContractFailure as exc:
