@@ -160,7 +160,7 @@ Proposed tests: `test_header_keys_are_exact`, `test_header_bytes_are_rfc8785`, `
 ### R9 — Data Watermark
 
 - `positions` has one `DeliveryPosition` per Sender Installation whose accepted messages the derivation considered, at least one, sorted by `installation_id`, each installation once.
-- A position states that every message of that installation the Portal had archived with a sequence at or below `sequence` was indexed and reached a terminal processing outcome. `receipt_time` is that message's Portal receipt time, and `processed_at` is when the last of that processing completed. The caller computes both from the store; this unit checks their form.
+- A position states that every message of that installation carrying the summary's record type, archived with a sequence at or below `sequence`, was indexed and reached a terminal processing outcome. `receipt_time` is that message's Portal receipt time, and `processed_at` is when the last of that processing completed. The caller computes both from the store; this unit checks their form.
 - The ingest position and the "highest incorporated Sender sequence" of ADR 0023 are the same value: the Portal archives each message under its installation and Sender sequence, and has no other ingest order (Decision 13).
 - Times are timezone-aware, are written as UTC RFC 3339 with `Z` and microseconds, and `processed_at` is not before `receipt_time`.
 - `evidence_set_sha256` is the SHA-256 of the evidence manifest bytes (R10). The caller does not supply it.
@@ -284,20 +284,65 @@ Proposed tests: `test_failures_carry_only_their_name`, `test_header_and_manifest
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_summary_contract_1.py`, one test per proposed name in R1–R14;
+- the suite `tests/acceptance/test_summary_contract_1.py`: 56 tests, one per proposed name in R1–R14, grouped by requirement;
 - the runner `tests/acceptance/run_summary_contract_1.sh`, which runs only this suite;
 - no fixture files;
 - the Interface stub `src/activity_tracker_portal/summary_contract.py`:
-  - the real constants, because they are the vocabulary the Operator approves;
-  - the real frozen dataclasses and the real `SummaryContractFailure`;
+  - the real constants, because they are the vocabulary the Operator approves, with `MEASURES` imported from `set_source_selection_policy`;
+  - the real frozen dataclasses `EvidenceEntry`, `Coverage`, `DeliveryPosition`, `DataWatermark`, `SummaryHeader`, and `HealthSummary` (its three byte fields have `repr=False`), and the real `SummaryContractFailure`;
   - the five operations, each raising `NotImplementedError("summary-contract@1")`.
 
 **RED, against the stub.**
-- These pass, because they read only the contract, the effects declaration, the scope map, and the constants: the three R1 tests, the three R3 tests, and `test_values_are_frozen`.
-- Every other test fails, and every failure is the stub's `NotImplementedError`.
+- 7 tests pass, because they read only the contract, the effects declaration, the scope map, and the constants, or build the dataclasses directly: the three R1 tests, the three R3 tests, and `test_values_are_frozen`.
+- The other 49 fail, with 267 failing subtests. Every failure is the stub's `NotImplementedError`.
 - `tests/unit`, `tests/governance`, and the bound runners of the three dependencies still pass.
 
-Before the read-only review, a throwaway reference implementation, kept out of the repository, passes every test. Each of a set of incorrect implementations fails at least one test. They cover at least:
+**How the suite checks bytes.** Every successful build is compared with a model written in the suite: its own RFC 8785 encoder, the R4 rule, the conditions, the fallback identities, and `hashlib` digests. Every build is then decoded and must equal the original. One test also compares hand-written header and manifest bytes.
+
+**Refinements the tests pin beyond the approved text.** These are the drafter's choices, for the approver to confirm or escalate. None changes approved semantics.
+- **Operator clarification at operational-store@6 Gate A, 2026-11-27:** a watermark position covers only the messages carrying the summary's record type (R9, second bullet). No test depends on this wording.
+- JSON layout:
+  - the watermark is `{"evidence_set_sha256", "positions"}`, and holds the evidence digest once;
+  - each position is `{"installation_id", "sequence", "receipt_time", "processed_at"}`;
+  - `coverage` keys are the standing names, such as `in-conflict`;
+  - `SummaryHeader`'s field names are the 13 header keys.
+- Times are always `YYYY-MM-DDTHH:MM:SS.ffffffZ`, with a four-digit year and six fraction digits, even when the microseconds are 0.
+- Decimal strings are ASCII digits with no sign and no leading zero. Store identities and sequences may be any positive size.
+- Nulls are written, never left out: `source_selection_policy` and `body_sha256` in the header, and the three nullable entry fields. No conditions or identities is `[]`. The decoder refuses an absent key, and a `null` where a standing carries the field.
+- Which failure:
+  - every R5 entry check and every R9 position check is `summary-input-invalid`;
+  - a body with no contributing record is `summary-state-inconsistent`;
+  - the decoder raises only `summary-bytes-invalid` or `summary-version-unsupported`.
+- The decoder reads `contract_version` first. A header of another version is unsupported even when its keys differ.
+- Not pinned:
+  - a manifest whose version differs from the header's may be either decoder failure;
+  - a non-`bytes` argument to the decoder may be `summary-bytes-invalid` or `summary-input-invalid`;
+  - which failure wins when one input breaks two rules.
+- Argument domains:
+  - `local_date` is a `date`, not a `datetime`;
+  - `primary_state` takes a `Coverage` of non-negative `int` counts and a `bool`;
+  - `coverage_of` refuses an unknown standing.
+- `reported_conditions` and `check_publication_conditions` take any collection, including a list. Duplicate reported conditions are merged. A bare string is refused.
+- Order:
+  - fallback identities sort by code point, not UTF-16;
+  - installation ids are non-empty strings and sort in Python string order.
+- Version form: `[a-z0-9]+(-[a-z0-9]+)*@[1-9][0-9]*`, ASCII only, as `interpret-source-projection@1` checks processor versions.
+- Decoded watermark times are UTC.
+- The body may hold finite floats in canonical form, as `interpret-source-projection@1` R9 allows. An integer token beyond ±(2^53 − 1), such as `10000000000000000`, is refused.
+- During the operations, the purity test flags:
+  - a file read or directory listing;
+  - an environment read;
+  - a log record;
+  - anything written to stderr.
+
+  Importing `operational_store` through `set_source_selection_policy` is allowed.
+- Note for the implementer: the package's existing encoder `_interpret_projection_json.canonical_bytes` has no `null` case, so the module needs a null-aware encoder.
+
+**Passability.** A throwaway reference implementation, kept outside the repository, passes all 56 tests. Of 78 incorrect implementations, 76 fail at least one test. They cover every case listed below and more. The two survivors are equivalent to the reference:
+- dropping the bare-string check on reported conditions, since each character is refused anyway;
+- a lenient decimal parser in a decoder that rebuilds and compares bytes, since the comparison refuses it anyway.
+
+Each of a set of incorrect implementations fails at least one test. They cover at least:
 - `measured` despite a non-contributing record, or `missing` for a zero;
 - each pairwise swap in the no-value precedence, and `in-conflict` ignored;
 - a body allowed with `missing`, or missing with `measured`;

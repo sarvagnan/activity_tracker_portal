@@ -33,7 +33,7 @@
     {
       "name": "delivery_positions",
       "mode": "pure",
-      "description": "For each Sender Installation whose accepted messages the derivation considered: the highest Sender sequence through which every archived message was indexed and terminally processed, that message's Portal receipt time, and the processing completion time."
+      "description": "For each Sender Installation whose accepted messages the derivation considered: the highest Sender sequence through which every archived message of that installation carrying the summary's record type was indexed and terminally processed, that message's Portal receipt time, and the processing completion time."
     },
     {
       "name": "body",
