@@ -143,8 +143,9 @@ class HealthSummary:
 def _failure_boundary(operation: Callable[..., Any]) -> Callable[..., Any]:
     """Discard parser/validation exceptions before exposing a named failure.
 
-    Raising after the handler removes exception contexts that could retain input
-    text (notably Unicode and JSON decoder errors).
+    Clear context inside the new failure's own handler, then re-raise it without
+    chaining. Raising after the operation's handler alone would still attach an
+    exception being handled by the caller (including input-bearing decoder errors).
     """
     decoding = operation.__name__ == "decode_summary"
     parameters = signature(operation)
@@ -160,7 +161,11 @@ def _failure_boundary(operation: Callable[..., Any]) -> Callable[..., Any]:
                 failure = "summary-bytes-invalid"
         except Exception:
             failure = "summary-bytes-invalid" if decoding else "summary-input-invalid"
-        raise SummaryContractFailure(failure)
+        try:
+            raise SummaryContractFailure(failure)
+        except SummaryContractFailure as exc:
+            exc.__context__ = None
+            raise
 
     return checked
 
