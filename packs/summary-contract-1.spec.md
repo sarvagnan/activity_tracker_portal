@@ -331,7 +331,7 @@ After Gate A, the executable pack adds:
 - The purity test runs in a subprocess:
   - It first imports the standard modules an implementation commonly needs, then the unit, which may import `operational_store` through `set_source_selection_policy` (Decision 16).
   - At any time, it flags a write open, an open under the host timezone database, and socket, subprocess, SQLite, and file-system change events.
-  - It runs every operation twice, and checks both runs. The only file-system activity it allows is the import system loading a module, so an implementation may import any standard-library or published module lazily. An `open` (by path or by descriptor), a directory listing, or an `os.stat`, `os.lstat`, `os.fstat`, or `os.access` call is allowed only while a frame of the import system (`<frozen importlib._bootstrap…>` or `<frozen zipimport>`) is on the stack. Anything else is flagged, with no path exemption, so a value read on the first call and cached is caught. CPython raises no audit event for the four metadata calls, so the test wraps them directly.
+  - It runs every operation twice, and checks both runs. The only file-system activity it allows is the import system loading a module, so an implementation may import any standard-library or published module lazily. An `open` (by path or by descriptor), a directory listing, or an `os.stat`, `os.lstat`, `os.fstat`, or `os.access` call is allowed only while the import system is importing a module: its import routine (`_find_and_load` or `_load` in `<frozen importlib._bootstrap>`) is on the stack. Loader helper methods called outside an import, such as `FileLoader.get_data` reached through `pkgutil.get_data`, are not imports. Anything else is flagged, with no path exemption, so a value read on the first call and cached is caught. CPython raises no audit event for the four metadata calls, so the test wraps them directly.
   - It flags any environment read outside module loading, any log record, and anything written to stderr. Any write is flagged at any time, except the import system writing a `.pyc` bytecode cache.
   - Reads a module makes in its own top-level code while being imported are not flagged. That covers the unit's own import and lazy imports alike, and stays a residual for review.
   - It replaces the Python-level clock functions with guards.
@@ -356,6 +356,8 @@ After Gate A, the executable pack adds:
 These pass:
 - lazy imports of `encodings.unicode_escape`, `email.utils`, and `xml.dom.minidom`;
 - the published encoder `_interpret_projection_json`.
+
+**Gate B resolutions (round 3).** A loader frame alone did not prove that a module was being imported. `pkgutil.get_data()` reads through `FileLoader.get_data` and passed. The rule now requires the import routine on the stack. Repeated and cached `pkgutil.get_data()` reads, a direct `loader.get_data()` call, and an `importlib.resources` read now fail. Lazy imports, including through `importlib.import_module`, still pass.
 The scope-map `pending` rename was made at approval (c436cee), so it is no longer listed as outstanding.
 
 **Implementer review resolutions.** The read-only review found six issues; all are resolved.

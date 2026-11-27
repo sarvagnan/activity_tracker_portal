@@ -595,13 +595,15 @@ import contextlib, pathlib, sqlite3, shutil, importlib.resources, collections.ab
 import locale, calendar, _strptime, json.decoder, json.encoder, binascii, textwrap, weakref, array, ipaddress
 # During the operations, the only file-system activity allowed is the import system loading a module: an implementation
 # may import any standard-library or published module lazily. An open, metadata read, or listing is allowed only while
-# a frame of the import system is on the stack; anything else is flagged, on every call, with no warm-up and no path
+# the import system is importing a module; anything else is flagged, on every call, with no warm-up and no path
 # exemption.
-LOADER = ("<frozen importlib._bootstrap", "<frozen zipimport")
+# A module is being imported only when the import system's own import routine is on the stack. Loader helper methods
+# such as FileLoader.get_data, reached through pkgutil.get_data or importlib.resources, are not imports.
 def loading():
     frame = sys._getframe(1)
     while frame is not None:
-        if frame.f_code.co_filename.startswith(LOADER):
+        code = frame.f_code
+        if code.co_filename == "<frozen importlib._bootstrap>" and code.co_name in ("_find_and_load", "_load"):
             return True
         frame = frame.f_back
     return False
