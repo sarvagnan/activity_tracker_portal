@@ -14,12 +14,14 @@ import inspect
 import itertools
 import json
 import os
+import math
 import re
+import struct
 import subprocess
 import sys
 import traceback
 import unittest
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from activity_tracker_portal import set_source_selection_policy
@@ -96,6 +98,43 @@ CARRIES = {
     "failed": (False, True, False),
     "quarantined": (True, True, True),
 }
+# RFC 8785 Appendix B: IEEE 754 binary64 bits and their serialization.
+RFC8785_NUMBERS = (
+    ("0000000000000000", "0"), ("8000000000000000", "0"), ("0000000000000001", "5e-324"),
+    ("8000000000000001", "-5e-324"), ("7fefffffffffffff", "1.7976931348623157e+308"),
+    ("ffefffffffffffff", "-1.7976931348623157e+308"), ("4340000000000000", "9007199254740992"),
+    ("c340000000000000", "-9007199254740992"), ("4430000000000000", "295147905179352830000"),
+    ("44b52d02c7e14af5", "9.999999999999997e+22"), ("44b52d02c7e14af6", "1e+23"),
+    ("44b52d02c7e14af7", "1.0000000000000001e+23"), ("444b1ae4d6e2ef4e", "999999999999999700000"),
+    ("444b1ae4d6e2ef4f", "999999999999999900000"), ("444b1ae4d6e2ef50", "1e+21"),
+    ("3eb0c6f7a0b5ed8c", "9.999999999999997e-7"), ("3eb0c6f7a0b5ed8d", "0.000001"),
+    ("41b3de4355555553", "333333333.3333332"), ("41b3de4355555554", "333333333.33333325"),
+    ("41b3de4355555555", "333333333.3333333"), ("41b3de4355555556", "333333333.3333334"),
+    ("41b3de4355555557", "333333333.33333343"), ("becbf647612f3696", "-0.0000033333333333333333"),
+    ("43143ff3c1cb0959", "1424953923781206.2"),
+)
+
+
+class RepeatedHour(tzinfo):
+    """A synthetic zone whose clocks go back from 02:00 to 01:00 on 2026-11-01, from UTC-4 to UTC-5.
+
+    Wall times from 01:00 to 02:00 that day occur twice; `fold` 0 is the first (UTC-4), 1 the second (UTC-5).
+    It needs no timezone database.
+    """
+
+    def utcoffset(self, dt):
+        wall = dt.replace(tzinfo=None, fold=0)
+        if wall < datetime(2026, 11, 1, 1):
+            return timedelta(hours=-4)
+        if wall >= datetime(2026, 11, 1, 2):
+            return timedelta(hours=-5)
+        return timedelta(hours=-5 if dt.fold else -4)
+
+    def dst(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return "SYNTHETIC"
 
 
 # ---- Independent oracles ----
@@ -252,10 +291,15 @@ def model_header(f: dict, header: dict) -> SummaryHeader:
         primary_state=header["primary_state"],
         evidence_conditions=tuple(header["evidence_conditions"]),
         coverage=Coverage(**{COVERAGE_FIELD[s]: n for s, n in header["coverage"].items()}),
-        watermark=DataWatermark(tuple(sorted(f["positions"], key=lambda p: p.installation_id)),
+        watermark=DataWatermark(tuple(utc_position(p) for p in sorted(f["positions"], key=lambda p: p.installation_id)),
                                 header["watermark"]["evidence_set_sha256"]),
         body_sha256=header["body_sha256"],
     )
+
+
+def utc_position(p: DeliveryPosition) -> DeliveryPosition:
+    """The header holds each position's times converted to UTC, so a decoded summary equals the built one."""
+    return DeliveryPosition(p.installation_id, p.sequence, p.receipt_time.astimezone(UTC), p.processed_at.astimezone(UTC))
 
 
 def json_scalars(value):
@@ -439,6 +483,8 @@ class Checks(unittest.TestCase):
         self.assertEqual(summary.body_bytes, f["body"])
         self.assertEqual(summary.summary_sha256, sha(summary.header_bytes))
         self.assertEqual(summary.header, model_header(f, header))
+        for item in summary.header.watermark.positions:
+            self.assertEqual((item.receipt_time.utcoffset(), item.processed_at.utcoffset()), (timedelta(0), timedelta(0)))
         self.assertEqual(decode_summary(summary.header_bytes, summary.evidence_bytes, summary.body_bytes), summary)
         return summary
 
@@ -541,11 +587,14 @@ class R2PureAndDeterministic(Checks):
         scenario_summary()
         code = r"""
 import json, os, sys, time, logging, zoneinfo
-# Modules an implementation commonly needs are imported first. The unit's own import may import
-# operational_store through set_source_selection_policy (Decision 16); that import is allowed.
+# Modules an implementation commonly needs are imported first, so that no import happens during the calls.
+# The unit's own import may import operational_store through set_source_selection_policy (Decision 16).
 import hashlib, re, decimal, fractions, dataclasses, typing, collections, functools, itertools, math, unicodedata
 import copy, enum, struct, base64, datetime, string, operator, bisect, heapq, io, traceback, types, inspect
 import contextlib, pathlib, sqlite3, shutil, importlib.resources, collections.abc, numbers, codecs, unittest
+import locale, calendar, _strptime, json.decoder, json.encoder, binascii, textwrap, weakref, array, ipaddress
+import encodings.utf_8, encodings.utf_16, encodings.utf_16_be, encodings.utf_16_le, encodings.utf_32
+import encodings.ascii, encodings.latin_1, encodings.idna
 host = [os.path.realpath(p) for p in zoneinfo.TZPATH] + [os.path.realpath("/etc/localtime"), "/etc/localtime"]
 events = []
 phase = ["import"]
@@ -555,6 +604,9 @@ def hook(event, args):
         return
     if event == "open":
         path, mode, flags = args
+        # During the calls, every open is flagged, by path or by descriptor, with no exemption.
+        if phase[0] == "calls":
+            events.append(["open", os.fsdecode(path) if isinstance(path, (str, bytes)) else repr(path)])
         if isinstance(path, (str, bytes)):
             path = os.fsdecode(path)
             if (mode and any(c in mode for c in "wax+")) or (flags or 0) & WRITE:
@@ -562,13 +614,12 @@ def hook(event, args):
             real = os.path.realpath(path)
             if any(real == h or real.startswith(h.rstrip("/") + "/") for h in host):
                 events.append(["host-timezone", path])
-            if phase[0] == "calls" and not path.endswith((".py", ".pyc", ".so")):
-                events.append(["read", path])
     elif event.split(".")[0] in ("socket", "sqlite3", "subprocess", "ctypes", "webbrowser", "urllib", "http") or event in (
             "os.system", "os.remove", "os.rename", "os.mkdir", "os.rmdir", "os.chmod", "os.utime", "os.truncate",
             "os.symlink", "os.link", "os.posix_spawn", "os.exec", "os.fork", "shutil.copyfile", "shutil.rmtree"):
         events.append([event])
-    elif phase[0] == "calls" and event in ("os.listdir", "os.scandir", "glob.glob", "os.chdir"):
+    elif phase[0] == "calls" and event in ("os.listdir", "os.scandir", "glob.glob", "os.chdir", "io.open_code",
+                                           "os.stat", "os.lstat", "import"):
         events.append([event])
 def forbidden(*args, **kwargs):
     raise AssertionError("clock read")
@@ -1208,6 +1259,51 @@ class R9DataWatermark(Checks):
             self.assertEqual(self.build_refused(positions=(DeliveryPosition("installation-a", 1, receipt_time, processed_at),)),
                              INVALID)
 
+    def test_watermark_orders_repeated_hour_by_instant(self) -> None:
+        zone = RepeatedHour()
+        first = datetime(2026, 11, 1, 1, 45, tzinfo=zone)
+        second = datetime(2026, 11, 1, 1, 15, fold=1, tzinfo=zone)
+        self.assertEqual((utc_text(first), utc_text(second)), ("2026-11-01T05:45:00.000000Z", "2026-11-01T06:15:00.000000Z"))
+        # Python compares two datetimes that share a tzinfo by wall time, ignoring fold.
+        self.assertLess(second, first)
+        summary = self.built(positions=(position("installation-a", 1, first, second),))
+        written = json.loads(summary.header_bytes)["watermark"]["positions"][0]
+        self.assertEqual((written["receipt_time"], written["processed_at"]),
+                         ("2026-11-01T05:45:00.000000Z", "2026-11-01T06:15:00.000000Z"))
+        # Wall times in order, instants backwards.
+        self.assertEqual(self.build_refused(positions=(position("installation-a", 1, second, first),)), INVALID)
+        # The same wall time, an hour apart.
+        early = datetime(2026, 11, 1, 1, 30, tzinfo=zone)
+        late = early.replace(fold=1)
+        written = json.loads(self.built(positions=(position("installation-a", 1, early, late),)).header_bytes)
+        self.assertEqual([written["watermark"]["positions"][0][key] for key in ("receipt_time", "processed_at")],
+                         ["2026-11-01T05:30:00.000000Z", "2026-11-01T06:30:00.000000Z"])
+        self.assertEqual(self.build_refused(positions=(position("installation-a", 1, late, early),)), INVALID)
+
+    def test_watermark_times_stay_in_utc_range(self) -> None:
+        plus_one = timezone(timedelta(hours=1))
+        minus_one = timezone(timedelta(hours=-1))
+        valid = (
+            (datetime(1, 1, 1, tzinfo=UTC), "0001-01-01T00:00:00.000000Z"),
+            (datetime(1, 1, 1, 1, tzinfo=plus_one), "0001-01-01T00:00:00.000000Z"),
+            (datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=UTC), "9999-12-31T23:59:59.999999Z"),
+            (datetime(9999, 12, 31, 22, 59, 59, 999999, tzinfo=minus_one), "9999-12-31T23:59:59.999999Z"),
+        )
+        for moment, text in valid:
+            with self.subTest(valid=moment):
+                written = json.loads(self.built(positions=(position("installation-a", 1, moment, moment),)).header_bytes)
+                self.assertEqual(written["watermark"]["positions"][0]["receipt_time"], text)
+                self.assertEqual(written["watermark"]["positions"][0]["processed_at"], text)
+        low = datetime(1, 1, 1, tzinfo=plus_one)
+        low_neighbour = datetime(1, 1, 1, 0, 59, 59, 999999, tzinfo=plus_one)
+        high = datetime(9999, 12, 31, 23, 0, tzinfo=minus_one)
+        later = datetime(2026, 1, 15, tzinfo=UTC)
+        for receipt_time, processed_at in ((low, low), (low, later), (low_neighbour, later), (high, high),
+                                           (datetime(9999, 12, 31, tzinfo=UTC), high)):
+            with self.subTest(receipt=receipt_time, processed=processed_at):
+                self.assertEqual(self.build_refused(
+                    positions=(DeliveryPosition("installation-a", 1, receipt_time, processed_at),)), INVALID)
+
     def test_evidence_digest_is_computed_not_supplied(self) -> None:
         parameters = inspect.signature(build_summary).parameters
         self.assertEqual(list(parameters), ["measure", "record_type", "local_date", "derivation_version",
@@ -1293,15 +1389,61 @@ class R11Body(Checks):
             with self.subTest(bad=body):
                 self.assertEqual(self.build_refused(body=body), INVALID)
 
-    def test_body_integers_stay_in_the_safe_domain(self) -> None:
-        for value in (9007199254740991, -9007199254740991, 0):
-            body = body_of({"n": value, "list": [value], "nested": {"m": value}})
-            self.assertEqual(self.built(body=body).body_bytes, body)
-        for value in (9007199254740992, -9007199254740992, 10**16):
-            for shape in ({"n": value}, {"list": [1, value]}, {"nested": {"deeper": [{"m": value}]}}):
-                with self.subTest(value=value, shape=shape):
-                    body = json.dumps(shape, separators=(",", ":"), sort_keys=True).encode()
+    def test_body_numbers_are_canonical_binary64(self) -> None:
+        """A number token is valid exactly when it is the RFC 8785 form of the finite binary64 value it denotes."""
+        accepted = ("0", "9007199254740991", "-9007199254740991", "9007199254740992", "-9007199254740992",
+                    "10000000000000000", "100000000000000000000", "999999999999999900000", "1e+21", "-1e+21",
+                    "1.0000000000000001e+23", "0.000001", "1e-7", "0.30000000000000004", "1.2345678901234567")
+        refused = ("9007199254740993", "-9007199254740993", "10000000000000001", "1000000000000000000000", "1e21",
+                   "1E+21", "1e+021", "1.0e+21", "10e+20", "0.0000001", "1e-6", "123456789012345678901234567890",
+                   "1e400", "-1e400", "1" * 400, "0.1e1", "100e-2")
+        for token in accepted:
+            with self.subTest(accepted=token):
+                self.assertEqual(es_number(float(token)), token)
+                body = ('{"n":' + token + ',"nested":{"list":[1,' + token + ']}}').encode()
+                self.assertEqual(self.built(body=body).body_bytes, body)
+        for token in refused:
+            with self.subTest(refused=token):
+                value = float(token)
+                self.assertFalse(math.isfinite(value) and es_number(value) == token)
+                for body in (('{"n":' + token + '}').encode(), ('{"nested":{"list":[1,' + token + ']}}').encode()):
                     self.assertEqual(self.build_refused(body=body), INVALID)
+
+    def test_body_number_vectors_follow_rfc8785(self) -> None:
+        base = self.built()
+        for bits, text in RFC8785_NUMBERS:
+            with self.subTest(bits=bits, text=text):
+                value = struct.unpack(">d", bytes.fromhex(bits))[0]
+                self.assertEqual(es_number(value), text)
+                body = ('{"v":[' + text + '],"w":{"x":' + text + '}}').encode()
+                summary = self.built(body=body)
+                # Decode bytes this suite wrote itself, not the unit's own output.
+                header, manifest = model(facts(body=body))
+                self.assertEqual(decode_summary(enc(header), manifest, body), summary)
+        # Other spellings of the same values are not canonical, in build and in decode.
+        for text in ("1.4249539237812062e+15", "1424953923781206.25", "1e23", "1E+23", "1.0e+23", "9.999999999999997E-7",
+                     "0.0000009999999999999997", "9.999999999999997e-07", "333333333.33333330", "5E-324", "5e-0324",
+                     "4.9e-324", "2.9514790517935283e+20", "1.7976931348623157E+308", "-0.0", "1e+0"):
+            with self.subTest(noncanonical=text):
+                body = ('{"v":[' + text + ']}').encode()
+                self.assertEqual(self.build_refused(body=body), INVALID)
+                header, manifest, _ = split(base)
+                self.assertEqual(self.decode_refused(*stamp(header, manifest, body)), BYTES_INVALID)
+
+    def test_noncanonical_numbers_are_refused_in_build_and_decode(self) -> None:
+        base = self.built()
+        header, manifest, _ = split(base)
+        control = b'{"a":{"b":[1,{"c":2}]},"n":[0,3,0]}'
+        self.assertEqual(decode_summary(*stamp(header, manifest, control)), self.built(body=control))
+        tokens = ("-0", "-0.0", "0.0", "0.00", "1.0", "1.00", "1.50", "0.10", "1e0", "1e+0", "1.0e1", "10e0", "2E-7",
+                  "2e-07", "01", "+1", "-01", ".5", "5.", "0x10")
+        for token in tokens:
+            for shape in ('{"n":T}', '{"n":[T]}', '{"n":[0,T,0]}', '{"a":{"b":[1,{"c":T}]}}'):
+                body = shape.replace("T", token).encode()
+                with self.subTest(body=body):
+                    self.assertEqual(self.build_refused(body=body), INVALID)
+                    header, manifest, _ = split(base)
+                    self.assertEqual(self.decode_refused(*stamp(header, manifest, body)), BYTES_INVALID)
 
     def test_body_present_only_with_a_value(self) -> None:
         for standing in NON_CONTRIBUTING:
@@ -1452,7 +1594,7 @@ class R12Decoding(Checks):
             "body digest kept null": changed(failed, body=b"{}", restamp=False),
             "body not canonical restamped": changed(partial, body=b'{"total": 1}'),
             "body array restamped": changed(partial, body=b"[]"),
-            "body unsafe integer restamped": changed(partial, body=b'{"total":9007199254740992}'),
+            "body non-canonical number restamped": changed(partial, body=b'{"total":9007199254740993}'),
             "manifest unsorted": changed(measured, lambda h, m: m["evidence"].reverse()),
             "manifest duplicate": changed(measured, lambda h, m: m["evidence"].append(dict(m["evidence"][1]))),
             "manifest unknown standing": changed(failed, setter("manifest", "evidence", 1, "standing", value="excluded")),
@@ -1485,7 +1627,8 @@ class R12Decoding(Checks):
         }
         for text in ("2026-01-15T22:00:00.123456+00:00", "2026-01-15T22:00:00Z", "2026-01-15T22:00:00.123Z",
                      "2026-01-15 22:00:00.123456Z", "2026-01-15T22:00:00.123456z", "2026-01-15T22:00:00.123456789Z",
-                     "2026-02-30T22:00:00.000000Z", "2026-01-15T24:00:00.000000Z", "2026-01-15T22:00:00.1234567Z", ""):
+                     "2026-02-30T22:00:00.000000Z", "2026-01-15T24:00:00.000000Z", "2026-01-15T22:00:00.1234567Z", "",
+                     "0000-12-31T23:00:00.000000Z", "10000-01-01T00:00:00.000000Z"):
             cases[f"receipt time {text!r}"] = changed(missing, setter("header", "watermark", "positions", 0,
                                                                       "receipt_time", value=text))
         for text in ("07", "0", "-7", "+7", "7.0", "", " 7", "7 ", "７", "٧", "1_000", "0x7", "7e0"):
@@ -1599,7 +1742,7 @@ class R14HealthDataFree(Checks):
         future = dict(header, contract_version="summary-contract@2", note=HEALTH_MARKER)
         cases = [
             (INVALID, lambda: build_summary(**facts(body=b'{"note": "' + HEALTH_MARKER.encode() + b'"}'))),
-            (INVALID, lambda: build_summary(**facts(body=body_of({"total": 2**60, "note": HEALTH_MARKER})))),
+            (INVALID, lambda: build_summary(**facts(body=('{"note":"' + HEALTH_MARKER + '","total":9007199254740993}').encode()))),
             (INVALID, lambda: build_summary(**facts(derivation_version=HEALTH_MARKER))),
             (INVALID, lambda: build_summary(**facts(reported_conditions=(HEALTH_MARKER,)))),
             (INVALID, lambda: build_summary(**facts(evidence=(entry(1), entry(2, HEALTH_MARKER))))),

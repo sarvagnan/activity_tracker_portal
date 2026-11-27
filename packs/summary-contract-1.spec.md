@@ -162,12 +162,12 @@ Proposed tests: `test_header_keys_are_exact`, `test_header_bytes_are_rfc8785`, `
 - `positions` has one `DeliveryPosition` per Sender Installation whose accepted messages the derivation considered, at least one, sorted by `installation_id`, each installation once.
 - A position states that every message of that installation carrying the summary's record type, archived with a sequence at or below `sequence`, was indexed and reached a terminal processing outcome. `receipt_time` is that message's Portal receipt time, and `processed_at` is when the last of that processing completed. The caller computes both from the store; this unit checks their form.
 - The ingest position and the "highest incorporated Sender sequence" of ADR 0023 are the same value: the Portal archives each message under its installation and Sender sequence, and has no other ingest order (Decision 13).
-- Times are timezone-aware, are written as UTC RFC 3339 with `Z` and microseconds, and `processed_at` is not before `receipt_time`.
+- Times are timezone-aware, and their UTC instants lie within years 1 to 9999; otherwise the input is `summary-input-invalid`. They are written as UTC RFC 3339 with `Z` and microseconds. `processed_at` is not before `receipt_time`, compared as instants, so a repeated local hour is ordered correctly.
 - `evidence_set_sha256` is the SHA-256 of the evidence manifest bytes (R10). The caller does not supply it.
 - The watermark is part of the header, so it is part of the summary's identity (Decision 14).
 - It never claims that the source has no later, missing, or unavailable evidence, that a sequence gap was filled, or when anything was measured.
 
-Proposed tests: `test_watermark_positions_are_sorted_and_unique`, `test_watermark_needs_a_position`, `test_watermark_times_are_utc_and_ordered`, `test_evidence_digest_is_computed_not_supplied`, `test_watermark_changes_the_summary_digest`.
+Proposed tests: `test_watermark_positions_are_sorted_and_unique`, `test_watermark_needs_a_position`, `test_watermark_times_are_utc_and_ordered`, `test_evidence_digest_is_computed_not_supplied`, `test_watermark_changes_the_summary_digest`, and, added after the implementer's review, `test_watermark_orders_repeated_hour_by_instant` and `test_watermark_times_stay_in_utc_range`.
 
 ### R10 — Evidence manifest
 
@@ -179,10 +179,10 @@ Proposed tests: `test_manifest_is_canonical_and_sorted_numerically`, `test_manif
 
 ### R11 — Body
 
-- The body is the derive unit's. This unit requires only that it is RFC 8785 canonical bytes of one JSON object, with integers within ±(2^53 − 1), as `interpret-source-projection@1` R9 requires of revision bodies.
+- The body is the derive unit's. This unit requires only that it is RFC 8785 canonical bytes of one JSON object, in the number domain of `interpret-source-projection@1` R9 revision bodies. A number token is valid exactly when it denotes a finite binary64 value and is that value's RFC 8785 serialization. So `10000000000000000`, the serialization of `1e16`, is valid, and `9007199254740993` is not, because it is not canonical. Whether a number means an integer or a float is for the derive units to check.
 - A body is present exactly when the state is `measured` or `partial` (R4).
 
-Proposed tests: `test_body_must_be_a_canonical_object`, `test_body_integers_stay_in_the_safe_domain`, `test_body_present_only_with_a_value`.
+Proposed tests: `test_body_must_be_a_canonical_object`, `test_body_numbers_are_canonical_binary64`, `test_body_present_only_with_a_value`, and, added after the implementer's review, `test_body_number_vectors_follow_rfc8785` and `test_noncanonical_numbers_are_refused_in_build_and_decode`.
 
 ### R12 — Decoding stored bytes
 
@@ -284,7 +284,7 @@ Proposed tests: `test_failures_carry_only_their_name`, `test_header_and_manifest
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_summary_contract_1.py`: 56 tests, one per proposed name in R1–R14, grouped by requirement;
+- the suite `tests/acceptance/test_summary_contract_1.py`: 60 tests, one per proposed name in R1–R14, grouped by requirement;
 - the runner `tests/acceptance/run_summary_contract_1.sh`, which runs only this suite;
 - no fixture files;
 - the Interface stub `src/activity_tracker_portal/summary_contract.py`:
@@ -294,7 +294,7 @@ After Gate A, the executable pack adds:
 
 **RED, against the stub.**
 - 7 tests pass, because they read only the contract, the effects declaration, the scope map, and the constants, or build the dataclasses directly: the three R1 tests, the three R3 tests, and `test_values_are_frozen`.
-- The other 49 fail, with 267 failing subtests. Every failure is the stub's `NotImplementedError`.
+- The other 53 fail, with 310 failing entries, counting subtests. Every failure is the stub's `NotImplementedError`.
 - `tests/unit`, `tests/governance`, and the bound runners of the three dependencies still pass.
 
 **How the suite checks bytes.** Every successful build is compared with a model written in the suite: its own RFC 8785 encoder, the R4 rule, the conditions, the fallback identities, and `hashlib` digests. Every build is then decoded and must equal the original. One test also compares hand-written header and manifest bytes.
@@ -327,20 +327,27 @@ After Gate A, the executable pack adds:
   - fallback identities sort by code point, not UTF-16;
   - installation ids are non-empty strings and sort in Python string order.
 - Version form: `[a-z0-9]+(-[a-z0-9]+)*@[1-9][0-9]*`, ASCII only, as `interpret-source-projection@1` checks processor versions.
-- Decoded watermark times are UTC.
-- The body may hold finite floats in canonical form, as `interpret-source-projection@1` R9 allows. An integer token beyond ±(2^53 − 1), such as `10000000000000000`, is refused.
-- During the operations, the purity test flags:
-  - a file read or directory listing;
-  - an environment read;
-  - a log record;
-  - anything written to stderr.
-
-  Importing `operational_store` through `set_source_selection_policy` is allowed.
+- The header's watermark positions hold their times converted to UTC, and decoded times are UTC. Without this, a built summary whose times fall in a repeated hour could never equal its decoded form, because Python never treats such a time as equal to one in another zone (R12).
+- The purity test runs in a subprocess:
+  - It first imports the standard modules an implementation commonly needs, then the unit, which may import `operational_store` through `set_source_selection_policy` (Decision 16).
+  - At any time, it flags a write open, an open under the host timezone database, and socket, subprocess, SQLite, and file-system change events.
+  - During the operations, it also flags every `open` audit event, by path or by descriptor, with no exemption. That includes an import, which opens its source.
+  - It also flags any directory listing, `stat`, or import event, any environment read, any log record, and anything written to stderr.
+  - It replaces the Python-level clock functions with guards.
+  - Reads that raise no audit event, such as a C-level clock read, stay a residual.
 - Note for the implementer: the package's existing encoder `_interpret_projection_json.canonical_bytes` has no `null` case, so the module needs a null-aware encoder.
 
-**Passability.** A throwaway reference implementation, kept outside the repository, passes all 56 tests. Of 78 incorrect implementations, 76 fail at least one test. They cover every case listed below and more. The two survivors are equivalent to the reference:
+**Passability.** A throwaway reference implementation, kept outside the repository, passes all 60 tests. Of 86 incorrect implementations, 84 fail at least one test, including each of the six that survived the implementer's review. They cover every case listed below and more. The two survivors are equivalent to the reference:
 - dropping the bare-string check on reported conditions, since each character is refused anyway;
 - a lenient decimal parser in a decoder that rebuilds and compares bytes, since the comparison refuses it anyway.
+
+**Implementer review resolutions.** The read-only review found six issues; all are resolved.
+1. **Body number domain (blocking).** My earlier refinement refused integer tokens beyond ±(2^53 − 1). That narrowed the approved R11, and is withdrawn. R11 now states the dependency's domain as a byte rule: a token is valid exactly when it is the RFC 8785 serialization of the finite binary64 value it denotes. Integer-versus-float meaning is left to the derive units. The test that pinned refusing `10**16` is replaced by `test_body_numbers_are_canonical_binary64`, which covers tokens around 2^53, `1e16`, `1e20`, and the fixed/exponent switch at `1e21` and `1e-7`.
+2. **Float vectors.** `test_body_number_vectors_follow_rfc8785` pins the 24 finite RFC 8785 Appendix B vectors, from their IEEE 754 bits. They include long significands, the round-to-even example, subnormals, and neighbours of both thresholds. Each vector is checked through build and through direct decode of bytes the suite writes. Other spellings of the same values are refused by both.
+3. **Non-canonical bodies.** `test_noncanonical_numbers_are_refused_in_build_and_decode` puts `-0`, `-0.0`, `1.00`, `1.0e1`, `2E-7` and others at nested object and array paths. Each must fail in build, and in decode with correctly recomputed digests.
+4. **Repeated hour.** `test_watermark_orders_repeated_hour_by_instant` uses a synthetic fold-aware tzinfo that needs no timezone database. It covers both directions, and the same wall time an hour apart.
+5. **Purity oracle.** The file-name exemption is gone, and descriptor-based opens are flagged. The description above now says exactly what is flagged. Both the reference implementation and the reviewer's independent implementation pass it.
+6. **UTC range.** R9 now states the year 1–9999 domain. `test_watermark_times_stay_in_utc_range` pins `summary-input-invalid` at both edges, and acceptance of the valid neighbours.
 
 Each of a set of incorrect implementations fails at least one test. They cover at least:
 - `measured` despite a non-contributing record, or `missing` for a zero;
