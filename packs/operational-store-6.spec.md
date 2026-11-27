@@ -419,7 +419,7 @@ In the worktree, with the stub, these all pass: `tests/unit` (145), `tests/gover
 
 Before the review, one mutant survived the first run: contributors of any record type. The only other-type contributor also had another processor version, so the version check refused it first. The contributor test now includes a weight revision recorded under the steps version.
 
-**Refinements.** The tests pin these points beyond the approved text. Apart from the R66 revision and the R56 lone-surrogate refusal, which "Implementer review resolutions" flags, none changes approved semantics. Items marked *settles* decide a point the text left open, for the approver to confirm.
+**Refinements.** The tests pin these points beyond the approved text. Apart from the R66 revision and the R56 lone-surrogate refusal, which the Operator accepted on 2026-11-28 and "Implementer review resolutions" records, none changes approved semantics. Items marked *settles* decide a point the text left open, for the approver to confirm.
 - **Generations (R56).**
   - Any `Mapping` is accepted. An empty mapping is `processor-generation-invalid`, as is a list or tuple of pairs, `None`, a string, or a key that is empty or not a string. The key check comes before the version check.
   - The digest is RFC 8785 in full: non-ASCII as literal UTF-8, `"` and `\` escaped, and keys in UTF-16 code-unit order, so a key outside the Basic Multilingual Plane sorts before U+FB01.
@@ -489,11 +489,11 @@ The reviewer would reset the retry budget on every stale expiry, to match "newer
 **Implementer review resolutions.** GPT 6.1 Sol reviewed the pack read-only at `08507be`, with an independent implementation that passed all 289 tests. Sol found 2 blocking and 7 should-fix findings, and gave 2 notes. They are resolved as follows:
 1. **Blocking: R66 positions could move back.** A manual retry after a failed job, and a later projection of a retracted identity, each removed a position. R66 now defines settlement historically: witnesses are append-only, any failed job is a witness, and a retraction's matching records are fixed as of its indexing.
    - Added `test_a_failure_witness_survives_a_retry` and `test_retraction_matches_records_as_of_its_indexing`. Both reopen the store and complete a refresh whose watermark is the resulting positions.
-   - **For the approver and Operator: this changes approved semantics.** The approved text said "whose last job under the version failed" and "an indexed retraction that names no Source Record". It now says "any failed job" and "no record observed before the retraction". The watermark now asserts terminal processing through the prefix, not current success.
+   - **This changes approved semantics, and the Operator accepted it on 2026-11-28.** The approved text said "whose last job under the version failed" and "an indexed retraction that names no Source Record". It now says "any failed job" and "no record observed before the retraction". The watermark now asserts terminal processing through the prefix, not current success.
 2. **Blocking: "first became settled" cannot be recovered.** Caller times need not be monotone, and no commit order is shared across selections, outcomes, and failed jobs. Sol showed two orders that end in identical rows. An item's settlement time is now the earliest caller-supplied witness time, and `processed_at` may fall if a later write supplies an earlier timestamp.
    - Added `test_settlement_time_is_the_earliest_witness`, which applies both orders to copies of one prestate.
    - The equal-sequence oracle now notes that only a forward-moving clock keeps `processed_at` fixed.
-   - **This also changes approved semantics**, from "first became settled" to "earliest witness timestamp".
+   - **This also changes approved semantics**, from "first became settled" to "earliest witness timestamp". The Operator accepted it on 2026-11-28.
 3. **Generation immutability.** The physical check now covers only the rows registration added that carry the generation's digest or manifest values, so allocator metadata such as `sqlite_sequence` may change. Whole-database comparisons for no-write calls are unchanged.
 4. **"Indexed by outcome."**
    - The column-name check is dropped.
@@ -502,7 +502,7 @@ The reviewer would reset the retry budget on every stale expiry, to match "newer
 5. **Claim race.** Workers retry only `store-busy`, within a bounded loop, and count successful claims. The exactly-once assertions are kept.
 6. **Drain loops.** The main-thread loops are bounded by the expected jobs plus the final `None`, with unique-job and fence checks. The claim worker is bounded as well.
 7. **RFC 8785.**
-   - Keys or versions with lone surrogates are `processor-generation-invalid`, and the whole database is unchanged. This adds a refusal case to R56; a lone-surrogate version was previously `processor-version-invalid` by grammar.
+   - Keys or versions with lone surrogates are `processor-generation-invalid`, and the whole database is unchanged. This adds a refusal case to R56; a lone-surrogate version was previously `processor-version-invalid` by grammar. The Operator chose `processor-generation-invalid` on 2026-11-28.
    - Added handwritten vectors: `\b \t \n \f \r`, `\u0001 \u001b \u001f` in lowercase, DEL and `/` unescaped, and composed and decomposed `é` kept distinct.
 8. **Repeated hour.** A fold-aware synthetic zone is used in R61. The same instant is accepted and stored in UTC; the other fold is refused. R61 now says times are compared as instants.
 9. **One retraction, several records.** Every record in the as-of-indexing matching set must have a witness. Added `test_retraction_needs_every_matching_record`, with two origins and then a third origin observed later.
