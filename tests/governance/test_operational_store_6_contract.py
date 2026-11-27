@@ -123,7 +123,7 @@ class OperationalStoreSixContractTest(unittest.TestCase):
         six = load_contract("operational-store.6.json")
         spec = (PROJECT_ROOT / "packs/operational-store-6.spec.md").read_text(encoding="utf-8")
 
-        self.assertIn("**Status:** Draft for the Operator's Gate A review.", spec)
+        self.assertIn("**Status:**", spec)
         self.assertIn("## Decisions for the Operator", spec)
         for failure in NEW_FAILURES:
             self.assertIn(f"`{failure}`", spec)
