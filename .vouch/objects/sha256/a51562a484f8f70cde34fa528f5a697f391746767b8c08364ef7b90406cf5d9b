@@ -1,0 +1,1 @@
+{"actor":"sarvagnan","event":"UnitSpecified","event_format":2,"pack_digest":"","payload":{"depends_on":["interpret-source-projection","set-source-selection-policy","set-fallback-timezone-policy"],"name":"summary-contract","version":"1"},"prev":"d60895a83810fde3340cae30e30782c5d102d73ce719dd5bbe10f8e0098f1cd4","recorded_at":"2026-11-27T15:26:02+00:00","revision":650,"run_id":""}

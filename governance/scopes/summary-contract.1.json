@@ -1,0 +1,139 @@
+{
+  "contract_schema": 1,
+  "scope": "summary-contract",
+  "version": "1",
+  "kind": "shared",
+  "purpose": "Define the common, versioned Health Summary that every daily derivation returns: the canonical header with its identity, processor and derivation versions, applied policy identities, primary state, evidence conditions, coverage, and Data Watermark; the evidence manifest that lists every Source Record the derivation attributed to the day with its standing; the total rule that chooses one primary state; the closed vocabularies of primary states, evidence standings, evidence conditions, and publication conditions; and their validation and RFC 8785 encoding, without deriving any value or having any persistence effect.",
+  "inputs": [
+    {
+      "name": "summary_key",
+      "mode": "pure",
+      "description": "One derived measure and record type pair from the set-source-selection-policy@1 measure vocabulary, and one local date."
+    },
+    {
+      "name": "versions",
+      "mode": "pure",
+      "description": "The derivation version of the concrete derive unit, in the form <scope>@<version>, and the processor version of the record type under which every attributed outcome was produced."
+    },
+    {
+      "name": "applied_policies",
+      "mode": "pure",
+      "description": "The identity of the Source Selection Policy applied to the day, or none, and the policy identity that interpret-source-projection@1 gave each attributed outcome, which names any Fallback Timezone Policies it used."
+    },
+    {
+      "name": "attributed_evidence",
+      "mode": "pure",
+      "description": "For every Source Record the derivation attributed to the day: its record, selection, and outcome identities, its standing (contributing, unresolved, in-conflict, policy-pending, failed, or quarantined), and the outcome's processor version and policy identity where one exists."
+    },
+    {
+      "name": "reported_conditions",
+      "mode": "pure",
+      "description": "The evidence conditions the derivation reports from the closed vocabulary, such as selection-unresolved or equal-time-conflict."
+    },
+    {
+      "name": "delivery_positions",
+      "mode": "pure",
+      "description": "For each Sender Installation whose accepted messages the derivation considered: the highest Sender sequence through which every archived message was indexed and terminally processed, that message's Portal receipt time, and the processing completion time."
+    },
+    {
+      "name": "body",
+      "mode": "pure",
+      "description": "The derive unit's type-specific values as RFC 8785 canonical JSON object bytes, or none when the derivation has no usable value."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "health_summary",
+      "description": "An immutable Health Summary: RFC 8785 canonical header bytes, canonical evidence manifest bytes, the body bytes or none, and the summary digest, which is the SHA-256 of the header bytes and so covers the manifest and body digests."
+    },
+    {
+      "name": "primary_state",
+      "description": "Exactly one of measured, partial, missing, failed, quarantined, policy-pending, or unresolved, chosen from the coverage counts and whether a value exists by one total rule every derivation follows."
+    },
+    {
+      "name": "coverage",
+      "description": "Counts of the Source Records attributed to the day by standing, relative to the retained, processed evidence at the Data Watermark; never a claim about the real world, wear time, or later evidence."
+    },
+    {
+      "name": "data_watermark",
+      "description": "The per-installation delivery positions incorporated, with receipt and processing times, and the evidence-set digest; it never claims that the source has no later, missing, or unavailable evidence."
+    },
+    {
+      "name": "vocabularies",
+      "description": "The closed, versioned sets of primary states, evidence standings, evidence conditions stored in a summary, and publication conditions that later units attach at read time but never store in a summary."
+    },
+    {
+      "name": "decoded_summary",
+      "description": "A stored summary's header, evidence manifest, and body bytes checked and decoded back into the same Health Summary, or a named failure."
+    },
+    {
+      "name": "summary_failure",
+      "description": "A named failure raised instead of a summary, carrying only its name: no value, date, Source Identity, origin, or bytes."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "summary-input-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "summary-state-inconsistent",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "summary-bytes-invalid",
+      "outcome": "invariant-refusal"
+    },
+    {
+      "name": "summary-version-unsupported",
+      "outcome": "refusal"
+    }
+  ],
+  "observable_effects": [],
+  "authority": {
+    "owns": [
+      "the Health Summary header: its fields, their validation, and their RFC 8785 canonical bytes and digest",
+      "the evidence manifest: one entry per attributed Source Record with its standing, and the evidence-set digest",
+      "the closed primary-state vocabulary and the one total rule that chooses a primary state",
+      "the closed evidence-standing, evidence-condition, and publication-condition vocabularies, and how they grow by contract version",
+      "the meaning of coverage, and the rule that only measured and partial summaries carry a value",
+      "the Data Watermark's shape and what it may and may not claim",
+      "which header and failure content is free of health values, origins, and Source Identities",
+      "decoding stored summary bytes of every supported contract version"
+    ],
+    "does_not_own": [
+      "deriving any value, or deciding which evidence a record type attributes to a day, which origins overlap, or what is unresolved; the derive units do",
+      "the body's type-specific fields, units, or values",
+      "Duplicate Groups and equal-time ties; duplicate-observation-contract does",
+      "range periods, presets, and range counts; range-summary-contract does",
+      "storing, selecting, publishing, or activating summaries, Summary Refresh Jobs, Processor Generations, Cutover Targets, Candidate Builds, or Cutover Records; operational-store@6 and refresh-summary-state do",
+      "computing delivery positions or processing times from the store, or deciding when a publication condition applies",
+      "recording or activating Source Selection or Fallback Timezone Policies, and the measure vocabulary, which set-source-selection-policy@1 owns",
+      "how any state or condition is rendered"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "interpret-source-projection",
+      "version": "1"
+    },
+    {
+      "scope": "set-source-selection-policy",
+      "version": "1"
+    },
+    {
+      "scope": "set-fallback-timezone-policy",
+      "version": "1"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/summary-contract-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_summary_contract_1.py"
+    },
+    "runner": "tests/acceptance/run_summary_contract_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}
