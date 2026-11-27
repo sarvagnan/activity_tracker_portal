@@ -331,9 +331,9 @@ After Gate A, the executable pack adds:
 - The purity test runs in a subprocess:
   - It first imports the standard modules an implementation commonly needs, then the unit, which may import `operational_store` through `set_source_selection_policy` (Decision 16).
   - At any time, it flags a write open, an open under the host timezone database, and socket, subprocess, SQLite, and file-system change events.
-  - It runs every operation twice. The first run is a warm-up, so a lazy standard-library import cannot fail a correct implementation. During it, only standard-library module files may be opened, and only standard-library paths and their parent directories may be inspected by `stat`, `lstat`, `fstat`, or `access`. Anything else is flagged.
-  - During the second run, it flags every `open` audit event, by path or by descriptor, with no exemption, which includes an import that opens its source. It also flags every directory listing and import event, and every `os.stat`, `os.lstat`, `os.fstat`, and `os.access` call. CPython raises no audit event for those four, so the test wraps them directly.
-  - Through both runs, it flags any environment read, any log record, and anything written to stderr. So a value read from a file or the environment once and cached is caught in the warm-up.
+  - It runs every operation twice, and checks both runs. The only file-system activity it allows is the import system loading a module, so an implementation may import any standard-library or published module lazily. An `open` (by path or by descriptor), a directory listing, or an `os.stat`, `os.lstat`, `os.fstat`, or `os.access` call is allowed only while a frame of the import system (`<frozen importlib._bootstrap…>` or `<frozen zipimport>`) is on the stack. Anything else is flagged, with no path exemption, so a value read on the first call and cached is caught. CPython raises no audit event for the four metadata calls, so the test wraps them directly.
+  - It flags any environment read outside module loading, any log record, and anything written to stderr. Any write is flagged at any time, except the import system writing a `.pyc` bytecode cache.
+  - Reads a module makes in its own top-level code while being imported are not flagged. That covers the unit's own import and lazy imports alike, and stays a residual for review.
   - It replaces the Python-level clock functions with guards.
   - Reads that raise no audit event, such as a C-level clock read, stay a residual.
 - Note for the implementer: the package's existing encoder `_interpret_projection_json.canonical_bytes` has no `null` case, so the module needs a null-aware encoder.
@@ -345,7 +345,17 @@ After Gate A, the executable pack adds:
 **Gate B resolutions (round 1).** The approver objected three times, and each is resolved:
 1. **R11 authority.** The Operator chose the canonical binary64 rule on 2026-11-27, and R11 records it.
 2. **`stat` guard.** CPython raises no audit event for `os.stat` or `os.lstat`, so an operation-time `os.stat(__file__)` passed every test. The purity test now wraps `stat`, `lstat`, `fstat`, and `access` directly. A reentrancy flag lets its own path checks call them. Explicit `stat`, `lstat`, `fstat`, `os.path.exists`, a read cached on the first call, and a directory listing each fail the test.
-3. **Lazy standard-library imports.** Even with the extra preloads, an encoder that lazily imported `encodings.unicode_escape` failed purity. The warm-up run now allows standard-library module loading, so lazy imports such as `encodings.unicode_escape` and `email.utils` pass. The second run still allows no import or read at all, so a read of a standard-library source file during an operation still fails.
+3. **Lazy standard-library imports.** Even with the extra preloads, an encoder that lazily imported `encodings.unicode_escape` failed purity. Round 1 added a warm-up run that exempted standard-library paths; round 2 showed that it let first-call cached reads through, and still failed a lazy import of the published encoder.
+
+**Gate B resolutions (round 2).** The purity test no longer has a warm-up or any path exemption. It allows file-system activity only while the import system is on the stack. These now fail:
+- explicit `stat`, `lstat`, `fstat`, `access`, and `os.path.exists` calls;
+- first-call cached reads of the implementation file, a standard-library source file, and a site-packages file;
+- a cached `os.stat("/")`, a cached directory listing, and a cached environment read;
+- a read through `importlib.resources`.
+
+These pass:
+- lazy imports of `encodings.unicode_escape`, `email.utils`, and `xml.dom.minidom`;
+- the published encoder `_interpret_projection_json`.
 The scope-map `pending` rename was made at approval (c436cee), so it is no longer listed as outstanding.
 
 **Implementer review resolutions.** The read-only review found six issues; all are resolved.

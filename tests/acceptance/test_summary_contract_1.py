@@ -586,72 +586,65 @@ class R2PureAndDeterministic(Checks):
     def test_operations_read_no_clock_or_io(self) -> None:
         scenario_summary()
         code = r"""
-import json, os, sys, sysconfig, time, logging, zoneinfo
-# Modules an implementation commonly needs are imported first. The scenario then runs once as a warm-up, in which
-# only standard-library module loading is allowed, so lazy standard-library imports cannot fail a correct
-# implementation. The second run is checked with no exemption at all.
-# The unit's own import may import operational_store through set_source_selection_policy (Decision 16).
+import json, os, sys, time, logging, zoneinfo
+# Modules an implementation commonly needs are imported first. The unit's own import may import operational_store
+# through set_source_selection_policy (Decision 16).
 import hashlib, re, decimal, fractions, dataclasses, typing, collections, functools, itertools, math, unicodedata
 import copy, enum, struct, base64, datetime, string, operator, bisect, heapq, io, traceback, types, inspect
 import contextlib, pathlib, sqlite3, shutil, importlib.resources, collections.abc, numbers, codecs, unittest
 import locale, calendar, _strptime, json.decoder, json.encoder, binascii, textwrap, weakref, array, ipaddress
-import encodings.utf_8, encodings.utf_16, encodings.utf_16_be, encodings.utf_16_le, encodings.utf_32
-import encodings.ascii, encodings.latin_1, encodings.idna
-stdlib = sorted({os.path.realpath(sysconfig.get_paths()[k]) for k in ("stdlib", "platstdlib")})
+# During the operations, the only file-system activity allowed is the import system loading a module: an implementation
+# may import any standard-library or published module lazily. An open, metadata read, or listing is allowed only while
+# a frame of the import system is on the stack; anything else is flagged, on every call, with no warm-up and no path
+# exemption.
+LOADER = ("<frozen importlib._bootstrap", "<frozen zipimport")
+def loading():
+    frame = sys._getframe(1)
+    while frame is not None:
+        if frame.f_code.co_filename.startswith(LOADER):
+            return True
+        frame = frame.f_back
+    return False
 busy = [False]
-def in_stdlib(path):
-    # realpath itself calls os.lstat, so the guards below pass through while this check runs.
+def real(path):
+    # realpath itself calls os.lstat, so the guards below pass through while it runs.
     busy[0] = True
     try:
-        real = os.path.realpath(path)
+        return os.path.realpath(path)
     finally:
         busy[0] = False
-    return real.endswith((".py", ".pyc", ".so", ".pyd")) and any(real.startswith(d.rstrip("/") + "/") for d in stdlib)
-def on_stdlib_path(path):
-    # Module loading may also inspect the standard-library directories and their parents.
-    busy[0] = True
-    try:
-        real = os.path.realpath(path).rstrip("/") or "/"
-    finally:
-        busy[0] = False
-    return any(real == d or d.startswith(real.rstrip("/") + "/") or real.startswith(d + "/") for d in stdlib)
 host = [os.path.realpath(p) for p in zoneinfo.TZPATH] + [os.path.realpath("/etc/localtime"), "/etc/localtime"]
 events = []
 phase = ["import"]
 WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
 def hook(event, args):
-    if phase[0] == "done":
+    if phase[0] == "done" or busy[0]:
         return
     if event == "open":
         path, mode, flags = args
-        # During the checked calls, every open is flagged, by path or by descriptor, with no exemption. During the
-        # warm-up, only standard-library module files may be opened.
         shown = os.fsdecode(path) if isinstance(path, (str, bytes)) else repr(path)
-        if phase[0] == "calls" or (phase[0] == "warm" and not (isinstance(path, (str, bytes)) and in_stdlib(shown))):
-            events.append(["open", phase[0], shown])
+        if phase[0] == "calls" and not loading():
+            events.append(["open", shown])
         if isinstance(path, (str, bytes)):
-            path = os.fsdecode(path)
-            if (mode and any(c in mode for c in "wax+")) or (flags or 0) & WRITE:
-                events.append(["write", path])
-            real = os.path.realpath(path)
-            if any(real == h or real.startswith(h.rstrip("/") + "/") for h in host):
-                events.append(["host-timezone", path])
+            if ((mode and any(c in mode for c in "wax+")) or (flags or 0) & WRITE) \
+                    and not (loading() and ".pyc." in os.path.basename(shown) + "."):
+                # The import system may write a module's bytecode cache; nothing else may write.
+                events.append(["write", shown])
+            resolved = real(shown)
+            if any(resolved == h or resolved.startswith(h.rstrip("/") + "/") for h in host):
+                events.append(["host-timezone", shown])
     elif event.split(".")[0] in ("socket", "sqlite3", "subprocess", "ctypes", "webbrowser", "urllib", "http") or event in (
             "os.system", "os.remove", "os.rename", "os.mkdir", "os.rmdir", "os.chmod", "os.utime", "os.truncate",
             "os.symlink", "os.link", "os.posix_spawn", "os.exec", "os.fork", "shutil.copyfile", "shutil.rmtree"):
         events.append([event])
-    elif phase[0] == "calls" and event in ("os.listdir", "os.scandir", "glob.glob", "os.chdir", "io.open_code",
-                                           "os.stat", "os.lstat", "import"):
+    elif phase[0] == "calls" and event in ("os.listdir", "os.scandir", "glob.glob", "os.chdir", "io.open_code") \
+            and not loading():
         events.append([event])
 def metadata(original, name):
-    # CPython raises no audit event for stat-family calls, so they are guarded directly. The import system uses its
-    # own stat, so only explicit metadata reads reach these guards.
+    # CPython raises no audit event for stat-family calls, so they are guarded directly.
     def guard(target, *args, **kwargs):
-        if busy[0]:
-            return original(target, *args, **kwargs)
-        shown = os.fsdecode(target) if isinstance(target, (str, bytes, os.PathLike)) else repr(target)
-        if phase[0] == "calls" or (phase[0] == "warm" and not (isinstance(target, (str, bytes, os.PathLike)) and on_stdlib_path(shown))):
-            events.append([name, phase[0], shown])
+        if phase[0] == "calls" and not busy[0] and not loading():
+            events.append([name, os.fsdecode(target) if isinstance(target, (str, bytes, os.PathLike)) else repr(target)])
         return original(target, *args, **kwargs)
     return guard
 for name in ("stat", "lstat", "fstat", "access"):
@@ -668,7 +661,9 @@ class Environ(collections.abc.MutableMapping):
     def __init__(self, inner):
         self.inner, self.reads = inner, []
     def note(self, key):
-        self.reads.append(str(key)[:40])
+        # A module's own top-level code may read the environment while it is being imported.
+        if not loading():
+            self.reads.append(str(key)[:40])
     def __getitem__(self, key):
         self.note(key); return self.inner[key]
     def __setitem__(self, key, value):
@@ -701,9 +696,8 @@ import test_summary_contract_1 as t
 original = os.environ
 recorder = Environ(original)
 os.environ = recorder
-phase[0] = "warm"
-t.scenario_summary()
 phase[0] = "calls"
+t.scenario_summary()
 t.scenario_summary()
 phase[0] = "done"
 os.environ = original
