@@ -107,7 +107,7 @@ Proposed tests: `test_new_database_records_migrations_1_to_5`, `test_version_5_d
 - Registration activates nothing, and no later write changes a generation.
 - **Refusals,** each leaving the database unchanged:
   - `timestamp-invalid`;
-  - `processor-generation-invalid` for a manifest that is not a non-empty mapping, or a record type that is not a non-empty string;
+  - `processor-generation-invalid` for a manifest that is not a non-empty mapping, a record type that is not a non-empty string, or a record type or version that is not a valid Unicode scalar string (one containing a lone surrogate, which RFC 8785 cannot serialize);
   - `processor-version-invalid` for a version not of the form `<scope>@<version>`, as in `@4` R30;
   - `storage-reserve-exhausted` when it would write.
 
@@ -169,7 +169,7 @@ Proposed tests: `test_entry_shape_is_checked`, `test_summary_digests_are_compute
 
 ### R61 — The watermark matches the store
 
-`summary-watermark-invalid` when the watermark is empty, is not sorted by installation, names an installation twice, or has a position the store cannot vouch for. Each position must name an archived message whose sequence is at or below the installation's current processed position for the key's record type and the generation's processor version (R66). Its `receipt_time` must equal that message's receipt time, and its `processed_at` must equal the processed time R66 gives for that sequence.
+`summary-watermark-invalid` when the watermark is empty, is not sorted by installation, names an installation twice, or has a position the store cannot vouch for. Each position must name an archived message whose sequence is at or below the installation's current processed position for the key's record type and the generation's processor version (R66). Its `receipt_time` must equal that message's receipt time, and its `processed_at` must equal the processed time R66 gives for that sequence. Times are compared as instants: a position may be given in any timezone, including a fold-aware local time in a repeated hour, and the store normalizes it to UTC before comparing. Stored and returned positions are UTC.
 
 Proposed tests: `test_watermark_must_match_store_positions`, `test_watermark_cannot_run_ahead_of_processing`.
 
@@ -181,7 +181,7 @@ Each stored summary links to the outcomes in `contributors`. `summary-contributo
 - has a processor version other than the entry's; or
 - has a local-date span, from its start date to its end date (or start date for an instant), that does not include the key's date.
 
-An empty list is valid, as for a `missing` summary. Links are indexed by outcome, so later versions can find every summary a revision contributed to (ADR 0023).
+An empty list is valid, as for a `missing` summary. The store writes one link per contributor, carrying the outcome and the summary, and indexes the links by outcome, so later versions can find every summary a revision contributed to (ADR 0023). No `@6` read looks summaries up by outcome: the suite checks that the link rows exist, whatever their layout, and the approver reviews the relation and its leading outcome index (Residuals).
 
 Proposed tests: `test_contributors_are_linked_to_outcomes`, `test_contributor_checks`.
 
@@ -218,12 +218,18 @@ Proposed tests: `test_changes_list_outcomes_selections_and_failed_jobs`, `test_a
 ### R66 — Processed positions
 
 `processed_positions(record_type, processor_version)` returns, sorted by installation, one position per installation that has a settled ingest batch of that record type at or below its position.
-- **Settled item.** An item of such a batch is settled when it is quarantined, or when it is indexed and its Source Record has a selection recorded from that evidence or later that is a retraction or Source Conflict, has an outcome under the version, or whose last job under the version failed. An indexed retraction that names no Source Record is settled. A batch is settled when all its items are.
-- **Position.** The highest archived sequence of the installation below its lowest unsettled batch of the type, or its highest archived sequence when none is unsettled. Messages of other types and kinds never hold it back.
-- **Times.** `receipt_time` is the receipt time of the message at that sequence. `processed_at` is the latest of that receipt time and the times at which the type's items at or below it first became settled.
-- Positions never move back, because every fact they rest on is append-only.
+*Revised after the implementer's review (findings 1, 2, and 9). This changes the approved text; see "Implementer review resolutions".*
+- **Settlement is historical.** Settlement is an irreversible fact for an archived item and processor version, established by witnesses that are never removed:
+  - a quarantined item is witnessed by its quarantine;
+  - an indexed projection is witnessed through any selection of its Source Record whose evidence head is at least the item's evidence: the selection itself when it is a retraction or Source Conflict, any outcome under the version for that selection, and any Processing Job under the version for that selection that ended `failed`. A later job, such as a manual retry, does not remove an earlier failure witness.
+- **Retractions.** A retraction's matching Source Records are fixed as of its indexing: the records of its record type and Source Identity that have projection evidence indexed before the retraction's evidence. With no such record, indexing itself witnesses the retraction. Otherwise it is settled only when every matching record has a witness as above. A projection indexed later, even of the same identity, is a new obligation at its own archived position.
+- A batch is settled when all its items are.
+- **Position.** The highest archived sequence of the installation below its lowest unsettled batch of the type, or its highest archived sequence when none is unsettled: the archived prefix before the first unsettled batch of the record type. Messages of other types and kinds never hold it back. The watermark therefore asserts that processing reached a terminal witness through that prefix. It does not assert success, nor that newer evidence has been processed.
+- **Times.** `receipt_time` is the receipt time of the message at that sequence. An item's settlement time is the earliest caller-supplied timestamp among its witnesses; for a retraction with matching records, it is the latest of those records' earliest witness times. `processed_at` is the latest of the receipt time and the settlement times of the type's items at or below the sequence.
+- Positions never move back, because every witness is append-only. For one sequence, `processed_at` may still fall if a later write supplies an earlier timestamp, since callers' times need not be monotone. The store cannot recover commit order: two histories that end in identical rows must give the same answer.
+- This needs no change to any `@3`–`@5` writer. It reads existing history only.
 
-Proposed tests: `test_position_stops_before_the_first_unsettled_batch`, `test_settled_items`, `test_position_times`, `test_positions_never_move_back`.
+Proposed tests: `test_position_stops_before_the_first_unsettled_batch`, `test_settled_items`, `test_position_times`, `test_positions_never_move_back`, `test_a_failure_witness_survives_a_retry`, `test_retraction_matches_records_as_of_its_indexing`, `test_retraction_needs_every_matching_record`, `test_settlement_time_is_the_earliest_witness`.
 
 ### R67 — Summary evidence
 
@@ -355,7 +361,7 @@ Unbound inputs, reviewed rather than frozen:
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- **The suite.** `tests/acceptance/test_operational_store_6.py` has 67 tests across R54–R71, exactly the proposed test names above. It has no timing limits; the race tests only wait up to 60 seconds for their threads.
+- **The suite.** `tests/acceptance/test_operational_store_6.py` has 71 tests across R54–R71, exactly the proposed test names above, four of them added in R66 after the implementer's review. It has no timing limits. Every claim-drain loop is bounded by the number of jobs it expects plus the final `None`, and the race threads also have a 60-second join limit.
 - **The fixture.** `tests/acceptance/fixtures/operational-store-6/operational-store-5-policies.sql`. It sits under the version's own fixture directory, not at the top-level path the draft named, because the drafter's brief limited fixtures to that directory. A throwaway script outside the repository imported the published `@5` module (extracted with `git archive d9a5aee`; the module is unchanged since `9b77c79`) and wrote the database through its public API only. The database was dumped with `iterdump`, and `PRAGMA user_version=4` was appended. The header comment records the method. The fixture holds:
   - installation A, retired after draining, and installation B, active. A delivered a steps and a weight snapshot, a snapshot completion, and a steps change cycle. B delivered a steps and a weight snapshot;
   - an inferred and an experienced steps revision, a Policy-Pending outcome on a record later retracted, a weight revision, a weight Quarantine, and a revision from B's other origin. B re-observed one record, whose latest selection is now a Source Conflict;
@@ -374,13 +380,13 @@ After Gate A, the executable pack adds:
 
 **RED, through the runner, against the stub:**
 - `@1`–`@5`'s 222 bound tests (53, 15, 45, 59, and 50) pass.
-- Of the 67 new tests, 2 pass: the pure contract tests `test_contract_6_extends_version_5` and `test_scope_map_row_does_not_contradict_contract_6`.
+- Of the 71 new tests, 2 pass: the pure contract tests `test_contract_6_extends_version_5` and `test_scope_map_row_does_not_contradict_contract_6`.
 - 4 fail on an `AssertionError`, because the stub has no new names and no migration 5:
   - `test_failures_match_contract_6`;
   - `test_new_database_records_migrations_1_to_5`;
   - `test_version_5_database_requires_migration_and_is_untouched`, because the stub opens a migration-4 database without refusing;
   - `test_migrated_version_5_database_takes_summary_work`, because no table is added.
-- The other 61 fail with `NotImplementedError("operational-store@6")`. The race tests re-raise their workers' unexpected errors. The fault-injection helper treats only `sqlite3.DatabaseError` as an injected fault, so the stub's error is never mistaken for one.
+- The other 65 fail with `NotImplementedError("operational-store@6")`. The race tests re-raise their workers' unexpected errors. The fault-injection helper treats only `sqlite3.DatabaseError` as an injected fault, so the stub's error is never mistaken for one.
 
 In the worktree, with the stub, these all pass: `tests/unit` (145), `tests/governance` (65), and every other acceptance suite under `tests/acceptance`. The one exception is `receipt_bound_delivery_1`, whose 9 tests need the Sender's `node_modules`, which the drafting worktree lacks (`ERR_MODULE_NOT_FOUND`). It is unrelated to the store.
 
@@ -389,7 +395,7 @@ In the worktree, with the stub, these all pass: `tests/unit` (145), `tests/gover
 - the eight names;
 - the seventeen operations.
 
-**Mutants.** The drafter ran 49 wrong-implementation mutants against the reference. The final suite kills all 49. They cover:
+**Mutants.** The drafter ran 59 wrong-implementation mutants against the reference, and the final suite kills all 59: the original 49 and 10 added after the review. Three valid variants from the implementer's review pass: an `AUTOINCREMENT` generation identity, a renamed contributor-link column, and a claim that first returns the permitted `store-busy`. The mutants cover:
 - the token: a stale result stored, a token that does not advance, a token advanced by a refused request, and a renewal that reports the current token;
 - re-runs for newer evidence: a stale failure left failed; stale completions or failures that keep their attempts; an exhausted expired lease that ignores the token or never fails;
 - coalescing: two open jobs per key and target (index dropped), and a coalesced request that moves `not_before`;
@@ -404,9 +410,16 @@ In the worktree, with the stub, these all pass: `tests/unit` (145), `tests/gover
 - the reserve: skipped on renewal, on a stale completion, or on a claim, and checked before the identical-manifest repeat;
 - a read that writes, a migration that alters an earlier table, a backfilling migration, entry bytes in a refusal's `args`, and identical results appended twice or matched against any earlier revision.
 
-One mutant survived the first run: contributors of any record type. The only other-type contributor also had another processor version, so the version check refused it first. The contributor test now includes a weight revision recorded under the steps version.
+- after the implementer's review:
+  - the review's survivors: missing contributor link rows, a noncanonical control escape (and uppercase hexadecimal), an existential retraction, and wall-time watermark equality;
+  - the two R66 regressions: settlement by the last job only, and retraction matches judged now;
+  - lone surrogates left unchecked;
+  - the latest of several failures used as the settlement time;
+  - a claim that keeps returning a lease. It now fails the suite quickly instead of hanging.
 
-**Refinements.** The tests pin these points beyond the approved text. None changes approved semantics. Items marked *settles* decide a point the text left open, for the approver to confirm.
+Before the review, one mutant survived the first run: contributors of any record type. The only other-type contributor also had another processor version, so the version check refused it first. The contributor test now includes a weight revision recorded under the steps version.
+
+**Refinements.** The tests pin these points beyond the approved text. Apart from the R66 revision and the R56 lone-surrogate refusal, which "Implementer review resolutions" flags, none changes approved semantics. Items marked *settles* decide a point the text left open, for the approver to confirm.
 - **Generations (R56).**
   - Any `Mapping` is accepted. An empty mapping is `processor-generation-invalid`, as is a list or tuple of pairs, `None`, a string, or a key that is empty or not a string. The key check comes before the version check.
   - The digest is RFC 8785 in full: non-ASCII as literal UTF-8, `"` and `\` escaped, and keys in UTF-16 code-unit order, so a key outside the Basic Multilingual Plane sorts before U+FB01.
@@ -440,13 +453,13 @@ One mutant survived the first run: contributors of any record type. The only oth
   - A Fallback Timezone Policy's identity can be the horizon.
   - A policy above the horizon never applies, even if it is live now.
 - **The watermark (R61).**
-  - Times in another offset for the same instant are accepted, and stored and returned in UTC.
+  - Times in another offset for the same instant are accepted, and stored and returned in UTC. That includes a fold-aware time through a synthetic repeated hour; the other fold, an hour later, is refused.
   - A position at an earlier sequence at or below the current one is accepted with that sequence's own processed time.
   - Sequence 0, an unarchived sequence, and an installation with no position are refused.
 - **Contributors (R62).**
   - Both span ends are inclusive. An instant is placed by its start date.
   - The record-type check stands on its own, as the survivor above showed.
-  - *Settles:* "indexed by outcome" is checked as some migration-5 index or primary key whose leading column name contains `outcome`. This names a column, so the approver may prefer to drop it.
+  - Link rows: some migration-5 table gains one row per contributor carrying the outcome and the summary's identity. Column names and the index are not checked; the index is a residual.
 - **Failure (R63).** `retry_at` equal to `at` is allowed. A naive `retry_at` is `timestamp-invalid`.
 - **Evidence changes (R65).**
   - `limit` truncates across the three groups in order.
@@ -455,7 +468,7 @@ One mutant survived the first run: contributors of any record type. The only oth
   - Acknowledgement refusals apply with and without keys. A listed job that is not failed is refused, also next to a failed one.
 - **Positions (R66).**
   - An installation with no settled batch of the type is absent.
-  - Settlement times: the first outcome's `recorded_at` (a later outcome does not move it), the quarantine's `recorded_at`, the retraction or Source Conflict selection's `recorded_at`, the failed job's `closed_at`, and an unnamed retraction's `indexed_at`.
+  - Witness times: an outcome's `recorded_at`, the quarantine's `recorded_at`, the retraction or Source Conflict selection's `recorded_at`, a failed job's `closed_at`, and an unnamed retraction's `indexed_at`. The earliest witness sets an item's time, so later outcomes and failures never move it.
   - Settlements of other types never count.
 - **Summary evidence (R67).**
   - `after` is an integer of at least 0, and `limit` an integer of at least 1. `datetime` bounds and a malformed target are `summary-request-invalid`.
@@ -469,11 +482,32 @@ One mutant survived the first run: contributors of any record type. The only oth
 - whether a non-exhausted expired lease whose token advanced resets its attempts at claim;
 - whether a request with no keys, whose acknowledgement and link change nothing, needs the reserve;
 - argument validation for `evidence_changes(limit)` and `processed_positions`;
-- R66 says positions never move back, but two cases can move one back:
-  - a retraction indexed before any Source Record with its identity exists, which a later projection then names;
-  - a failed job whose selection is re-enqueued.
+- whether `next_after` is set on an exactly full last page.
 
-  No test exercises either. The approver may want R66's wording settled before freeze.
+The reviewer would reset the retry budget on every stale expiry, to match "newer evidence gets a fresh run". This is recorded as a note only; the suite still allows a partly used budget.
+
+**Implementer review resolutions.** GPT 6.1 Sol reviewed the pack read-only at `08507be`, with an independent implementation that passed all 289 tests. Sol found 2 blocking and 7 should-fix findings, and gave 2 notes. They are resolved as follows:
+1. **Blocking: R66 positions could move back.** A manual retry after a failed job, and a later projection of a retracted identity, each removed a position. R66 now defines settlement historically: witnesses are append-only, any failed job is a witness, and a retraction's matching records are fixed as of its indexing.
+   - Added `test_a_failure_witness_survives_a_retry` and `test_retraction_matches_records_as_of_its_indexing`. Both reopen the store and complete a refresh whose watermark is the resulting positions.
+   - **For the approver and Operator: this changes approved semantics.** The approved text said "whose last job under the version failed" and "an indexed retraction that names no Source Record". It now says "any failed job" and "no record observed before the retraction". The watermark now asserts terminal processing through the prefix, not current success.
+2. **Blocking: "first became settled" cannot be recovered.** Caller times need not be monotone, and no commit order is shared across selections, outcomes, and failed jobs. Sol showed two orders that end in identical rows. An item's settlement time is now the earliest caller-supplied witness time, and `processed_at` may fall if a later write supplies an earlier timestamp.
+   - Added `test_settlement_time_is_the_earliest_witness`, which applies both orders to copies of one prestate.
+   - The equal-sequence oracle now notes that only a forward-moving clock keeps `processed_at` fixed.
+   - **This also changes approved semantics**, from "first became settled" to "earliest witness timestamp".
+3. **Generation immutability.** The physical check now covers only the rows registration added that carry the generation's digest or manifest values, so allocator metadata such as `sqlite_sequence` may change. Whole-database comparisons for no-write calls are unchanged.
+4. **"Indexed by outcome."**
+   - The column-name check is dropped.
+   - A schema-agnostic check now requires one link row per contributor, carrying the outcome and summary identities. It kills the skipped-link survivor.
+   - The relation and its leading outcome index are an approver residual. No public read looks summaries up by outcome, and none is added.
+5. **Claim race.** Workers retry only `store-busy`, within a bounded loop, and count successful claims. The exactly-once assertions are kept.
+6. **Drain loops.** The main-thread loops are bounded by the expected jobs plus the final `None`, with unique-job and fence checks. The claim worker is bounded as well.
+7. **RFC 8785.**
+   - Keys or versions with lone surrogates are `processor-generation-invalid`, and the whole database is unchanged. This adds a refusal case to R56; a lone-surrogate version was previously `processor-version-invalid` by grammar.
+   - Added handwritten vectors: `\b \t \n \f \r`, `\u0001 \u001b \u001f` in lowercase, DEL and `/` unescaped, and composed and decomposed `é` kept distinct.
+8. **Repeated hour.** A fold-aware synthetic zone is used in R61. The same instant is accepted and stored in UTC; the other fold is refused. R61 now says times are compared as instants.
+9. **One retraction, several records.** Every record in the as-of-indexing matching set must have a witness. Added `test_retraction_needs_every_matching_record`, with two origins and then a third origin observed later.
+10. **Note: unpinned choices.** They stay unpinned. Sol's preference is recorded above.
+11. **Note: bookmark, migration, fixture, and earlier versions.** No change needed.
 
 The implementer then reviews the pack read-only for tests a correct implementation could not pass, and those findings are resolved before freeze.
 
@@ -483,6 +517,7 @@ Not mechanically provable here; the approver confirms these in implementation re
 - migration 5 only creates tables and indexes;
 - no `@1`–`@5` code path changes;
 - the store never parses summary header, evidence, or body bytes, or a policy identity;
+- contributor links are a relation of (outcome, summary) rows with an index that leads with the outcome identity, so every summary a revision contributed to can be found (R62). No `@6` read exposes this lookup; the suite only checks that the link rows exist;
 - each write's checks, token advance, job changes, links, and bookmark happen in one SQLite write transaction, with no process-local lock. The race tests are bounded stress and cannot force an interleaving;
 - `processed_positions`, `summary_evidence`, `evidence_changes`, the watermark check, and the counts are set-based SQL over indexes, with no per-record Python loop and no bytes loaded except the outcomes `summary_evidence` returns. As in DEV-os4-01, positions and change reads may grow with retained history. The `portal-worker` calls them per refresh cycle, not in a tight loop.
 

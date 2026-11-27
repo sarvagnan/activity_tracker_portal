@@ -20,7 +20,7 @@ import tempfile
 import threading
 import types
 import unittest
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from activity_tracker_portal import operational_store as store_module
@@ -120,6 +120,28 @@ NEW_TYPES = (ProcessorGeneration, SummaryKey, SummaryTarget, ProcessedPosition, 
              RefreshAttempt, SummaryRefreshJob, RefreshLease, RefreshRequest, RefreshCompletion, EvidenceChange,
              EvidenceBookmark, EvidenceChanges, EvidenceAcknowledgement, SummaryEvidenceItem, SummaryEvidence,
              RefreshCounts)
+
+
+class RepeatedHour(tzinfo):
+    """A synthetic zone, independent of host tzdata, in which every wall time is repeated: fold 0 is UTC-4, fold 1
+    is UTC-5. Python never treats such a time as equal to a time in another zone, so a store must normalize."""
+
+    def utcoffset(self, moment: datetime | None) -> timedelta:
+        return timedelta(hours=-5 if moment is not None and moment.fold else -4)
+
+    def dst(self, moment: datetime | None) -> timedelta:
+        return timedelta(0)
+
+    def tzname(self, moment: datetime | None) -> str:
+        return "SYNTHETIC-REPEATED"
+
+
+REPEATED_HOUR = RepeatedHour()
+
+
+def repeated(moment: datetime, fold: int) -> datetime:
+    """The wall time in RepeatedHour that denotes moment at fold 0 (fold 1 is an hour later)."""
+    return (moment.astimezone(UTC) - timedelta(hours=4)).replace(tzinfo=REPEATED_HOUR, fold=fold)
 
 
 def at(minutes: float) -> datetime:
@@ -389,6 +411,22 @@ class StoreCase(unittest.TestCase):
         self.assertIsNotNone(lease)
         assert lease is not None
         return lease
+
+    def drain(self, store, count: int, owner: str = OWNER, seconds: int = LEASE) -> list[RefreshLease]:
+        """Claim exactly count leases, each on a job not yet claimed here, then None. Bounded, so a claim that keeps
+        returning a lease fails the test instead of hanging it."""
+        leases: list[RefreshLease] = []
+        for _ in range(count + 1):
+            lease = store.claim_summary_refresh(owner, seconds, self.tick())
+            if lease is None:
+                break
+            self.assertNotIn(lease.job_id, [item.job_id for item in leases], "a job was claimed twice")
+            self.assertGreater(lease.fence, 0)
+            leases.append(lease)
+        else:
+            self.fail(f"more than {count} claims returned a lease")
+        self.assertEqual(len(leases), count)
+        return leases
 
     def positions(self, store, record_type: str = "steps", pv: str = PV) -> tuple[ProcessedPosition, ...]:
         with store.read() as view:
@@ -738,6 +776,21 @@ class R56RegisteringAProcessorGeneration(StoreCase):
             later.append(registered)
         self.assertEqual(jcs({"pulsé": PV, "pulse": PV2}), '{"pulse":"interpret-steps@2","pulsé":"interpret-steps@1"}'.encode())
         self.assertTrue(jcs({"\U0001F600-steps": PV, "ﬁ-steps": PV2}).startswith('{"\U0001F600'.encode()))
+        # Handwritten RFC 8785 vectors: the five short control escapes, other controls as lowercase \u00xx, DEL and
+        # "/" left as they are, and composed and decomposed text kept distinct, decomposed first in UTF-16 order.
+        controls = {"a\b\t\n\f\rz": PV, "ctl\x01\x1b\x1f": PV2, "del\x7f": HPV, "slash/type": WPV}
+        decomposed = {"\u00e9-steps": PV, "e\u0301-steps": PV2}
+        for mapping, canonical in (
+            (controls, rb'{"a\b\t\n\f\rz":"interpret-steps@1","ctl\u0001\u001b\u001f":"interpret-steps@2",'
+                       b'"del\x7f":"interpret-heart-rate@1","slash/type":"interpret-weight@1"}'),
+            (decomposed, b'{"e\xcc\x81-steps":"interpret-steps@2","\xc3\xa9-steps":"interpret-steps@1"}'),
+        ):
+            registered = self.generation(store, mapping)
+            self.assertEqual(jcs(mapping), canonical, mapping)
+            self.assertEqual(registered.manifest_sha256, digest(canonical), mapping)
+            self.assertEqual(registered.manifest, tuple(sorted(mapping.items())), mapping)
+            later.append(registered)
+        self.assertEqual(len(dict(later[-1].manifest)), 2)
         identities = [generation.generation_id] + [item.generation_id for item in later]
         self.assertEqual(identities, sorted(identities))
         self.assertEqual(len(set(identities)), len(identities))
@@ -770,7 +823,10 @@ class R56RegisteringAProcessorGeneration(StoreCase):
             ("timestamp-invalid", ({"weight": WPV}, NAIVE)),
             *[("processor-generation-invalid", (manifest, self.tick())) for manifest in (
                 {}, [("steps", PV)], (("steps", PV),), None, "steps", 5, {"": PV}, {5: PV}, {None: PV},
-                {("steps",): PV}, types.MappingProxyType({}))],
+                {("steps",): PV}, types.MappingProxyType({}),
+                # Not Unicode scalar strings: lone surrogates, which RFC 8785 cannot serialize.
+                {"\udead": PV}, {"abc\ud800": PV}, {"steps": PV, "\ud83d-steps": PV2},
+                {"steps": "interpret-steps@1\udc00"})],
             *[("processor-version-invalid", ({"steps": version}, self.tick())) for version in (
                 "interpret-steps", "Interpret-steps@1", "interpret_steps@1", "interpret-steps@x", "@1", "", 5, None,
                 "interpret-steps@1 ")],
@@ -795,7 +851,20 @@ class R56RegisteringAProcessorGeneration(StoreCase):
         self.assertGreater(len(written), 0)
         # Registration activates nothing: no table of migrations 1-4 changes.
         self.assertEqual(written & earlier, set())
-        registered = {name: after["tables"][name] for name in written}  # type: ignore[index]
+        # The generation's own records: rows registration added that carry its digest or manifest values.
+        # Allocator metadata such as sqlite_sequence may change later and is not a generation record.
+        markers = (generation.manifest_sha256.encode(), bytes.fromhex(generation.manifest_sha256), PV2.encode(),
+                   WPV.encode())
+
+        def own(row) -> bool:
+            text = b"\x00".join(value if isinstance(value, bytes) else str(value).encode() for value in row)
+            return any(marker in text for marker in markers)
+
+        registered = {name: {row for row in set(after["tables"][name]) - set(before["tables"].get(name, []))  # type: ignore[index,union-attr]
+                             if own(row)} for name in written}
+        self.assertTrue(any(generation.manifest_sha256.encode() in b"\x00".join(
+            value if isinstance(value, bytes) else str(value).encode() for value in row)
+            or bytes.fromhex(generation.manifest_sha256) in row for rows in registered.values() for row in rows))
         generations = self.view(store, "processor_generations")
         # Later writes of every kind never change a generation's rows.
         key = self.key()
@@ -806,7 +875,7 @@ class R56RegisteringAProcessorGeneration(StoreCase):
         self.generation(store, {"steps": PV2, "weight": WPV})
         final = contents(self.path)
         for name, rows in registered.items():
-            self.assertLessEqual(set(rows), set(final["tables"][name]), name)  # type: ignore[index]
+            self.assertLessEqual(rows, set(final["tables"][name]), name)  # type: ignore[index]
         self.assertEqual(self.view(store, "processor_generations")[: len(generations)], generations)
 
 
@@ -833,9 +902,7 @@ class R57RequestingASummaryRefresh(StoreCase):
         self.assertEqual(self.request(store, (self.key(0),), SummaryTarget(other.generation_id, 0)), RefreshRequest(1, 0, 0))
         self.assertEqual([job.target for job in self.jobs(store, self.key(0))],
                          [target, SummaryTarget(other.generation_id, 0)])
-        tokens = {}
-        while (lease := store.claim_summary_refresh(OWNER, LEASE, self.tick())) is not None:
-            tokens[(lease.key, lease.target)] = lease.token
+        tokens = {(lease.key, lease.target): lease.token for lease in self.drain(store, 4)}
         self.assertEqual(set(tokens.values()), {1})
         self.assertEqual(len(tokens), 4)
 
@@ -1132,8 +1199,19 @@ class R58ClaimingAndRenewingRefreshLeases(StoreCase):
                 handle = open_store(self.path, reserve_bytes=RESERVE, free_bytes=lambda _path: PLENTY)
                 try:
                     start.wait()
-                    while (lease := handle.claim_summary_refresh(name, 3600, at(206))) is not None:
+                    # Bounded: twelve claims, the final None, and retries of the permitted store-busy.
+                    for _ in range(len(jobs) + 200):
+                        try:
+                            lease = handle.claim_summary_refresh(name, 3600, at(206))
+                        except StoreRetryable as busy:
+                            if busy.failure != "store-busy":
+                                raise
+                            continue
+                        if lease is None:
+                            break
                         claims[name].append(lease.job_id)
+                    else:
+                        raise AssertionError(f"{name} never saw the queue empty")
                 finally:
                     handle.close()
             except BaseException as error:  # noqa: BLE001 - reported below
@@ -1495,25 +1573,36 @@ class R61TheWatermarkMatchesTheStore(StoreCase):
             (b_position, dataclasses.replace(a_earlier, processed_at=a_position.processed_at)),
             (b_position, dataclasses.replace(a_earlier, processed_at=a_earlier.receipt_time)),
             (b_position, dataclasses.replace(a_earlier, receipt_time=a_position.receipt_time)),
+            # The other fold of the repeated hour is another instant, an hour later.
+            (ProcessedPosition(INSTALLATION_B, b_position.sequence, repeated(b_position.receipt_time, 1),
+                               repeated(b_position.processed_at, 1)),),
+            (ProcessedPosition(INSTALLATION_B, b_position.sequence, repeated(b_position.receipt_time, 0),
+                               repeated(b_position.processed_at, 1)),),
         ]
         lease = self.leased(store, key, target)
         for watermark in refused:
             with self.subTest(watermark=watermark):
                 self.assertRefused("summary-watermark-invalid", store.complete_summary_refresh, lease.job_id,
                                    lease.fence, self.entry(store, key, watermark=watermark), self.tick())
+        # Each accepted watermark, and the UTC positions stored for it.
         accepted = [
-            (b_position, a_position),
-            (b_position,),
-            (a_position,),
-            (b_position, a_earlier),
-            (ProcessedPosition(INSTALLATION_B, b_position.sequence, b_position.receipt_time.astimezone(IST),
-                               b_position.processed_at.astimezone(IST)),),
+            ((b_position, a_position), (b_position, a_position)),
+            ((b_position,), (b_position,)),
+            ((a_position,), (a_position,)),
+            ((b_position, a_earlier), (b_position, a_earlier)),
+            ((ProcessedPosition(INSTALLATION_B, b_position.sequence, b_position.receipt_time.astimezone(IST),
+                                b_position.processed_at.astimezone(IST)),), (b_position,)),
+            # The same instants through the repeated hour, which no Python equality matches across zones.
+            ((ProcessedPosition(INSTALLATION_B, b_position.sequence, repeated(b_position.receipt_time, 0),
+                                repeated(b_position.processed_at, 0)),), (b_position,)),
         ]
-        for watermark in accepted:
+        self.assertNotEqual(repeated(b_position.receipt_time, 0), b_position.receipt_time)
+        self.assertEqual(repeated(b_position.receipt_time, 0).astimezone(UTC), b_position.receipt_time)
+        for watermark, expected in accepted:
             with self.subTest(accepted=watermark):
                 stored = store.complete_summary_refresh(lease.job_id, lease.fence,
                                                         self.entry(store, key, watermark=watermark), self.tick()).summary
-                self.assertEqual(stored.watermark, tuple(watermark))  # type: ignore[union-attr]
+                self.assertEqual(stored.watermark, expected)  # type: ignore[union-attr]
                 for position in stored.watermark:  # type: ignore[union-attr]
                     self.assertEqual(position.receipt_time.utcoffset(), timedelta(0))
                     self.assertEqual(position.processed_at.utcoffset(), timedelta(0))
@@ -1590,27 +1679,25 @@ class R62ContributorLinks(StoreCase):
         target = SummaryTarget(generation.generation_id, 0)
         key = self.key()
         valid = tuple(sorted(made[name].outcome_id for name in ("in", "span", "starts", "ends", "instant")))
+        before = contents(self.path)
         stored = self.summarize(store, key, target, self.entry(store, key, contributors=valid))
+        after = contents(self.path)
         self.assertEqual(stored.contributors, valid)
+        # One link row per contributor, whatever its layout: some table added by migration 5 gains exactly one row
+        # per contributor, each carrying that outcome identity and the summary's identity. Its index is a residual.
+        linked = False
+        for table in tables_created_by(5) - tables_created_by(4):
+            rows = set(after["tables"][table]) - set(before["tables"][table])  # type: ignore[index]
+            if len(rows) != len(valid):
+                continue
+            for column in range(len(next(iter(rows)))):
+                values = {row[column] for row in rows}
+                if values == set(valid) and all(stored.summary_id in row[:column] + row[column + 1:] for row in rows):
+                    linked = True
+        self.assertTrue(linked, "no contributor link rows were written")
         missing = self.summarize(store, self.key(30), target, self.entry(store, self.key(30), contributors=(), state="missing"))
         self.assertEqual(missing.contributors, ())
         self.assertEqual([item.contributors for item in self.view(store, "summaries", key)], [valid])
-        # The links are indexed by outcome, so later versions can find every summary a revision fed.
-        connection = sqlite3.connect(self.path)
-        try:
-            new_tables = tables_created_by(5) - tables_created_by(4)
-            leading = set()
-            for table in new_tables:
-                for _seq, index, *_rest in connection.execute(f'PRAGMA index_list("{table}")'):
-                    first = connection.execute(f'PRAGMA index_info("{index}")').fetchone()
-                    if first is not None:
-                        leading.add(first[2])
-                primary = [row for row in connection.execute(f'PRAGMA table_info("{table}")') if row[5] == 1]
-                if primary:
-                    leading.add(primary[0][1])
-        finally:
-            connection.close()
-        self.assertTrue(any("outcome" in name for name in leading), leading)
 
     def test_contributor_checks(self) -> None:
         store, made = self.build()
@@ -2090,7 +2177,7 @@ class R66ProcessedPositions(StoreCase):
         # A later receipt after every settlement: the receipt time.
         completion = self.archive_completion(store)
         expect(completion, self.receipts[(INSTALLATION, completion)])
-        # Only the first settlement counts, not a later outcome for the same selection.
+        # The earliest witness counts, not a later outcome for the same selection.
         self.process(store, first, revision(b"t-1-again", policy=INFERRED))
         expect(completion, self.receipts[(INSTALLATION, completion)])
         # A quarantine's time.
@@ -2138,6 +2225,9 @@ class R66ProcessedPositions(StoreCase):
                         before = previous[item.installation_id]
                         self.assertGreaterEqual(item.sequence, before.sequence, current)
                         if item.sequence == before.sequence:
+                            # processed_at can only fall, and only when a later write supplies an earlier
+                            # timestamp. This test's clock only moves forward, so the position is unchanged.
+                            self.assertLessEqual(item.processed_at, before.processed_at)
                             self.assertEqual(item, before)
                 self.assertLessEqual(set(previous), {item.installation_id for item in current})
             history.append(current)
@@ -2169,6 +2259,122 @@ class R66ProcessedPositions(StoreCase):
         step()
         self.assertEqual([item.sequence for item in history[-1]], [1, self.sequences[INSTALLATION]])
         self.assertGreater(len({item for state in history for item in state}), 3)
+
+    def reopen(self, store):
+        store.close()
+        return self.open()
+
+    def summarize_at(self, store, watermark: tuple[ProcessedPosition, ...]) -> StoredSummary:
+        """Complete a refresh whose watermark is exactly the given positions (R61)."""
+        generation = self.view(store, "processor_generations") or (self.generation(store),)
+        target = SummaryTarget(generation[0].generation_id, 0)
+        stored = self.summarize(store, self.key(), target, self.entry(store, self.key(), watermark=watermark))
+        self.assertEqual(stored.watermark, watermark)
+        return stored
+
+    def test_a_failure_witness_survives_a_retry(self) -> None:
+        store = self.ready()
+        record = self.project(store, "retried")
+        failed = self.fail_processing(store, record)
+        settled = (ProcessedPosition(INSTALLATION, 1, self.receipts[(INSTALLATION, 1)], self.job_closed(store, failed)),)
+        self.assertEqual(self.positions(store), settled)
+        # A manual retry makes a newer job the last one; the earlier failure still witnesses the item.
+        store.enqueue_processing(*record, PV, 3, self.tick())
+        self.assertEqual(self.positions(store), settled)
+        store = self.reopen(store)
+        self.assertEqual(self.positions(store), settled)
+        self.summarize_at(store, settled)
+        # The retry fails again, and a third run succeeds: later witnesses, so the earliest still sets the time.
+        lease = store.claim_processing_job(PROCESSOR, 3600, self.tick())
+        assert lease is not None
+        self.assertEqual(lease.record_id, record[0])
+        store.fail_processing_job(lease.job_id, lease.fence, "deterministic", "synthetic-defect", None, self.tick())
+        self.assertEqual(self.positions(store), settled)
+        self.process(store, record, revision(b"retried"))
+        self.assertEqual(self.positions(store), settled)
+        store = self.reopen(store)
+        self.summarize_at(store, settled)
+
+    def test_retraction_matches_records_as_of_its_indexing(self) -> None:
+        store = self.ready()
+        sequence = self.archive(store, BatchItem(retracted_identity="late-identity"), change=True)
+        indexed = self.tick()
+        store.index_items((RetractionEntry(self.position(sequence)),), indexed)
+        settled = (ProcessedPosition(INSTALLATION, sequence, self.receipts[(INSTALLATION, sequence)], indexed),)
+        self.assertEqual(self.positions(store), settled)
+        # A projection of that identity indexed later is a new obligation at its own position.
+        later = self.observe(store, "late-identity")
+        record_id = self.record_id(store, "late-identity")
+        self.assertEqual(self.positions(store), settled)
+        store = self.reopen(store)
+        self.assertEqual(self.positions(store), settled)
+        self.summarize_at(store, settled)
+        self.process(store, (record_id, self.select(store, record_id)), revision(b"late"))
+        (moved,) = self.positions(store)
+        self.assertEqual(moved.sequence, later)
+        store = self.reopen(store)
+        self.summarize_at(store, (moved,))
+
+    def test_retraction_needs_every_matching_record(self) -> None:
+        store = self.ready()
+        first = self.project(store, "shared", origin=ORIGIN_A)
+        self.process(store, first, revision(b"a"))
+        second = self.project(store, "shared", origin=ORIGIN_B)
+        self.process(store, second, revision(b"b"))
+        self.assertEqual([item.sequence for item in self.positions(store)], [2])
+        sequence = self.archive(store, BatchItem(retracted_identity="shared"), change=True)
+        store.index_items((RetractionEntry(self.position(sequence)),), self.tick())
+        # The retraction matches both records; one reconciled record is not enough.
+        self.select(store, first[0], "retraction")
+        self.assertEqual([item.sequence for item in self.positions(store)], [2])
+        self.select(store, second[0], "retraction")
+        recorded = self.view(store, "source_record", second[0]).selections[-1].recorded_at
+        settled = (ProcessedPosition(INSTALLATION, sequence, self.receipts[(INSTALLATION, sequence)], recorded),)
+        self.assertEqual(self.positions(store), settled)
+        # A record of that identity first observed after the retraction does not reopen it.
+        self.observe(store, "shared", origin="org.example.synthetic.third")
+        self.assertEqual(self.positions(store), settled)
+        self.summarize_at(store, settled)
+
+    def test_settlement_time_is_the_earliest_witness(self) -> None:
+        store = self.ready()
+        record = self.project(store, "ambiguous-clock")
+        self.observe(store, "ambiguous-clock")
+        when = self.tick()
+        store.enqueue_processing(*record, PV, 3, when)
+        lease = store.claim_processing_job(PROCESSOR, 86_400, when)
+        assert lease is not None
+        found = self.view(store, "source_record", record[0])
+        evidence = tuple(item.evidence_id for item in found.evidence if item.kind == "projection")
+        store.close()
+        early, late = at(200), at(300)
+        states, positions = [], []
+        # The same prestate, then a failure at a late time and a covering Source Conflict at an early one, in
+        # either order: every durable row ends identical, so only the earliest witness time can be the answer.
+        for name, order in (("fail-first", "fc"), ("conflict-first", "cf")):
+            path = self.path.with_name(f"{name}.sqlite3")
+            source, copy = sqlite3.connect(self.path), sqlite3.connect(path)
+            try:
+                source.backup(copy)
+            finally:
+                source.close()
+                copy.close()
+            handle = open_store(path, reserve_bytes=RESERVE, free_bytes=lambda _path: PLENTY)
+            try:
+                for step in order:
+                    if step == "f":
+                        handle.fail_processing_job(lease.job_id, lease.fence, "deterministic", "synthetic-defect",
+                                                   None, late)
+                    else:
+                        handle.record_selection(record[0], "conflict", evidence, found.evidence_head, early)
+                with handle.read() as view:
+                    positions.append(view.processed_positions("steps", PV))
+            finally:
+                handle.close()
+            states.append(contents(path))
+        self.assertEqual(states[0], states[1])
+        self.assertEqual(positions[0], positions[1])
+        self.assertEqual(positions[0], (ProcessedPosition(INSTALLATION, 2, self.receipts[(INSTALLATION, 2)], early),))
 
 
 class R67SummaryEvidence(StoreCase):
@@ -2627,9 +2833,14 @@ class R70AtomicDurableAndSerialized(StoreCase):
                                                                at(212), at(211)))
         self.assertEqual(job.state, "queued")
         self.request(store, (queued,), target, when=at(212))
-        while (lease := store.claim_summary_refresh(OWNER, LEASE, at(213))) is not None and lease.key != queued:
+        for _ in range(6):  # at most every key's job, then the re-requested one
+            lease = store.claim_summary_refresh(OWNER, LEASE, at(213))
+            assert lease is not None
+            if lease.key == queued:
+                break
             store.complete_summary_refresh(lease.job_id, lease.fence, self.entry(store, lease.key), at(213))
-        assert lease is not None
+        else:
+            self.fail("the re-requested job was never claimed")
         same = check(faults, lambda: store.complete_summary_refresh(lease.job_id, lease.fence, entry, at(214)))
         self.assertEqual(same, completion)
         self.assertLess(tables_created_by(4), self.fault_tables)
