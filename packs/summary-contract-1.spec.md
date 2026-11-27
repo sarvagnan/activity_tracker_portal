@@ -179,7 +179,7 @@ Proposed tests: `test_manifest_is_canonical_and_sorted_numerically`, `test_manif
 
 ### R11 — Body
 
-- The body is the derive unit's. This unit requires only that it is RFC 8785 canonical bytes of one JSON object, in the number domain of `interpret-source-projection@1` R9 revision bodies. A number token is valid exactly when it denotes a finite binary64 value and is that value's RFC 8785 serialization. So `10000000000000000`, the serialization of `1e16`, is valid, and `9007199254740993` is not, because it is not canonical. Whether a number means an integer or a float is for the derive units to check.
+- The body is the derive unit's. This unit requires only that it is RFC 8785 canonical bytes of one JSON object, in the number domain of `interpret-source-projection@1` R9 revision bodies. A number token is valid exactly when it denotes a finite binary64 value and is that value's RFC 8785 serialization. So `10000000000000000`, the serialization of `1e16`, is valid, and `9007199254740993` is not, because it is not canonical. Whether a number means an integer or a float is for the derive units to check. The approved draft said "with integers within ±(2^53 − 1)"; the Operator replaced that cap with this rule on 2026-11-27, after Gate B (Astra's finding 1).
 - A body is present exactly when the state is `measured` or `partial` (R4).
 
 Proposed tests: `test_body_must_be_a_canonical_object`, `test_body_numbers_are_canonical_binary64`, `test_body_present_only_with_a_value`, and, added after the implementer's review, `test_body_number_vectors_follow_rfc8785` and `test_noncanonical_numbers_are_refused_in_build_and_decode`.
@@ -331,8 +331,9 @@ After Gate A, the executable pack adds:
 - The purity test runs in a subprocess:
   - It first imports the standard modules an implementation commonly needs, then the unit, which may import `operational_store` through `set_source_selection_policy` (Decision 16).
   - At any time, it flags a write open, an open under the host timezone database, and socket, subprocess, SQLite, and file-system change events.
-  - During the operations, it also flags every `open` audit event, by path or by descriptor, with no exemption. That includes an import, which opens its source.
-  - It also flags any directory listing, `stat`, or import event, any environment read, any log record, and anything written to stderr.
+  - It runs every operation twice. The first run is a warm-up, so a lazy standard-library import cannot fail a correct implementation. During it, only standard-library module files may be opened, and only standard-library paths and their parent directories may be inspected by `stat`, `lstat`, `fstat`, or `access`. Anything else is flagged.
+  - During the second run, it flags every `open` audit event, by path or by descriptor, with no exemption, which includes an import that opens its source. It also flags every directory listing and import event, and every `os.stat`, `os.lstat`, `os.fstat`, and `os.access` call. CPython raises no audit event for those four, so the test wraps them directly.
+  - Through both runs, it flags any environment read, any log record, and anything written to stderr. So a value read from a file or the environment once and cached is caught in the warm-up.
   - It replaces the Python-level clock functions with guards.
   - Reads that raise no audit event, such as a C-level clock read, stay a residual.
 - Note for the implementer: the package's existing encoder `_interpret_projection_json.canonical_bytes` has no `null` case, so the module needs a null-aware encoder.
@@ -341,8 +342,14 @@ After Gate A, the executable pack adds:
 - dropping the bare-string check on reported conditions, since each character is refused anyway;
 - a lenient decimal parser in a decoder that rebuilds and compares bytes, since the comparison refuses it anyway.
 
+**Gate B resolutions (round 1).** The approver objected three times, and each is resolved:
+1. **R11 authority.** The Operator chose the canonical binary64 rule on 2026-11-27, and R11 records it.
+2. **`stat` guard.** CPython raises no audit event for `os.stat` or `os.lstat`, so an operation-time `os.stat(__file__)` passed every test. The purity test now wraps `stat`, `lstat`, `fstat`, and `access` directly. A reentrancy flag lets its own path checks call them. Explicit `stat`, `lstat`, `fstat`, `os.path.exists`, a read cached on the first call, and a directory listing each fail the test.
+3. **Lazy standard-library imports.** Even with the extra preloads, an encoder that lazily imported `encodings.unicode_escape` failed purity. The warm-up run now allows standard-library module loading, so lazy imports such as `encodings.unicode_escape` and `email.utils` pass. The second run still allows no import or read at all, so a read of a standard-library source file during an operation still fails.
+The scope-map `pending` rename was made at approval (c436cee), so it is no longer listed as outstanding.
+
 **Implementer review resolutions.** The read-only review found six issues; all are resolved.
-1. **Body number domain (blocking).** My earlier refinement refused integer tokens beyond ±(2^53 − 1). That narrowed the approved R11, and is withdrawn. R11 now states the dependency's domain as a byte rule: a token is valid exactly when it is the RFC 8785 serialization of the finite binary64 value it denotes. Integer-versus-float meaning is left to the derive units. The test that pinned refusing `10**16` is replaced by `test_body_numbers_are_canonical_binary64`, which covers tokens around 2^53, `1e16`, `1e20`, and the fixed/exponent switch at `1e21` and `1e-7`.
+1. **Body number domain (blocking).** The approved R11 said "with integers within ±(2^53 − 1)", and my first pack refused integer tokens beyond that. A summary body is bytes, so this refused `10000000000000000`, which the revision encoder writes for the float `1e16`. At Gate B the approver escalated the choice, and on 2026-11-27 the Operator chose the canonical binary64 rule below. R11 now states the dependency's domain as a byte rule: a token is valid exactly when it is the RFC 8785 serialization of the finite binary64 value it denotes. Integer-versus-float meaning is left to the derive units. The test that pinned refusing `10**16` is replaced by `test_body_numbers_are_canonical_binary64`, which covers tokens around 2^53, `1e16`, `1e20`, and the fixed/exponent switch at `1e21` and `1e-7`.
 2. **Float vectors.** `test_body_number_vectors_follow_rfc8785` pins the 24 finite RFC 8785 Appendix B vectors, from their IEEE 754 bits. They include long significands, the round-to-even example, subnormals, and neighbours of both thresholds. Each vector is checked through build and through direct decode of bytes the suite writes. Other spellings of the same values are refused by both.
 3. **Non-canonical bodies.** `test_noncanonical_numbers_are_refused_in_build_and_decode` puts `-0`, `-0.0`, `1.00`, `1.0e1`, `2E-7` and others at nested object and array paths. Each must fail in build, and in decode with correctly recomputed digests.
 4. **Repeated hour.** `test_watermark_orders_repeated_hour_by_instant` uses a synthetic fold-aware tzinfo that needs no timezone database. It covers both directions, and the same wall time an hour apart.
@@ -379,4 +386,4 @@ Left to other units:
 - computing delivery positions and processing times, storing summaries, the generation and policy-horizon target, publication, and when each publication condition applies: `operational-store@6`, `refresh-summary-state`, and the completion units;
 - whether a Source Conflict keeps the prior published summary (Decision 5): `refresh-summary-state`;
 - range periods and counts: `range-summary-contract`;
-- after approval, documentation changes outside this unit: the scope-map row's `pending` (Decision 3), and glossary entries for `newer-evidence-pending` and `refresh-failed` and for how a summary carries its Processor Generation (Decisions 7 and 10).
+- after approval, documentation changes outside this unit: glossary entries for `newer-evidence-pending` and `refresh-failed` and for how a summary carries its Processor Generation (Decisions 7 and 10).
