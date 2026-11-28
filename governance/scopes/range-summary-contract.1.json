@@ -1,0 +1,93 @@
+{
+  "contract_schema": 1,
+  "scope": "range-summary-contract",
+  "version": "1",
+  "kind": "shared",
+  "purpose": "Define the shared range result that every range composition builds on: the inclusive local-date periods of the 7-, 30-, and 90-date presets, the rolling one-year preset of 365 or 366 dates, calendar years, ISO weeks, calendar months, and custom ranges, all ending no later than a today the caller supplies; validation of the ordered daily Health Summaries given for a period; which dates have a usable value; and separate counts for dates with no summary, for every primary state, evidence condition, and publication condition, with summed coverage and a completeness flag that is never true for an incomplete range, without reading any measure's values, storing anything, or having any persistence effect.",
+  "inputs": [
+    {
+      "name": "today",
+      "mode": "pure",
+      "description": "The local date the caller treats as today. Every period ends on or before it. This unit never reads a clock."
+    },
+    {
+      "name": "period_request",
+      "mode": "pure",
+      "description": "A preset length of 7, 30, or 90 dates; the rolling one-year preset; a calendar year; an ISO year and week; a calendar year and month; or the first and last dates of a custom range."
+    },
+    {
+      "name": "summary_key",
+      "mode": "pure",
+      "description": "The derived measure and record type of the range, a pair from the set-source-selection-policy@1 measure vocabulary that summary-contract@1 re-exports."
+    },
+    {
+      "name": "daily_summaries",
+      "mode": "pure",
+      "description": "The daily Health Summaries of that measure and record type for dates in the period, built or decoded by summary-contract@1, in strictly ascending local-date order, each date at most once, with dates that have no summary left out."
+    },
+    {
+      "name": "publication_conditions",
+      "mode": "pure",
+      "description": "For each given daily summary, the publication conditions from the summary-contract@1 vocabulary that the caller attached when it read the summary."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "range_period",
+      "description": "An inclusive first and last local date and a period kind (last-7-dates, last-30-dates, last-90-dates, last-year, calendar-year, calendar-month, iso-week, or custom) of at most 366 dates, ending no later than today; the last-year preset runs from the day after the same date one year earlier, with 29 February read as 28 February, through today; a calendar period that contains today ends at today."
+    },
+    {
+      "name": "range_summary",
+      "description": "The shared range result: the period and its date count; the dates that have a usable value, which are those whose summary is measured or partial; the dates that have no summary; counts of dates by every primary state, evidence condition, and publication condition, each name present even when its count is 0; coverage summed across the given summaries; the distinct processor and derivation versions seen; and a complete flag that is true only when every date has a measured summary with no publication condition."
+    },
+    {
+      "name": "range_failure",
+      "description": "A named failure raised instead of a period or range result, carrying only its name: no date, value, identity, or bytes."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "range-period-invalid",
+      "outcome": "refusal"
+    },
+    {
+      "name": "range-input-invalid",
+      "outcome": "invariant-refusal"
+    }
+  ],
+  "observable_effects": [],
+  "authority": {
+    "owns": [
+      "the inclusive local-date periods of the presets, including the rolling one-year preset, and of calendar years, ISO weeks, calendar months, and custom ranges, their 366-date limit, and the rule that no period extends past the caller's today",
+      "validation of the daily summaries given for a range: measure, record type, period membership, order, and uniqueness",
+      "the rule that a date has a usable value exactly when its summary is measured or partial",
+      "the distinction between a date with no summary and a summary whose primary state is missing",
+      "the counts of dates by primary state, evidence condition, and publication condition, the summed coverage, and the complete flag",
+      "which failure content is free of dates, values, and identities"
+    ],
+    "does_not_own": [
+      "any measure's range aggregate or extra counts, such as the Steps sum, the Heart Rate sample population, Sleep durations and overlaps, or the Weight point series; the compose units do",
+      "reading or interpreting any daily summary body",
+      "the daily Health Summary, its primary-state rule, coverage, evidence conditions, and the publication-condition vocabulary; summary-contract@1 does",
+      "when a publication condition applies to a summary; operational-store, refresh-summary-state, and the completion units decide",
+      "which time zone or clock decides the local date called today, the default range, or how any period, gap, state, or condition is rendered; the presentation units do",
+      "reading the store, storing range results, or caching them"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "summary-contract",
+      "version": "1"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/range-summary-contract-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_range_summary_contract_1.py"
+    },
+    "runner": "tests/acceptance/run_range_summary_contract_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}

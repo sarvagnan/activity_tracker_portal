@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_range_summary_contract_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"af95ac212615032edba753a932f498725ddb5c5421412a88d6f8fafb42e72a8e","parent":"GENESIS","recorded_at":"2026-11-28T02:53:58+00:00","sequence":1,"unit":{"name":"range-summary-contract","version":"1"}}
