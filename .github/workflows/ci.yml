@@ -58,6 +58,8 @@ jobs:
         run: tests/acceptance/run_set_fallback_timezone_policy_1.sh
       - name: Run summary-contract@1 acceptance
         run: tests/acceptance/run_summary_contract_1.sh
+      - name: Run duplicate-observation-contract@1 acceptance
+        run: tests/acceptance/run_duplicate_observation_contract_1.sh
       - name: Run manage-sender-installation@1 acceptance
         run: tests/acceptance/run_manage_sender_installation_1.sh
       - name: Run accept-ingest-batch@1 acceptance
