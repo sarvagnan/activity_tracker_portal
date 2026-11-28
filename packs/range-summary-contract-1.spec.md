@@ -299,36 +299,86 @@ Proposed tests: `test_failures_carry_only_their_name`, `test_summary_contract_fa
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_range_summary_contract_1.py`: 58 tests, one per proposed name in R1–R15;
+- the suite `tests/acceptance/test_range_summary_contract_1.py`: 58 tests, one per proposed name in R1–R15, grouped by requirement;
 - the runner `tests/acceptance/run_range_summary_contract_1.sh`, which runs only this suite;
 - no fixture files;
 - the Interface stub `src/activity_tracker_portal/range_summary_contract.py`:
-  - the real constants, because they are what the Operator approves, with the four shared vocabularies imported from `summary_contract`;
-  - the real frozen dataclasses `RangePeriod`, `RangeDay`, and `RangeSummary`, and the real `RangeSummaryFailure`;
+  - the real constants, because they are what the Operator approves. `MEASURES`, `PRIMARY_STATES`, `EVIDENCE_CONDITIONS`, and `PUBLICATION_CONDITIONS` are imported from `summary_contract`, so they are the same objects;
+  - the real frozen dataclasses `RangePeriod`, `RangeDay`, and `RangeSummary`, with the Interface's fields in its order, and the real `RangeSummaryFailure`. Like `SummaryContractFailure`, it also keeps its name in a `failure` attribute;
   - the eight operations, each raising `NotImplementedError("range-summary-contract@1")`.
 
 **RED, against the stub.**
 - 7 tests pass, because they read only the contract, the effects declaration, the scope map, the constants, or the dataclass fields: the three R1 tests, the two R3 tests, `test_values_are_frozen`, and `test_range_summary_fields_are_exact`.
-- The other 51 fail, and every failure is the stub's `NotImplementedError`.
-- `tests/unit`, `tests/governance`, and the bound runner of `summary-contract@1` still pass.
+- The other 51 fail, with 389 failing entries, counting subtests: 381 errors and 8 failures. Every failure is the stub's `NotImplementedError`. The 8 failures are the subtests of `test_summary_contract_failures_are_translated`, which catches any exception and finds a `NotImplementedError` where it expects a `RangeSummaryFailure`.
+- `tests/unit` (156 tests), `tests/governance` (73), and the bound runner of `summary-contract@1` (60) still pass.
 
-Before the read-only review, a throwaway reference implementation, kept out of the repository, passes every test. Each of a set of incorrect implementations fails at least one test. They cover at least:
-- a preset of `length ± 1` dates, or one that ends yesterday;
-- a rolling year that starts on the same date one year earlier (366 or 367 dates), that is always 365 dates, or that reads 29 February as 1 March;
-- a current calendar year, month, or week that runs past today, or a leap year of 365 dates;
-- an ISO week that starts on Sunday, or a week 53 accepted in a 52-week ISO year;
+**How the suite checks periods.** The suite has its own calendar model. It counts days from 0001-01-01, a Monday, with integers, and has its own leap-year rule, month lengths, ISO week rule, and builders. It never uses `datetime` arithmetic. Every builder is compared with the model on:
+- the worked examples in R4–R7;
+- every date of 1900, 2026, 2027, 2100, and 2101, and of the three years starting 1903, 1999, 2027, and 2399, for the rolling year;
+- every 29 February, and 28 February and 1 March of every year from 2 to 9999, for the rolling year;
+- every calendar year from 1 to 9999; week 1, the last week, and week 53 of every ISO year from 1 to 9999; every month of 42 boundary years and 200 seeded years;
+- seeded generated dates. The seeds are fixed. The generator picks the edge dates 1 and 2 January, 4 January, 28 and 29 February, 1 March, 28 and 31 December of the boundary years 1–5, 99–101, 399–401, 1599–1601, 1899–1901, 1903–1905, 1999–2001, 2004, 2015, 2020, 2024–2030, 2032, 2099–2101, 2399–2401, 9998, and 9999, and then dates biased towards those years.
+R8's consistency rule is checked in both directions. Periods from each builder are shifted by a day, a week, or a random amount, and `period_dates` must accept exactly the shifted periods the model says some builder could give for some today.
+
+**How the suite checks range results.** Every daily summary is a real Health Summary from `summary_contract.build_summary`, built from synthetic evidence. Each fixture first checks that `summary-contract@1` gave it the state and evidence conditions it asked for. The expected `RangeSummary` is computed from the fixture's own facts, never from the headers, and compared field by field, including value types. Ranges with seeded random states, conditions, publication conditions, and versions cover every period kind, up to 366 dates.
+
+**Refinements the tests pin beyond the approved text.** These are the drafter's choices, for the approver to confirm or escalate. None changes approved semantics, and no test needed a change to them.
+- Argument domains:
+  - *settles*: wherever an `int` is expected, a `bool` is refused: a year, a month, an ISO year, and an ISO week, as well as the preset length the approved text names. A `float` such as `7.0` and a numeric string are refused too.
+  - `today` and a custom range's two dates are refused when they are `datetime`s, strings, ordinals, tuples, or `None` (approved). Subclasses of `date` other than `datetime` are not tested.
+  - *settles*: the last ISO week of the date range is valid. With today 9999-12-31, 9999-W52 is 9999-12-27 to 9999-12-31. Its Sunday would fall after `date.max`, so an implementation must not compute it before cutting the week at today.
+- Result types:
+  - *settles*: `valued_dates`, `absent_dates`, the three count fields, and the two version fields are tuples. Each count is a `(str, int)` tuple, `date_count` is an `int`, `complete` is exactly a `bool`, and `coverage` is a `Coverage` of `int`s.
+  - `period_dates` returns a tuple of `date`s, as the Interface says.
+- What `summarize_range` accepts:
+  - `days` may be any iterable other than a string, including a generator or a set, and is read once.
+  - *settles*: each item must be a `RangeDay`. A `(summary, conditions)` tuple, a bare `HealthSummary`, or `None` is `range-input-invalid`. So is a `days` that is a single `RangeDay`, `None`, a number, or `""`.
+  - *settles*: the range's measure and record type are checked even when `days` is empty.
+  - *settles*: `publication_conditions` may be a list, tuple, set, or frozenset. A bare string, including `""`, `bytes`, `None`, and a non-string name are refused.
+  - Not pinned: whether `bytes` given as `days` is refused.
+- Bytes are never used. *settles*: the test replaces `header_bytes`, `evidence_bytes`, and `body_bytes` with stand-ins that fail on any use, such as comparison, hashing, length, iteration, or truth value, and expects the same result. So an implementation must not compare or hash whole `HealthSummary` values, which would compare their bytes. Bodies that are not JSON, and different bodies under the same states, also give the same result.
+- Failures:
+  - `args` are exactly the name. `__cause__` and `__context__` are `None`, also when the call is made inside a caller's `except` block handling a `ValueError`, a `json.JSONDecodeError` whose document holds input, or a `SummaryContractFailure`.
+  - The failure's `str`, `repr`, attributes, and formatted traceback carry no marker. Every traceback frame from the package directory carries no input in its locals: no marker string, marker integer, marker date, `datetime` on that date, or container or dataclass holding one. That includes a `RangeDay` or `HealthSummary` built with a marker. The traceback from the first such frame, formatted with `TracebackException(capture_locals=True)`, carries none either. Unlike `summary-contract@1`'s unbound regression, the suite does not pin how many of the unit's frames remain.
+  - `summarize_range` raises `range-period-invalid` for an invalid period with otherwise valid arguments, and `range-input-invalid` for anything else. Not pinned: which failure wins when one call breaks both.
+  - A `SummaryContractFailure` becomes `range-input-invalid`. Invalid publication conditions never raise `SummaryContractFailure`. The suite also replaces the `summary_contract` operations, and any copies of them in this module, with functions that raise `SummaryContractFailure`. The call must then either give the expected result or raise `range-input-invalid`.
+  - Not pinned: missing or extra arguments may raise Python's own `TypeError`.
+- R14: no public name defined in the module, as opposed to imported into it, contains `encode`, `decode`, `bytes`, `digest`, `sha256`, or `watermark`, or ends in `primary_state`.
+- The purity test reuses `summary-contract@1`'s design as it stood after Gate B round 3:
+  - It runs in a subprocess with an audit hook. It first imports the standard modules an implementation commonly needs and the published `summary_contract`, then the unit.
+  - At any time, it flags a write open, an open under the host timezone database, and socket, subprocess, SQLite, and file-system change events. The only write allowed is the import system writing a `.pyc` bytecode cache.
+  - The daily summaries are built before the guarded phase. The operations then run twice, both runs are checked, and their results must be equal.
+  - An `open` (by path or by descriptor), a directory listing, or an `os.stat`, `os.lstat`, `os.fstat`, or `os.access` call is allowed only while the import system's `_find_and_load` or `_load` in `<frozen importlib._bootstrap>` is on the stack. CPython raises no audit event for the four metadata calls, so the test wraps them directly, with a reentrancy flag for its own path checks.
+  - It flags any environment read outside module loading, any log record, and anything written to stderr. It replaces the Python-level clock functions with guards.
+  - Reads that raise no audit event, such as `date.today()`, and reads a module makes in its own top-level code while being imported, stay residuals.
+- The determinism test runs the same scenario in three processes with different `TZ`, locale, and `PYTHONHASHSEED` settings.
+- Timing: no test asserts a duration. Each subprocess has a 300 s limit, far above the reference's run of under 1 s. The whole suite runs in about 2 s on the reference.
+
+**Passability.** A throwaway reference implementation, kept outside the repository, passes all 58 tests. Of 74 incorrect implementations, all 74 fail at least one test. Two earlier mutants turned out equivalent to the reference and were replaced with ones that really break the rule:
+- one accepted `7.0` as a length, but `date.fromordinal` then refused it anyway;
+- one changed a boundary's default failure name, but no exception could reach that default.
+
+The 74 cover at least:
+- a preset of `length ± 1` dates, or one that ends yesterday, and a `7.0` length accepted;
+- a rolling year that starts on the same date one year earlier (366 or 367 dates), is always 365 dates, reads 29 February as 1 March, or starts a day early when today is 28 or 29 February;
+- a current calendar year, month, or week that runs past today, a leap year of 365 dates, and a future year accepted;
+- an ISO week that starts on Sunday, a week 53 accepted in a 52-week ISO year, week 1 counted from the Monday before 1 January, and a Sunday computed past `date.max`;
 - February with 28 dates in a leap year;
 - a custom range that is reversed, ends after today, or has 367 dates, accepted;
-- a period whose dates disagree with its kind, accepted;
+- `bool`, `datetime`, and `float` arguments accepted;
+- a period whose dates disagree with its kind, accepted, for each kind, and an unknown kind accepted;
+- an invalid period in `summarize_range` reported as `range-input-invalid`, and a builder raising `range-input-invalid`;
 - absent dates counted as `missing`, or `missing` summaries counted as absent;
-- `partial` dates left out of `valued_dates`, or `failed` dates put in;
-- out-of-order, repeated, out-of-period, or other-measure days accepted;
-- a condition name left out when its count is 0;
-- coverage not summed;
-- `complete` true with an absent date, a `partial` date, or a publication condition;
-- mixed versions refused, or not reported;
-- a `SummaryContractFailure` passed through, or a failure that carries a date;
-- a result that changes when a body's bytes change.
+- `partial` dates left out of `valued_dates`, `failed` dates put in, or dates with a publication condition left out;
+- out-of-order, repeated, out-of-period, other-measure, and other-record-type days accepted, a summary of another `summary-contract` version accepted, and a tuple accepted as a `RangeDay`;
+- an unlisted measure pair accepted, a bare string accepted as `days` or as publication conditions, and repeated publication conditions counted twice;
+- a condition name left out when its count is 0, and evidence conditions counted from one date only;
+- coverage not summed, or counted by date;
+- `complete` true with an absent date, a `partial` date, or a publication condition, false because of an evidence condition, or an `int`;
+- mixed versions refused, not reported, or not sorted;
+- a body read to decide a value, and summary bytes checked;
+- a `SummaryContractFailure` passed through, a failure that carries a date, a failure with a `__cause__` or a caller's `__context__`, and inputs left in the boundary's or a builder's frame locals;
+- an environment read, a clock read, a `stat` of a file, and `days` read twice.
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration is empty as the contract says, and that the residuals below are complete.
 
