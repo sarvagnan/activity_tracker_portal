@@ -1,0 +1,1 @@
+{"command_line":"tests/acceptance/run_duplicate_observation_contract_1.sh","evidence_format":2,"kind":"red","outcome":"tests-failed","pack_digest":"43671fee7afa675fe9dcedee01b54b4e36e7d1654060211e80ee4de8c3781264","parent":"GENESIS","recorded_at":"2026-11-28T02:47:34+00:00","sequence":1,"unit":{"name":"duplicate-observation-contract","version":"1"}}
