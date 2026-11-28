@@ -625,17 +625,27 @@ def metadata(original, name):
     return guard
 for name in ("stat", "lstat", "fstat", "access"):
     setattr(os, name, metadata(getattr(os, name), "os." + name))
-def forbidden(*args, **kwargs):
-    raise AssertionError("clock read")
-def explicit(original, index):
+# Each clock guard records the read before it raises, so a failure boundary that turns every exception into the
+# named refusal cannot hide a clock read on a refusal path.
+clocks = []
+def forbidden(name):
+    def guard(*args, **kwargs):
+        if phase[0] != "done":
+            clocks.append(name)
+        raise AssertionError("clock read")
+    return guard
+def explicit(original, index, name):
     def guard(*args):
         if len(args) <= index or args[index] is None:
+            if phase[0] != "done":
+                clocks.append(name)
             raise AssertionError("clock read")
         return original(*args)
     return guard
+environment_reads = []
 class Environ(collections.abc.MutableMapping):
     def __init__(self, inner):
-        self.inner, self.reads = inner, []
+        self.inner, self.reads = inner, environment_reads
     def note(self, key):
         # A module's own top-level code may read the environment while it is being imported.
         if not loading():
@@ -663,26 +673,33 @@ for name in ("time", "time_ns", "monotonic", "monotonic_ns", "perf_counter", "pe
              "process_time_ns", "thread_time", "thread_time_ns", "clock_gettime", "clock_gettime_ns",
              "localtime", "ctime", "mktime"):
     if hasattr(time, name):
-        setattr(time, name, forbidden)
-time.gmtime = explicit(time.gmtime, 0)
-time.asctime = explicit(time.asctime, 0)
-time.strftime = explicit(time.strftime, 1)
+        setattr(time, name, forbidden("time." + name))
+time.gmtime = explicit(time.gmtime, 0, "time.gmtime")
+time.asctime = explicit(time.asctime, 0, "time.asctime")
+time.strftime = explicit(time.strftime, 1, "time.strftime")
 import activity_tracker_portal.duplicate_observation_contract as module
 import test_duplicate_observation_contract_1 as t
+# Both the text mapping and, where the platform has one, the bytes mapping are guarded, so os.getenv and
+# os.getenvb are covered too.
 original = os.environ
-recorder = Environ(original)
-os.environ = recorder
+os.environ = Environ(original)
+original_bytes = os.environb if os.supports_bytes_environ else None
+if original_bytes is not None:
+    os.environb = Environ(original_bytes)
 phase[0] = "calls"
 first = t.scenario_text()
 second = t.scenario_text()
 phase[0] = "done"
 os.environ = original
-print(json.dumps({"events": events, "environment": recorder.reads, "logs": records, "same": first == second}))
+if original_bytes is not None:
+    os.environb = original_bytes
+print(json.dumps({"events": events, "clock": clocks, "environment": environment_reads, "logs": records,
+                  "same": first == second}))
 """
         stdout, stderr = run_python(code, {"TZ": "Europe/London"})
         self.assertEqual(stderr, "")
         self.assertEqual(len(stdout.strip().splitlines()), 1, stdout)
-        self.assertEqual(json.loads(stdout), {"events": [], "environment": [], "logs": [], "same": True})
+        self.assertEqual(json.loads(stdout), {"events": [], "clock": [], "environment": [], "logs": [], "same": True})
 
     def test_input_is_not_mutated(self) -> None:
         for seed, kind in ((3, "float"), (4, "int")):

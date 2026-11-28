@@ -295,21 +295,23 @@ After Gate A, the executable pack adds:
   - the reference implementation took 1.4 to 1.9 s on the drafting machine (Apple M2), so the limit is about 16 times its slowest run;
   - "sorts once and is otherwise linear" is not checked directly. A quadratic grouping fails the limit.
 - **Scope map:** the R1 test requires the row to name a "Duplicate Group" and an "unresolved tie", and to say the group may come "from any origins" (Decision 4). It bans no other wording.
-- **The purity test** is summary-contract@1's, unchanged in its rules:
+- **The purity test** is summary-contract@1's, with the two additions marked below:
   - it runs in a subprocess with an audit hook;
   - `os.stat`, `os.lstat`, `os.fstat`, and `os.access` are wrapped directly, with a reentrancy flag;
   - file-system activity and environment reads are allowed only while `_find_and_load` or `_load` in `<frozen importlib._bootstrap>` is on the stack;
   - the only write allowed is a `.pyc` written by the loader;
-  - the Python-level clock functions are replaced with guards;
+  - the Python-level clock functions are replaced with guards. Each guard records the read before it raises, and the test requires the record to be empty, so a failure boundary that turns the guard's exception into the named refusal cannot hide a clock read (added);
+  - any environment read outside module loading is flagged, through `os.environ` and, where `os.supports_bytes_environ` is true, `os.environb`, so `os.getenv` and `os.getenvb` are both covered. Both mappings are restored afterwards (added);
   - any log record or stderr output is flagged.
 
-  It preloads `summary_contract`, which R10 uses, and `random`, `signal`, `subprocess`, and `statistics`. It runs every scenario twice, including failing calls, checks both runs, and checks that their results are equal.
+  It preloads `summary_contract`, which R10 uses, and `random`, `signal`, `subprocess`, and `statistics`. It runs every scenario twice, including seven invalid calls that take the refusal path, checks both runs, and checks that their results are equal.
 
-**Passability.** A throwaway reference implementation, kept outside the repository, passes all 44 tests. Each of 73 incorrect implementations fails at least one test. Two more pass:
+**Passability.** A throwaway reference implementation, kept outside the repository, passes all 44 tests. Each of 77 incorrect implementations fails at least one test. Three more pass:
 - one lazily imports `email.utils` and `xml.dom.minidom` during a call, as a correct implementation may;
+- one turns every exception into the named refusal, which a correct implementation may also do;
 - one keeps the input in an `itertools.chain` in the raising frame. The walker cannot open it, so this is a residual.
 
-The 73 are:
+The 77 are:
 - **Comparison:**
   - instants sorted as text, truncated to milliseconds, or compared as floats;
   - values compared with a relative or absolute tolerance, or as floats;
@@ -343,13 +345,24 @@ The 73 are:
   - raising from a deeper frame that holds the input;
   - keeping the input, in the raising frame, inside a tuple iterator, a lambda default, a closure cell, a keyword default, a generator, a coroutine, a `functools.partial`, a built-in bound method, a method wrapper, a Python bound method, a slotted object, a `SimpleNamespace`, a `map`, a `zip`, a dict view, an exception's arguments, weak references, or the caught inner exception;
   - a `repr` that shows a tie value, origins, or an instant.
-- **Purity:** reading the clock, reading the environment, calling `os.stat` on the module's own file, caching a file read on the first call, logging, and writing to stderr.
+- **Purity:** reading the clock, reading the clock only on a refusal path (with and without a boundary that turns every exception into the refusal), reading the environment, reading `os.environb`, calling `os.getenvb`, calling `os.stat` on the module's own file, caching a file read on the first call, logging, and writing to stderr.
 
 **Implementer review resolutions.** Sol's read-only review of the pack at 35813ff found no test that a correct implementation could not pass. It made two should-fix findings and two notes, and each is resolved:
 1. **Traceback locals (should-fix).** The walker looked only into containers and dataclasses. An implementation that kept the input in `iter((observations,))` or in a lambda default passed every test. The walker now opens the holders listed under "Failures" above. Both of Sol's mutants fail, as do 16 more, one for each kind of holder. Holders it cannot open are named and listed as a residual.
 2. **Non-empty dicts (should-fix).** Only `{}` was tested, so reading a dict's values instead of its keys passed. The suite now resolves dicts keyed by observations, and refuses `{123: observation}`, `{"metadata": observation}`, and a dict with one non-observation key. Sol's mutant fails.
 3. **Scope-map wording (note).** The R1 test banned the text "cross-origin" anywhere in the row, which would refuse a true edit such as "from any origins, including cross-origin". It now requires "from any origins" instead.
 4. **R11 timing (note).** No change. Sol's own implementation took 1.2 s, and the limit stays 30 s.
+
+**Pre-freeze hardening.** After Gate B, Sol's review of the sibling range-summary-contract pack found two gaps in the same purity test, and both applied here:
+1. **Clock reads on refusal paths.** The clock guards raised without recording anything. An implementation that read `time.time()` only before refusing, behind a boundary that turns every exception into the named refusal, passed every test. The guards now record each read, and the test requires the record to be empty.
+2. **`os.environb`.** Only `os.environ` was guarded, so `os.environb.get(b"HOME")` and `os.getenvb` passed. Both mappings are now guarded and restored.
+
+Each of these mutants passed the suite approved at Gate B, at 1d2fa55, and now fails:
+- the broad-boundary clock read;
+- `os.environb.get(b"HOME")` in `resolve`;
+- `os.getenvb`.
+
+Nothing else in the suite changed.
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration is empty as the contract says, and that the residuals below are complete.
 
