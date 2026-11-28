@@ -247,15 +247,87 @@ After Gate A, the executable pack adds:
 - no fixture files;
 - the Interface stub `src/activity_tracker_portal/duplicate_observation_contract.py`:
   - the real constants;
-  - the real frozen dataclasses `Observation`, `ObservationRef`, `Contribution`, `TieClass`, `UnresolvedTie`, and `Resolution`, with the R12 representations, and the real `DuplicateObservationFailure`;
+  - the real frozen dataclasses `Observation`, `ObservationRef`, `Contribution`, `TieClass`, `UnresolvedTie`, and `Resolution`, with the R12 representations: `Observation`'s kind, origin, instant, and value, `Contribution`'s instant, value, and origins, `TieClass`'s value, and `UnresolvedTie`'s instant have `repr=False`;
+  - the properties `Contribution.record_ids` and `is_group`, `UnresolvedTie.record_ids`, and `Resolution.groups`, computed from the fields;
+  - the real `DuplicateObservationFailure`, which also keeps its name as `failure`, as `SummaryContractFailure` does;
   - `resolve`, raising `NotImplementedError("duplicate-observation-contract@1")`.
 
 **RED, against the stub.**
 - 6 tests pass, because they read only the contract, the effects declaration, the scope map, and the constants, or build the dataclasses directly: the three R1 tests, `test_constants_are_exact`, `test_values_are_frozen`, and `test_reprs_carry_no_instants_values_or_origins`.
-- The other 38 fail. Every failure is the stub's `NotImplementedError`.
+- The other 38 fail, with 262 failing entries, counting subtests. Every failure is the stub's `NotImplementedError`.
 - `tests/unit`, `tests/governance`, and the bound runner of `summary-contract@1` still pass.
 
-**Purity test.** As in summary-contract@1 R2: a subprocess with audit hooks and wrapped `stat` calls, file-system activity allowed only while the import system is importing, clock guards, and no environment read, log record, or stderr write.
+**How the suite checks results.** Most tests compare the whole result with a model of R5–R8 written in the suite. The model groups by instant, splits by value with a `dict`, and writes everything as plain tuples, including each value's type and `repr`. So `0.0` and `-0.0`, and `1` and `1.0`, differ. The comparison reads every field and property. The model also runs on 60 seeded generated sets, of up to 1,500 observations, with many shared and adjacent instants, and on R11's 300,000 observations.
+
+**Refinements the tests pin beyond the approved text.** These are the drafter's choices, for the approver to confirm or escalate. No test needed a change to approved semantics.
+- **Zero** (*settles*): any contribution or tie class whose value is a float zero has the value `0.0`, including a single `-0.0` observation and a group of only `-0.0`. The text said this only of a group. So the value never depends on which member is read first, and it matches the RFC 8785 bytes.
+- **Types** (*settles*): every sequence field and property is a `tuple`. Members are `ObservationRef`. Origin pairs are 2-tuples of `str`. `is_group` is a `bool`.
+- **Origin order** (*settles*): origin pairs sort by kind, then origin, in code-point order.
+- **`bool`** (*settles*): `True` and `False` are refused in `record_id`, `index`, and `instant_ns`, as well as in `value`.
+- **Argument** (*settles*): an argument that is not an iterable of `Observation` is `duplicate-observation-input-invalid`. That includes `None`, an `int`, and a bare `Observation`. Any iterable is accepted, including a one-shot iterator, a generator, a `frozenset`, and a `dict`.
+- **Domains, as the text gives them:**
+  - any `int` instant is accepted, including negative ones and ones beyond 64 bits;
+  - any `int` value is accepted, including negative values and zero;
+  - any finite `float` value is accepted, including subnormals and the largest finite value;
+  - origins and kinds may hold any non-empty text, including non-ASCII.
+- **Validation:** a bad observation is refused wherever it is, including last in 2,000. Not pinned: subclasses of `Observation`, `int`, `float`, or `str`; an iterable that raises while it is read; a call with no argument.
+- **Failures** (*settles*): R12 says "no `__cause__`". The suite also requires `__context__` to be `None`, as summary-contract@1's implementation review required. It checks 15 kinds of malformed input among marker observations, with markers in record identities, positions, kinds, origins, instants, and values. Each is checked three ways: in a normal call, while the caller handles a `ValueError`, and while it handles a `JSONDecodeError`. Each frame in the failure's `__traceback__` after the caller's own frames is checked, not only this module's:
+  - no local is, or contains, an input object;
+  - `TracebackException(capture_locals=True)` output from those frames carries no marker.
+- **Representations:** the suite checks only that no instant, value, kind, or origin appears. It treats the source-system kind like the origin (*settles*). The stub's `Resolution` repr also shows its three constant strings.
+- **Order of results:** contributions and ties are ordered by instant as numbers. Members are ordered by record and position as numbers, and tie classes by value as numbers. The tests use orders where text and number disagree.
+- **R10:** for Weight-shaped input, `duplicate-grouped` is reported when a group spans two or more records, and `equal-time-conflict` when any tie exists. The body is a synthetic `{"points":N}`. The test also shows Decision 4's consequence: a group inside one record, reported as `duplicate-grouped`, is refused by `summary_contract.build_summary` as `summary-state-inconsistent`.
+- **R11:**
+  - the input is 600 records of 500 samples, with about 155,000 distinct instants, about 20,000 groups, and about 69,000 ties;
+  - the limit is 30 s of wall time for one call, in the test process;
+  - where the platform has `SIGALRM`, a timer stops a call that runs past the limit;
+  - the reference implementation took 1.4 to 1.9 s on the drafting machine (Apple M2), so the limit is about 16 times its slowest run;
+  - "sorts once and is otherwise linear" is not checked directly. A quadratic grouping fails the limit.
+- **Scope map:** the R1 test requires the row to name a "Duplicate Group" and an "unresolved tie", and not to say "cross-origin" (Decision 4).
+- **The purity test** is summary-contract@1's, unchanged in its rules:
+  - it runs in a subprocess with an audit hook;
+  - `os.stat`, `os.lstat`, `os.fstat`, and `os.access` are wrapped directly, with a reentrancy flag;
+  - file-system activity and environment reads are allowed only while `_find_and_load` or `_load` in `<frozen importlib._bootstrap>` is on the stack;
+  - the only write allowed is a `.pyc` written by the loader;
+  - the Python-level clock functions are replaced with guards;
+  - any log record or stderr output is flagged.
+
+  It preloads `summary_contract`, which R10 uses, and `random`, `signal`, `subprocess`, and `statistics`. It runs every scenario twice, including failing calls, checks both runs, and checks that their results are equal.
+
+**Passability.** A throwaway reference implementation, kept outside the repository, passes all 44 tests. Each of 54 incorrect implementations fails at least one test. A 55th, which lazily imports `email.utils` and `xml.dom.minidom` during a call, passes, as a correct implementation may. The 54 are:
+- **Comparison:**
+  - instants sorted as text, truncated to milliseconds, or compared as floats;
+  - values compared with a relative or absolute tolerance, or as floats;
+  - `-0.0` not equal to `0.0`;
+  - a single `-0.0`, or a tie class's `-0.0`, kept negative.
+- **Grouping:**
+  - same-origin duplicates each contributing;
+  - the majority value winning a tie;
+  - each distinct value contributing once;
+  - a representative member, a representative's origin, or a representative's spelling of the value;
+  - a duplicate observation dropped silently.
+- **Order:**
+  - members unsorted, or sorted as text;
+  - tie classes sorted as text;
+  - record facts unsorted;
+  - origins unsorted, or not distinct;
+  - a value that depends on input order.
+- **Types and facts:**
+  - origin pairs as lists, or members as a list;
+  - singles counted as grouped;
+  - tied records taken from one class only.
+- **Validation:** accepting a `bool` value, a `bool` index, `nan`, an empty origin, record 0, a `float` instant, mixed `int` and `float` values, a repeated `ObservationRef`, or a record with two origins. Also: checking only the first element, and a native `TypeError` for a non-iterable argument.
+- **State and input:**
+  - mutating the input list;
+  - a result cache shared between calls;
+  - quadratic grouping.
+- **Failures and reprs:**
+  - raising `from None`, which leaves `__context__` set;
+  - keeping a caller's exception as context;
+  - keeping the input in the raising frame's locals;
+  - raising from a deeper frame that holds the input;
+  - a `repr` that shows a tie value, origins, or an instant.
+- **Purity:** reading the clock, reading the environment, calling `os.stat` on the module's own file, caching a file read on the first call, logging, and writing to stderr.
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration is empty as the contract says, and that the residuals below are complete.
 
