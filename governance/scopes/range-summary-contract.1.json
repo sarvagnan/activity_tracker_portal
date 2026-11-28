@@ -3,7 +3,7 @@
   "scope": "range-summary-contract",
   "version": "1",
   "kind": "shared",
-  "purpose": "Define the shared range result that every range composition builds on: the inclusive local-date periods of the 7-, 30-, and 90-date presets, calendar years, ISO weeks, calendar months, and custom ranges, all ending no later than a today the caller supplies; validation of the ordered daily Health Summaries given for a period; which dates have a usable value; and separate counts for dates with no summary, for every primary state, evidence condition, and publication condition, with summed coverage and a completeness flag that is never true for an incomplete range, without reading any measure's values, storing anything, or having any persistence effect.",
+  "purpose": "Define the shared range result that every range composition builds on: the inclusive local-date periods of the 7-, 30-, and 90-date presets, the rolling one-year preset of 365 or 366 dates, calendar years, ISO weeks, calendar months, and custom ranges, all ending no later than a today the caller supplies; validation of the ordered daily Health Summaries given for a period; which dates have a usable value; and separate counts for dates with no summary, for every primary state, evidence condition, and publication condition, with summed coverage and a completeness flag that is never true for an incomplete range, without reading any measure's values, storing anything, or having any persistence effect.",
   "inputs": [
     {
       "name": "today",
@@ -13,7 +13,7 @@
     {
       "name": "period_request",
       "mode": "pure",
-      "description": "A preset length of 7, 30, or 90 dates; a calendar year; an ISO year and week; a calendar year and month; or the first and last dates of a custom range."
+      "description": "A preset length of 7, 30, or 90 dates; the rolling one-year preset; a calendar year; an ISO year and week; a calendar year and month; or the first and last dates of a custom range."
     },
     {
       "name": "summary_key",
@@ -34,7 +34,7 @@
   "outputs": [
     {
       "name": "range_period",
-      "description": "An inclusive first and last local date and a period kind (last-7-dates, last-30-dates, last-90-dates, calendar-year, calendar-month, iso-week, or custom) of at most 366 dates, ending no later than today; a calendar period that contains today ends at today."
+      "description": "An inclusive first and last local date and a period kind (last-7-dates, last-30-dates, last-90-dates, last-year, calendar-year, calendar-month, iso-week, or custom) of at most 366 dates, ending no later than today; the last-year preset runs from the day after the same date one year earlier, with 29 February read as 28 February, through today; a calendar period that contains today ends at today."
     },
     {
       "name": "range_summary",
@@ -58,7 +58,7 @@
   "observable_effects": [],
   "authority": {
     "owns": [
-      "the inclusive local-date periods of the presets, calendar years, ISO weeks, calendar months, and custom ranges, their 366-date limit, and the rule that no period extends past the caller's today",
+      "the inclusive local-date periods of the presets, including the rolling one-year preset, and of calendar years, ISO weeks, calendar months, and custom ranges, their 366-date limit, and the rule that no period extends past the caller's today",
       "validation of the daily summaries given for a range: measure, record type, period membership, order, and uniqueness",
       "the rule that a date has a usable value exactly when its summary is measured or partial",
       "the distinction between a date with no summary and a summary whose primary state is missing",

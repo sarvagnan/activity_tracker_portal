@@ -1,6 +1,6 @@
 # Draft acceptance pack — `range-summary-contract@1`
 
-**Status:** Draft for the Operator's Gate A review. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
+**Status:** Draft approved by the Operator on 2026-11-28, including the 15 decisions below as recommended except Decision 4, where the Operator chose the rolling year; the executable pack adds the refinements its tests pin down. Freeze and later lifecycle state are recorded by Vouch (`python3 vouch.lock status --root .vouch`), not in this file.
 
 **Acceptance owner:** Operator, who approves the draft semantics. **Pack drafter:** Claude. **Implementer after freeze:** GPT 6.1 Sol through a T3 delegated task. **Approver for freeze, implementation review, merge, and publication:** GPT 6 Astra through a T3 delegated task, as a separate agent from the drafter and implementer.
 
@@ -10,8 +10,8 @@ This unit carries the `range-summary-contract` Governed Scope contract, version 
 
 `summary-contract@1` defines one Health Summary per measure, record type, and local date, and leaves ranges to this unit (its Decision 2). Four compose units will turn daily summaries into range results, one per measure. This unit is the part they share, as `summary-contract@1` is for the derive units.
 
-Summary views offer "inclusive 7-, 30-, and 90-local-date windows through today, a calendar-year window preserving leap-day behavior, and inclusive custom date ranges" (ADR 0019). Weekly, monthly, and custom views "compose attributed local-date results at query time", keep "usable measured contributions alongside counts for every non-measured state and evidence condition", and "never claim an incomplete subtotal is complete" (ADR 0023). This unit defines:
-- **periods**: the inclusive first and last local date of each preset, calendar year, calendar month, ISO week, and custom range. No period passes the caller's today;
+Summary views offer "inclusive 7-, 30-, and 90-local-date windows through today, a calendar-year window preserving leap-day behavior, and inclusive custom date ranges" (ADR 0019). At Gate A the Operator read the one-year window as a rolling year through today (Decision 4). Weekly, monthly, and custom views "compose attributed local-date results at query time", keep "usable measured contributions alongside counts for every non-measured state and evidence condition", and "never claim an incomplete subtotal is complete" (ADR 0023). This unit defines:
+- **periods**: the inclusive first and last local date of each preset, including the rolling one-year preset, and of each calendar year, calendar month, ISO week, and custom range. No period passes the caller's today;
 - **input checks**: the daily summaries given for a period belong to it, in order, once each;
 - **usable dates**: which dates have a value a compose unit may use;
 - **the range result**: dates with no summary, counts of dates by every primary state, evidence condition, and publication condition, summed coverage, and one `complete` flag that is never true for an incomplete range.
@@ -28,12 +28,12 @@ It is a pure function over the daily summaries the caller gives it. `operational
 
 ## Interface
 
-The module `activity_tracker_portal.range_summary_contract` provides frozen dataclasses, seven functions, one exception, and constants. It reads no clock, store, file, or network.
+The module `activity_tracker_portal.range_summary_contract` provides frozen dataclasses, eight functions, one exception, and constants. It reads no clock, store, file, or network.
 
 **Constants.**
 - `CONTRACT_VERSION = "range-summary-contract@1"`.
 - `PRESET_LENGTHS = (7, 30, 90)`.
-- `PERIOD_KINDS = ("last-7-dates", "last-30-dates", "last-90-dates", "calendar-year", "calendar-month", "iso-week", "custom")`.
+- `PERIOD_KINDS = ("last-7-dates", "last-30-dates", "last-90-dates", "last-year", "calendar-year", "calendar-month", "iso-week", "custom")`.
 - `MAX_PERIOD_DATES = 366`.
 - `MEASURES`, `PRIMARY_STATES`, `EVIDENCE_CONDITIONS`, and `PUBLICATION_CONDITIONS`: re-exported from `summary_contract`, the very same objects.
 - `FAILURES = ("range-period-invalid", "range-input-invalid")`.
@@ -55,6 +55,7 @@ The module `activity_tracker_portal.range_summary_contract` provides frozen data
 
 **Operations.**
 - `preset_period(length, today) -> RangePeriod`.
+- `last_year_period(today) -> RangePeriod`.
 - `calendar_year_period(year, today) -> RangePeriod`.
 - `calendar_month_period(year, month, today) -> RangePeriod`.
 - `iso_week_period(iso_year, iso_week, today) -> RangePeriod`.
@@ -93,12 +94,22 @@ Proposed tests: `test_constants_are_exact`, `test_shared_vocabularies_are_summar
 - A leap day is an ordinary date. With today 2028-03-01, 7 gives 2028-02-24 to 2028-03-01, which includes 2028-02-29.
 - `range-period-invalid` for any other length (including `True`), a `today` that is not a `date` or is a `datetime`, or a first date before 0001-01-01.
 
-Proposed tests: `test_presets_end_today_with_exact_length`, `test_presets_cross_month_year_and_leap_day`, `test_other_preset_lengths_are_refused`, `test_today_must_be_a_date`.
+`last_year_period(today)` is the one-year preset: the rolling year through `today`, of kind `last-year` (Decision 4).
+- Take the same month and day one year before `today`, reading 29 February as 28 February. The period runs from the day after that date through `today`.
+- It has 365 dates, or 366 when a 29 February falls inside it.
+- A common year: today 2026-11-28 gives 2025-11-29 to 2026-11-28 (365 dates).
+- A period containing 29 February: today 2028-03-01, the day after a leap day, gives 2027-03-02 to 2028-03-01 (366).
+- Today is 29 February: today 2028-02-29 gives 2027-03-01 to 2028-02-29 (366).
+- 28 February in the year after a leap year: today 2029-02-28 gives 2028-02-29 to 2029-02-28 (366).
+- 1 March in the year after a leap year: today 2029-03-01 gives 2028-03-02 to 2029-03-01 (365).
+- `range-period-invalid` for a `today` that is not a `date` or is a `datetime`, or a `today` in year 1, which has no year before it.
+
+Proposed tests: `test_presets_end_today_with_exact_length`, `test_presets_cross_month_year_and_leap_day`, `test_other_preset_lengths_are_refused`, `test_today_must_be_a_date`, `test_last_year_in_a_common_year_has_365_dates`, `test_last_year_containing_29_february_has_366_dates`, `test_last_year_on_29_february_starts_1_march`, `test_last_year_on_1_march_after_a_leap_day`, `test_last_year_on_28_february_after_a_leap_year`.
 
 ### R5 — Calendar years
 
-`calendar_year_period(year, today)` returns 1 January to 31 December of `year` (Decision 4).
-- When `year` is today's year, the period ends at `today`. The Portal's calendar-year preset is `calendar_year_period(today.year, today)`. On 1 January it has one date.
+`calendar_year_period(year, today)` returns 1 January to 31 December of `year`. It is an ordinary builder, like the calendar month and ISO week builders (Decision 5), and not the one-year preset, which is the rolling year of R4 (Decision 4).
+- When `year` is today's year, the period ends at `today`. On 1 January it has one date.
 - A whole leap year has 366 dates, including 29 February. Other years have 365. With today 2026-11-28, 2026 gives 332 dates, 2027 is refused, and 2028 is refused.
 - `range-period-invalid` for a year after today's year, a year outside 1 to 9999, or a non-`int` year.
 
@@ -126,7 +137,7 @@ Proposed tests: `test_custom_range_is_inclusive`, `test_custom_range_may_be_one_
 ### R8 — Periods given back to this unit
 
 - `period_dates(period)` returns every date of the period, ascending. Its length is the `date_count` that `summarize_range` reports.
-- `period_dates` and `summarize_range` refuse, with `range-period-invalid`, a period that no builder could have produced for some today: not a `RangePeriod`, an unknown kind, a first date after the last, more than 366 dates, or dates that disagree with the kind. Examples: a `last-30-dates` period of 29 dates; a `calendar-year` that does not start on 1 January or ends in another year; a `calendar-month` that does not start on the 1st; an `iso-week` that does not start on a Monday or has more than 7 dates.
+- `period_dates` and `summarize_range` refuse, with `range-period-invalid`, a period that no builder could have produced for some today: not a `RangePeriod`, an unknown kind, a first date after the last, more than 366 dates, or dates that disagree with the kind. Examples: a `last-30-dates` period of 29 dates; a `last-year` period that does not start on the day after its last date's month and day one year earlier, with 29 February read as 28 February; a `calendar-year` that does not start on 1 January or ends in another year; a `calendar-month` that does not start on the 1st; an `iso-week` that does not start on a Monday or has more than 7 dates.
 
 Proposed tests: `test_period_dates_are_inclusive_and_ascending`, `test_inconsistent_period_is_refused`.
 
@@ -209,19 +220,20 @@ Proposed tests: `test_failures_carry_only_their_name`, `test_summary_contract_fa
    - Alternative: default to `date.today()`. That uses the server's zone, which ADR 0025 rules out for calendar attribution.
    - Consequence: evidence attributed to a local date after the caller's today, for example from a source with an eastern experienced offset, is in no range until that date arrives.
 
-4. **What "one year" means.** The scope-map row says "one year follows calendar-year and leap-day behavior". ADR 0019 says "a calendar-year window preserving leap-day behavior". These can be read three ways.
-   - **Recommended: a calendar year.** `calendar_year_period(year, today)` is 1 January to 31 December. The current year ends at today, and a future year is refused. The Portal's preset is the current year to date. A whole leap year has 366 dates and includes 29 February, which needs no special rule. Reason: ADR 0019 and the scope map's Operator surfaces both say "calendar-year", and ADR 0023 uses "calendar boundaries" for months in the same sense.
-   - Alternative: only the current calendar year to date, with no past years. A past year can still be asked for as a custom range of 365 or 366 dates.
-   - Alternative: a rolling year through today, like the other presets. It runs from the day after the same date one year earlier, through today: 365 dates, or 366 when it contains a 29 February. When today is 29 February, "one year earlier" is read as 28 February. Examples: today 2028-02-29 gives 2027-03-01 to 2028-02-29 (366 dates); 2029-02-28 gives 2028-02-29 to 2029-02-28 (366); 2029-03-01 gives 2028-03-02 to 2029-03-01 (365).
-   - Alternative: always the last 365 dates. Simplest, but ignores leap days, which ADR 0019 says to preserve.
-   - Consequence of the recommendation: on 1 January the preset has one date. After approval, the drafter rewords the scope-map row's "one year" as "calendar year".
+4. **What "one year" means.** The scope-map row said "one year follows calendar-year and leap-day behavior". ADR 0019 says "a calendar-year window preserving leap-day behavior". These can be read in more than one way.
+   - **Operator's choice, 2026-11-28: a rolling year through today**, like the other presets. `last_year_period(today)` runs from the day after the same date one year earlier, through today: 365 dates, or 366 when a 29 February falls inside it. When today is 29 February, "one year earlier" is read as 28 February. Examples: today 2028-02-29 gives 2027-03-01 to 2028-02-29 (366 dates); 2029-02-28 gives 2028-02-29 to 2029-02-28 (366); 2029-03-01 gives 2028-03-02 to 2029-03-01 (365). R4 defines it.
+   - Consequence: `calendar_year_period` stays, as an ordinary builder beside the month and week builders (Decision 5), but it is not the one-year preset. The scope-map row and the Operator surfaces paragraph now say "rolling" year. ADR 0019 still says "a calendar-year window"; it is not edited here (Residuals).
+   - The alternatives the Operator considered, kept as history:
+     - The drafter's recommendation: a calendar year, 1 January to 31 December, with the current year ending at today, so the Portal's preset would be the current year to date. Reason given: ADR 0019 and the scope map's Operator surfaces both said "calendar-year", and ADR 0023 uses "calendar boundaries" for months in the same sense.
+     - Only the current calendar year to date, with no past years.
+     - Always the last 365 dates. Simplest, but ignores leap days, which ADR 0019 says to preserve.
 
 5. **ISO weeks and calendar months.**
    - **Recommended:** include builders for both. ADR 0023 says weekly, monthly, and custom views compose at query time, with ISO Monday-to-Sunday weeks and calendar months. Two small builders fix those boundaries in one place, with the same end-at-today rule as calendar years. No v1 view has to offer them.
    - Alternative: leave them out until a presentation unit offers weekly or monthly views, and add them in a later version. This unit is smaller, but ADR 0023's boundaries stay unpinned until then.
 
 6. **Custom ranges.**
-   - **Recommended:** the first date is at or before the last, the last is at or before today, and the range has at most 366 dates, the size of the largest calendar year. Any calendar year fits. Anything else is refused with `range-period-invalid`, which the Portal can show. The limit keeps one range to at most 366 daily summaries per measure.
+   - **Recommended:** the first date is at or before the last, the last is at or before today, and the range has at most 366 dates, the size of the largest calendar year and of the largest rolling year. Any calendar year fits. Anything else is refused with `range-period-invalid`, which the Portal can show. The limit keeps one range to at most 366 daily summaries per measure.
    - Alternative: no limit. The function stays pure, but the reads and pages that feed it become unbounded.
    - Alternative: a larger limit, such as 3,660 dates (ten years). A later version can raise the limit without breaking anything.
    - Alternative: cut a range that ends after today back to today, instead of refusing it. That hides the Operator's mistake.
@@ -287,21 +299,22 @@ Proposed tests: `test_failures_carry_only_their_name`, `test_summary_contract_fa
 ## Freeze prerequisites
 
 After Gate A, the executable pack adds:
-- the suite `tests/acceptance/test_range_summary_contract_1.py`: 53 tests, one per proposed name in R1–R15;
+- the suite `tests/acceptance/test_range_summary_contract_1.py`: 58 tests, one per proposed name in R1–R15;
 - the runner `tests/acceptance/run_range_summary_contract_1.sh`, which runs only this suite;
 - no fixture files;
 - the Interface stub `src/activity_tracker_portal/range_summary_contract.py`:
   - the real constants, because they are what the Operator approves, with the four shared vocabularies imported from `summary_contract`;
   - the real frozen dataclasses `RangePeriod`, `RangeDay`, and `RangeSummary`, and the real `RangeSummaryFailure`;
-  - the seven operations, each raising `NotImplementedError("range-summary-contract@1")`.
+  - the eight operations, each raising `NotImplementedError("range-summary-contract@1")`.
 
 **RED, against the stub.**
 - 7 tests pass, because they read only the contract, the effects declaration, the scope map, the constants, or the dataclass fields: the three R1 tests, the two R3 tests, `test_values_are_frozen`, and `test_range_summary_fields_are_exact`.
-- The other 46 fail, and every failure is the stub's `NotImplementedError`.
+- The other 51 fail, and every failure is the stub's `NotImplementedError`.
 - `tests/unit`, `tests/governance`, and the bound runner of `summary-contract@1` still pass.
 
 Before the read-only review, a throwaway reference implementation, kept out of the repository, passes every test. Each of a set of incorrect implementations fails at least one test. They cover at least:
 - a preset of `length ± 1` dates, or one that ends yesterday;
+- a rolling year that starts on the same date one year earlier (366 or 367 dates), that is always 365 dates, or that reads 29 February as 1 March;
 - a current calendar year, month, or week that runs past today, or a leap year of 365 dates;
 - an ISO week that starts on Sunday, or a week 53 accepted in a 52-week ISO year;
 - February with 28 dates in a leap year;
@@ -332,4 +345,4 @@ Left to other units:
 - reading daily summaries for a range and attaching their publication conditions: `operational-store@9` and the units that use its presentation reads;
 - which zone or rule makes a date "today", the default 30-date view, evidence dated after today, and how periods, absent dates, states, and conditions are drawn: `render-portal-view` and `portal-state-presentation`;
 - when each publication condition applies: `operational-store`, `refresh-summary-state`, and the completion units;
-- after approval, documentation changes outside this unit: the scope-map row's "one year" wording if Decision 4 is approved as recommended, and glossary entries for range, preset, local date, and absent date, which CONTEXT.md does not define.
+- documentation outside this unit: ADR 0019 still says "a calendar-year window preserving leap-day behavior", which the Operator's Decision 4 reads as the rolling year; amending the ADR is the Operator's call. Glossary entries for range, preset, local date, and absent date, which CONTEXT.md does not define, are a separate change. The scope-map wording was updated with this approval.

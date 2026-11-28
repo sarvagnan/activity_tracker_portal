@@ -37,6 +37,7 @@ PERIOD_KINDS = (
     "last-7-dates",
     "last-30-dates",
     "last-90-dates",
+    "last-year",
     "calendar-year",
     "calendar-month",
     "iso-week",
@@ -109,6 +110,7 @@ class RangeSummaryContractContractTest(unittest.TestCase):
         self.assertEqual(listed, {item["scope"] for item in contract["dependencies"]})
         for length in PRESET_LENGTHS:
             self.assertIn(str(length), cells[4])
+        self.assertIn("rolling year", cells[4])
 
 
 if __name__ == "__main__":
