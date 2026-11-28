@@ -1,0 +1,1 @@
+{"actor":"claude","event":"UnitSpecified","event_format":2,"pack_digest":"","payload":{"depends_on":[],"name":"operational-store","version":"6"},"prev":"e0ff482bbbbc32666fe2a242111cf2adc47f7260640b67d1a62edd7ce7293888","recorded_at":"2026-11-27T15:57:11+00:00","revision":651,"run_id":""}
