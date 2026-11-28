@@ -1,0 +1,76 @@
+{
+  "contract_schema": 1,
+  "scope": "duplicate-observation-contract",
+  "version": "1",
+  "kind": "shared",
+  "purpose": "Define one pure, deterministic rule that resolves the eligible instant observations of one record type so that equal-time observations neither bias a Health Summary nor are destructively merged: every observation falls in exactly one resolution; observations whose instants and values are exactly equal form a reversible Duplicate Group that contributes once and keeps every member; observations at one instant with different values form an unresolved tie that contributes nothing and breaks no tie; and the result is recomputed from the eligible set alone, so correction, retraction, exclusion, or deletion changes it without any retained state.",
+  "inputs": [
+    {
+      "name": "eligible_observations",
+      "mode": "pure",
+      "description": "The instant observations a derive unit would otherwise count, after it has applied the Source Selection Policy and any Amendments and dropped records without a Canonical Revision: for each, its Source Record identity and position within the record, its source-system kind and origin, its exact instant as integer nanoseconds since the Unix epoch, and its value in the record type's canonical unit as a Python int or finite float. Heart Rate samples and Weight measurements are observations; Steps intervals and Sleep sessions are not."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "contributions",
+      "description": "One contribution per resolved instant, ordered by instant: the shared instant and value and the sorted members. A contribution with one member is a single observation; one with two or more members is a Duplicate Group, which contributes exactly once, has no representative member, and states its rule and its exact confidence."
+    },
+    {
+      "name": "unresolved_ties",
+      "description": "One unresolved tie per instant whose observations carry two or more different values, ordered by instant: the instant and the observations partitioned by value. No observation of a tie contributes, and no value is chosen."
+    },
+    {
+      "name": "record_facts",
+      "description": "The sorted Source Record identities with an observation in a Duplicate Group and those with an observation in an unresolved tie, which a derive unit uses to choose summary-contract@1 standings and to report the duplicate-grouped and equal-time-conflict evidence conditions."
+    },
+    {
+      "name": "duplicate_observation_failure",
+      "description": "A named failure raised instead of a result, carrying only its name: no instant, value, origin, Source Identity, or record identity."
+    }
+  ],
+  "named_failures": [
+    {
+      "name": "duplicate-observation-input-invalid",
+      "outcome": "invariant-refusal"
+    }
+  ],
+  "observable_effects": [],
+  "authority": {
+    "owns": [
+      "what counts as an instant observation for duplicate handling, and its identity within a Source Record",
+      "exact equality of instants and of values, with no tolerance, rounding, or unit conversion",
+      "the partition of eligible observations into single contributions, Duplicate Groups, and unresolved ties",
+      "Duplicate Group membership, identity, order, rule, and confidence, and the rule that a group contributes once",
+      "the rule that a tied observation never contributes and no tie-break is applied",
+      "determinism and reversibility: the result is a pure function of the eligible set, independent of input order",
+      "which failure and representation content is free of health values, origins, and identities"
+    ],
+    "does_not_own": [
+      "which records are eligible: applying Source Selection Policies and Amendments and reading evidence is the derive units' and the store's",
+      "extracting observations from Canonical Revision bodies or headers, and local-date attribution; the derive units and processors do",
+      "evidence standings, primary states, the evidence-condition vocabulary, and summary bytes; summary-contract@1 owns them and each derive unit chooses standings",
+      "any sum, count, mean, minimum, maximum, latest point, or other statistic computed from contributions",
+      "Steps interval overlap and Sleep stage overlap rules",
+      "Source Conflict, which concerns one Source Record's own unordered projections",
+      "detecting evidence changes and scheduling recomputation; refresh-summary-state and the store do",
+      "storing groups or ties, and how they are rendered"
+    ]
+  },
+  "dependencies": [
+    {
+      "scope": "summary-contract",
+      "version": "1"
+    }
+  ],
+  "acceptance_oracle": {
+    "specification": "packs/duplicate-observation-contract-1.spec.md",
+    "executable_tests": {
+      "python": "tests/acceptance/test_duplicate_observation_contract_1.py"
+    },
+    "runner": "tests/acceptance/run_duplicate_observation_contract_1.sh",
+    "languages": [
+      "python"
+    ]
+  }
+}
