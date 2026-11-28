@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from itertools import groupby
 from math import isfinite
-from operator import attrgetter
+from operator import itemgetter
 
 CONTRACT_VERSION = "duplicate-observation-contract@1"
 GROUP_RULE = "exact-instant-and-value"
@@ -150,40 +150,55 @@ def _validated_observations(observations: Iterable[Observation]) -> list[Observa
 
 def _resolve(observations: Iterable[Observation]) -> Resolution:
     items = _validated_observations(observations)
-    # This single observation sort orders instants, value classes, and members.
-    # The remaining sorts only order distinct origins and final record facts.
-    items.sort(key=attrgetter("instant_ns", "value", "record_id", "index"))
+    # One tagged sort supplies every required order: record facts first, then
+    # instants and value classes, with members before their ordered origins.
+    entries: list[tuple] = [(0, record_id) for record_id in dict.fromkeys(item.record_id for item in items)]
+    for item in items:
+        entries.append((1, item.instant_ns, item.value, 0, item.record_id, item.index))
+        entries.append((1, item.instant_ns, item.value, 1, item.source_system_kind, item.origin))
+    entries.sort()
+    ordered_records: list[int] = []
     contributions: list[Contribution] = []
     ties: list[UnresolvedTie] = []
     grouped_records: set[int] = set()
     tied_records: set[int] = set()
-    for instant, at_instant in groupby(items, key=attrgetter("instant_ns")):
-        classes: list[TieClass] = []
-        origins: set[tuple[str, str]] = set()
-        for value, same_value in groupby(at_instant, key=attrgetter("value")):
-            members: list[ObservationRef] = []
-            for item in same_value:
-                members.append(ObservationRef(item.record_id, item.index))
-                origins.add((item.source_system_kind, item.origin))
-            # Normalize every float zero, including singles and tied classes.
-            if type(value) is float and value == 0:
-                value = 0.0
-            classes.append(TieClass(value, tuple(members)))
-        if len(classes) == 1:
-            only = classes[0]
-            contribution = Contribution(instant, only.value, only.members, tuple(sorted(origins)))
-            contributions.append(contribution)
-            if contribution.is_group:
-                grouped_records.update(member.record_id for member in only.members)
-        else:
-            # Any disagreement makes the whole instant unresolved.
-            ties.append(UnresolvedTie(instant, tuple(classes)))
-            for item_class in classes:
-                tied_records.update(member.record_id for member in item_class.members)
+    for tag, tagged_entries in groupby(entries, key=itemgetter(0)):
+        if tag == 0:
+            ordered_records.extend(entry[1] for entry in tagged_entries)
+            continue
+        for instant, at_instant in groupby(tagged_entries, key=itemgetter(1)):
+            classes: list[TieClass] = []
+            for value, same_value in groupby(at_instant, key=itemgetter(2)):
+                members: list[ObservationRef] = []
+                origins: list[tuple[str, str]] = []
+                for entry in same_value:
+                    if entry[3] == 0:
+                        members.append(ObservationRef(entry[4], entry[5]))
+                    else:
+                        origin = (entry[4], entry[5])
+                        # Equal origins are adjacent in this class's entries.
+                        if not origins or origins[-1] != origin:
+                            origins.append(origin)
+                # Normalize every float zero, including singles and tied classes.
+                if type(value) is float and value == 0:
+                    value = 0.0
+                classes.append(TieClass(value, tuple(members)))
+            if len(classes) == 1:
+                only = classes[0]
+                contribution = Contribution(instant, only.value, only.members, tuple(origins))
+                contributions.append(contribution)
+                if contribution.is_group:
+                    grouped_records.update(member.record_id for member in only.members)
+            else:
+                # Any disagreement makes the whole instant unresolved.
+                ties.append(UnresolvedTie(instant, tuple(classes)))
+                for item_class in classes:
+                    tied_records.update(member.record_id for member in item_class.members)
     return Resolution(
         CONTRACT_VERSION, GROUP_RULE, GROUP_CONFIDENCE,
         tuple(contributions), tuple(ties),
-        tuple(sorted(grouped_records)), tuple(sorted(tied_records)),
+        tuple(record_id for record_id in ordered_records if record_id in grouped_records),
+        tuple(record_id for record_id in ordered_records if record_id in tied_records),
     )
 
 
