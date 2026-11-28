@@ -309,7 +309,7 @@ After Gate A, the executable pack adds:
 
 **RED, against the stub.**
 - 7 tests pass, because they read only the contract, the effects declaration, the scope map, the constants, or the dataclass fields: the three R1 tests, the two R3 tests, `test_values_are_frozen`, and `test_range_summary_fields_are_exact`.
-- The other 51 fail, with 389 failing entries, counting subtests: 381 errors and 8 failures. Every failure is the stub's `NotImplementedError`. The 8 failures are the subtests of `test_summary_contract_failures_are_translated`, which catches any exception and finds a `NotImplementedError` where it expects a `RangeSummaryFailure`.
+- The other 51 fail, with 390 failing entries, counting subtests: 382 errors and 8 failures. Every failure is the stub's `NotImplementedError`. The 8 failures are the subtests of `test_summary_contract_failures_are_translated`, which catches any exception and finds a `NotImplementedError` where it expects a `RangeSummaryFailure`.
 - `tests/unit` (156 tests), `tests/governance` (73), and the bound runner of `summary-contract@1` (60) still pass.
 
 **How the suite checks periods.** The suite has its own calendar model. It counts days from 0001-01-01, a Monday, with integers, and has its own leap-year rule, month lengths, ISO week rule, and builders. It never uses `datetime` arithmetic. Every builder is compared with the model on:
@@ -318,7 +318,7 @@ After Gate A, the executable pack adds:
 - every 29 February, and 28 February and 1 March of every year from 2 to 9999, for the rolling year;
 - every calendar year from 1 to 9999; week 1, the last week, and week 53 of every ISO year from 1 to 9999; every month of 42 boundary years and 200 seeded years;
 - seeded generated dates. The seeds are fixed. The generator picks the edge dates 1 and 2 January, 4 January, 28 and 29 February, 1 March, 28 and 31 December of the boundary years 1–5, 99–101, 399–401, 1599–1601, 1899–1901, 1903–1905, 1999–2001, 2004, 2015, 2020, 2024–2030, 2032, 2099–2101, 2399–2401, 9998, and 9999, and then dates biased towards those years.
-R8's consistency rule is checked in both directions. Periods from each builder are shifted by a day, a week, or a random amount, and `period_dates` must accept exactly the shifted periods the model says some builder could give for some today.
+R8's consistency rule is checked in both directions. Periods from each builder, including all three presets, are shifted by a day, a week, or a random amount. Both `period_dates` and `summarize_range` must accept exactly the shifted periods the model says some builder could give for some today, and give the model's dates. Explicit cases include a `last-90-dates` period of 89 dates and one of 91.
 
 **How the suite checks range results.** Every daily summary is a real Health Summary from `summary_contract.build_summary`, built from synthetic evidence. Each fixture first checks that `summary-contract@1` gave it the state and evidence conditions it asked for. The expected `RangeSummary` is computed from the fixture's own facts, never from the headers, and compared field by field, including value types. Ranges with seeded random states, conditions, publication conditions, and versions cover every period kind, up to 366 dates.
 
@@ -339,7 +339,19 @@ R8's consistency rule is checked in both directions. Periods from each builder a
 - Bytes are never used. *settles*: the test replaces `header_bytes`, `evidence_bytes`, and `body_bytes` with stand-ins that fail on any use, such as comparison, hashing, length, iteration, or truth value, and expects the same result. So an implementation must not compare or hash whole `HealthSummary` values, which would compare their bytes. Bodies that are not JSON, and different bodies under the same states, also give the same result.
 - Failures:
   - `args` are exactly the name. `__cause__` and `__context__` are `None`, also when the call is made inside a caller's `except` block handling a `ValueError`, a `json.JSONDecodeError` whose document holds input, or a `SummaryContractFailure`.
-  - The failure's `str`, `repr`, attributes, and formatted traceback carry no marker. Every traceback frame from the package directory carries no input in its locals: no marker string, marker integer, marker date, `datetime` on that date, or container or dataclass holding one. That includes a `RangeDay` or `HealthSummary` built with a marker. The traceback from the first such frame, formatted with `TracebackException(capture_locals=True)`, carries none either. Unlike `summary-contract@1`'s unbound regression, the suite does not pin how many of the unit's frames remain.
+  - The failure's `str`, `repr`, `args`, attributes, and formatted traceback carry no marker. Its `args` and attributes are also walked structurally, not only through their `repr`.
+  - Every traceback frame after the caller's own frames (those in the suite's file) is checked, not only the unit's. No local is, or holds, a marker input: the marker string, the marker integer, the marker date, or a `datetime` on that date. That includes a `RangeDay` or `HealthSummary` built with a marker. The traceback from the first such frame, formatted with `TracebackException(capture_locals=True)`, carries no marker either. Unlike `summary-contract@1`'s unbound regression, the suite does not pin how many frames remain.
+
+  "Holds" means what the suite's walker can reach. The walker visits each object once, so cycles end, and stops 16 levels deep. It opens:
+  - containers and dict views, dataclasses, and objects with a `__dict__` or `__slots__`;
+  - exceptions, through their arguments, context, cause, and traceback; tracebacks and frames, through their locals;
+  - generators and coroutines, through their frame's locals;
+  - functions, through their defaults, keyword defaults, and closure cells; and cells;
+  - bound methods, built-in bound methods, and method wrappers, through `__self__`;
+  - `functools.partial` and weak references;
+  - built-in iterators whose `__reduce__` names what they iterate, such as list, tuple, and dict iterators, `map`, `zip`, `enumerate`, `filter`, `reversed`, and callable iterators.
+
+  It cannot open itertools iterators, which lost `__reduce__` in Python 3.14, or other C-level objects that expose nothing. Those are a residual.
   - `summarize_range` raises `range-period-invalid` for an invalid period with otherwise valid arguments, and `range-input-invalid` for anything else. Not pinned: which failure wins when one call breaks both.
   - A `SummaryContractFailure` becomes `range-input-invalid`. Invalid publication conditions never raise `SummaryContractFailure`. The suite also replaces the `summary_contract` operations, and any copies of them in this module, with functions that raise `SummaryContractFailure`. The call must then either give the expected result or raise `range-input-invalid`.
   - Not pinned: missing or extra arguments may raise Python's own `TypeError`.
@@ -349,16 +361,20 @@ R8's consistency rule is checked in both directions. Periods from each builder a
   - At any time, it flags a write open, an open under the host timezone database, and socket, subprocess, SQLite, and file-system change events. The only write allowed is the import system writing a `.pyc` bytecode cache.
   - The daily summaries are built before the guarded phase. The operations then run twice, both runs are checked, and their results must be equal.
   - An `open` (by path or by descriptor), a directory listing, or an `os.stat`, `os.lstat`, `os.fstat`, or `os.access` call is allowed only while the import system's `_find_and_load` or `_load` in `<frozen importlib._bootstrap>` is on the stack. CPython raises no audit event for the four metadata calls, so the test wraps them directly, with a reentrancy flag for its own path checks.
-  - It flags any environment read outside module loading, any log record, and anything written to stderr. It replaces the Python-level clock functions with guards.
+  - It flags any environment read outside module loading, any log record, and anything written to stderr. Where the platform has a bytes environment (`os.supports_bytes_environ`), `os.environb` is guarded as well as `os.environ`, so `os.getenv` and `os.getenvb` are both covered. Both are restored afterwards.
+  - It replaces the Python-level clock functions with guards. Each guard records the read before it raises, and the test requires the record to be empty, so a failure boundary that turns the guard's error into a named failure still fails the test. The scenario keeps its invalid calls.
   - Reads that raise no audit event, such as `date.today()`, and reads a module makes in its own top-level code while being imported, stay residuals.
 - The determinism test runs the same scenario in three processes with different `TZ`, locale, and `PYTHONHASHSEED` settings.
-- Timing: no test asserts a duration. Each subprocess has a 300 s limit, far above the reference's run of under 1 s. The whole suite runs in about 2 s on the reference.
+- Timing: no test asserts a duration. Each subprocess has a 300 s limit, far above the reference's run of under 1 s. The whole suite runs in about 4 s on the reference.
 
-**Passability.** A throwaway reference implementation, kept outside the repository, passes all 58 tests. Of 74 incorrect implementations, all 74 fail at least one test. Two earlier mutants turned out equivalent to the reference and were replaced with ones that really break the rule:
+**Passability.** A throwaway reference implementation, kept outside the repository, passes all 58 tests. So does Sol's independent implementation, run unchanged against the revised suite, by both the `/tmp` and `/private/tmp` spellings of its path. Of 100 incorrect implementations, 99 fail at least one test. The one that passes keeps the input in an `itertools.chain` in the raising frame. The walker cannot open it, so this is a residual.
+
+Three mutants turned out equivalent to the reference and were replaced with ones that really break the rule:
 - one accepted `7.0` as a length, but `date.fromordinal` then refused it anyway;
-- one changed a boundary's default failure name, but no exception could reach that default.
+- one changed a boundary's default failure name, but no exception could reach that default;
+- one closed the coroutine that held the input, which releases its frame.
 
-The 74 cover at least:
+The 99 cover at least:
 - a preset of `length ± 1` dates, or one that ends yesterday, and a `7.0` length accepted;
 - a rolling year that starts on the same date one year earlier (366 or 367 dates), is always 365 dates, reads 29 February as 1 March, or starts a day early when today is 28 or 29 February;
 - a current calendar year, month, or week that runs past today, a leap year of 365 dates, and a future year accepted;
@@ -366,7 +382,7 @@ The 74 cover at least:
 - February with 28 dates in a leap year;
 - a custom range that is reversed, ends after today, or has 367 dates, accepted;
 - `bool`, `datetime`, and `float` arguments accepted;
-- a period whose dates disagree with its kind, accepted, for each kind, and an unknown kind accepted;
+- a period whose dates disagree with its kind, accepted, for each kind, including a `last-90-dates` period of 1 to 90 dates, and in `summarize_range` alone; an unknown kind accepted;
 - an invalid period in `summarize_range` reported as `range-input-invalid`, and a builder raising `range-input-invalid`;
 - absent dates counted as `missing`, or `missing` summaries counted as absent;
 - `partial` dates left out of `valued_dates`, `failed` dates put in, or dates with a publication condition left out;
@@ -378,7 +394,16 @@ The 74 cover at least:
 - mixed versions refused, not reported, or not sorted;
 - a body read to decide a value, and summary bytes checked;
 - a `SummaryContractFailure` passed through, a failure that carries a date, a failure with a `__cause__` or a caller's `__context__`, and inputs left in the boundary's or a builder's frame locals;
-- an environment read, a clock read, a `stat` of a file, and `days` read twice.
+- inputs kept in the raising frame inside a tuple iterator, a lambda default, a closure cell, a keyword default, a generator, a coroutine, a `functools.partial`, a built-in bound method, a method wrapper, a Python bound method, a slotted object, a `SimpleNamespace`, a `map`, a `zip`, a dict view, an exception's arguments, a weak reference, or the caught inner exception, or in an attribute of the failure itself;
+- an environment read through `os.environ`, `os.environb`, or `os.getenvb`; a clock read on a successful call, and through `time.time` or `time.gmtime` only on the refusal path; a `stat` of a file; and `days` read twice.
+
+**Implementer review resolutions.** Sol's read-only review of the pack at 62e635b found no test that a correct implementation could not pass: Sol's independent implementation passed all 58. It made one blocking and three should-fix findings, and each is resolved:
+1. **Traceback locals (blocking).** The walker looked only into containers and dataclasses. An implementation that kept its arguments in `iter((args, kwargs))` or in a lambda default passed every test, though the inputs could be recovered from the failure's traceback. The walker is now the one ported from `duplicate-observation-contract@1`. It opens the holders listed under "Failures" above, is cycle-safe, and also walks the failure's own `args` and attributes. Every frame after the caller's own frames is checked, not only the unit's. Both of Sol's mutants now fail, as do 17 more, one for each kind of holder. The claim is narrowed to what the walker can open, and itertools iterators are a residual. The change also fixes a portability fault Sol noted: the suite found the unit's frames by comparing a resolved package path with unresolved file names, so under macOS's `/tmp` symlink it found none. It now skips the caller's frames by their resolved file name.
+2. **Clock guards (should-fix).** The guards raised without recording anything. An implementation that read the clock only while refusing a call had the guard's error turned into the expected named failure, and passed. The guards now record each read before raising, and the test requires the record to be empty. Sol's mutant fails, as does one that calls `time.gmtime()` there.
+3. **`os.environb` (should-fix).** Only `os.environ` was guarded, so `os.environb` and `os.getenvb` were not covered. Both mappings are now guarded where the platform has a bytes environment, and both are restored. Sol's mutant fails, as does one that calls `os.getenvb`.
+4. **R8 and the 90-date preset (should-fix).** The shifted-period check left out `last-90-dates`, so accepting any `last-90-dates` period of 1 to 90 dates passed. The 90-date builder is now in the loop, with its year-1 guard, and an 89-date `last-90-dates` period is refused explicitly. Every generated period is checked through both `period_dates` and `summarize_range`. Sol's mutant fails, as does one that skips the check in `summarize_range` alone.
+
+Sol's five surviving mutants, applied unchanged to a copy of Sol's implementation, each fail the revised suite. RED gained one failing entry, the new 89-date subtest.
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration is empty as the contract says, and that the residuals below are complete.
 
@@ -388,7 +413,8 @@ Not mechanically provable here; the approver confirms these in implementation re
 - no clock, I/O, environment, or logging. A C-level clock read such as `date.today()` cannot be intercepted;
 - the module imports only `summary_contract` beyond the standard library, and never opens a store;
 - summaries are trusted as `build_summary` or `decode_summary` returned them (Decision 8). A hand-built `HealthSummary` with forged header fields is not caught;
-- bodies are never read. A test changes body bytes and expects the same result, but cannot prove that no code path reads them.
+- bodies are never read. A test changes body bytes and expects the same result, but cannot prove that no code path reads them;
+- no failure's traceback keeps input inside an object the suite's walker cannot open, such as an itertools iterator or another C-level object (see "Failures" above).
 
 Left to other units:
 - each measure's aggregate and extra counts, and what part of a `partial` body is safe: the four compose units;

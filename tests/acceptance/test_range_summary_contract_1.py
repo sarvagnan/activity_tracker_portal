@@ -10,6 +10,8 @@ and dates show that failures carry no input value.
 
 from __future__ import annotations
 
+import collections
+import collections.abc
 import dataclasses
 import functools
 import json
@@ -21,6 +23,7 @@ import sys
 import traceback
 import types
 import unittest
+import weakref
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -59,7 +62,6 @@ from activity_tracker_portal.summary_contract import (
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-PACKAGE_DIR = str(Path(range_summary_contract.__file__).resolve().parent)
 CONTRACT = json.loads((ROOT / "governance/scopes/range-summary-contract.1.json").read_text(encoding="utf-8"))
 EFFECTS = json.loads((ROOT / "packs/range-summary-contract-1.effects.json").read_text(encoding="utf-8"))
 SCOPE_MAP = (ROOT / "docs/governance/scope-map.md").read_text(encoding="utf-8")
@@ -524,10 +526,8 @@ def run_python(code: str, env_updates: dict[str, str]) -> tuple[str, str]:
     return done.stdout, done.stderr
 
 
-def carries_marker(value, depth: int = 0) -> bool:
-    """Whether a value, or anything nested in its containers or dataclass fields, is a marker input."""
-    if depth > 8:
-        return False
+def is_marker(value) -> bool:
+    """Whether a single value is, or spells, a marker input: the text, the integer, or the date."""
     if isinstance(value, str):
         return any(text in value for text in MARKER_TEXTS)
     if isinstance(value, (bytes, bytearray)):
@@ -538,13 +538,85 @@ def carries_marker(value, depth: int = 0) -> bool:
         return value == MARKER_VALUE
     if isinstance(value, date):
         return (value.year, value.month, value.day) == (1987, 6, 5)
-    if isinstance(value, dict):
-        return any(carries_marker(k, depth + 1) or carries_marker(v, depth + 1) for k, v in value.items())
-    if isinstance(value, (tuple, list, set, frozenset)):
-        return any(carries_marker(item, depth + 1) for item in value)
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return any(carries_marker(getattr(value, item.name), depth + 1) for item in dataclasses.fields(value))
     return False
+
+
+def referents(value) -> list:
+    """The objects `value` holds, for the kinds of holder the walker can open (R15).
+
+    Containers, dict views, dataclasses, objects with a `__dict__` or `__slots__`, exceptions (their arguments,
+    context, cause, and traceback), tracebacks and frames (their locals), generators and coroutines (their frame's
+    locals), functions (defaults, keyword defaults, and closure cells), cells, bound methods (`__self__` and
+    `__func__`), built-in bound methods and method wrappers (`__self__`), `functools.partial`, weak references, and
+    built-in iterators whose `__reduce__` names what they iterate. It cannot open itertools iterators, which lost
+    `__reduce__` in Python 3.14, or other C-level objects that expose nothing.
+    """
+    if value is None or isinstance(value, (str, bytes, bytearray, int, float, complex, date, type, types.ModuleType)):
+        return []
+    if isinstance(value, dict):
+        return [*value.keys(), *value.values()]
+    if isinstance(value, (list, tuple, set, frozenset, collections.deque, collections.abc.KeysView,
+                          collections.abc.ValuesView, collections.abc.ItemsView)):
+        return list(value)
+    if isinstance(value, types.GeneratorType):
+        return [value.gi_frame]
+    if isinstance(value, types.CoroutineType):
+        return [value.cr_frame]
+    if isinstance(value, types.AsyncGeneratorType):
+        return [value.ag_frame]
+    if isinstance(value, types.FrameType):
+        return list(value.f_locals.values())
+    if isinstance(value, types.TracebackType):
+        return [value.tb_frame, value.tb_next]
+    if isinstance(value, types.FunctionType):
+        return [*(value.__defaults__ or ()), *(value.__kwdefaults__ or {}).values(), *(value.__closure__ or ())]
+    if isinstance(value, types.CellType):
+        try:
+            return [value.cell_contents]
+        except ValueError:
+            return []
+    if isinstance(value, types.MethodType):
+        return [value.__self__, value.__func__]
+    if isinstance(value, (types.BuiltinMethodType, types.MethodWrapperType)):
+        return [value.__self__]
+    if isinstance(value, functools.partial):
+        return [value.func, *value.args, *value.keywords.values()]
+    if isinstance(value, weakref.ref):
+        return [value()]
+    out = []
+    if isinstance(value, BaseException):
+        out += [*value.args, value.__cause__, value.__context__, value.__traceback__]
+    if dataclasses.is_dataclass(value):
+        out += [getattr(value, item.name) for item in dataclasses.fields(value)]
+    if isinstance(value, collections.abc.Iterator):
+        try:
+            reduced = value.__reduce__()
+        except Exception:
+            reduced = None
+        if isinstance(reduced, tuple):
+            out += list(reduced[1:])
+    if hasattr(value, "__dict__"):
+        out += list(vars(value).values())
+    for klass in type(value).__mro__:
+        slots = vars(klass).get("__slots__", ())
+        for name in ((slots,) if isinstance(slots, str) else slots):
+            out.append(getattr(value, name, None))
+    return out
+
+
+def held(value, seen: set[int] | None = None, depth: int = 0) -> bool:
+    """Whether `value` is, or holds through the referents above, a marker input. Each object is opened once."""
+    if is_marker(value):
+        return True
+    seen = set() if seen is None else seen
+    if depth > 16 or id(value) in seen:
+        return False
+    seen.add(id(value))
+    return any(held(item, seen, depth + 1) for item in referents(value))
+
+
+def carries_marker(value) -> bool:
+    return held(value)
 
 
 class Checks(unittest.TestCase):
@@ -751,11 +823,18 @@ def metadata(original, name):
     return guard
 for name in ("stat", "lstat", "fstat", "access"):
     setattr(os, name, metadata(getattr(os, name), "os." + name))
-def forbidden(*args, **kwargs):
-    raise AssertionError("clock read")
-def explicit(original, index):
+# A clock read is recorded before the guard raises, so a failure boundary that turns the guard's error into a
+# named failure still leaves the read in the record.
+clock = []
+def forbidden_clock(name):
+    def guard(*args, **kwargs):
+        clock.append(name)
+        raise AssertionError("clock read")
+    return guard
+def explicit(original, index, name):
     def guard(*args):
         if len(args) <= index or args[index] is None:
+            clock.append(name)
             raise AssertionError("clock read")
         return original(*args)
     return guard
@@ -789,28 +868,35 @@ for name in ("time", "time_ns", "monotonic", "monotonic_ns", "perf_counter", "pe
              "process_time_ns", "thread_time", "thread_time_ns", "clock_gettime", "clock_gettime_ns",
              "localtime", "ctime", "mktime"):
     if hasattr(time, name):
-        setattr(time, name, forbidden)
-time.gmtime = explicit(time.gmtime, 0)
-time.asctime = explicit(time.asctime, 0)
-time.strftime = explicit(time.strftime, 1)
+        setattr(time, name, forbidden_clock("time." + name))
+time.gmtime = explicit(time.gmtime, 0, "time.gmtime")
+time.asctime = explicit(time.asctime, 0, "time.asctime")
+time.strftime = explicit(time.strftime, 1, "time.strftime")
 import activity_tracker_portal.range_summary_contract as module
 import test_range_summary_contract_1 as t
 # The daily summaries are built with the published summary-contract@1 before the operations run.
 inputs = t.scenario_inputs()
-original = os.environ
-recorder = Environ(original)
-os.environ = recorder
+# Both the text and, where the platform has one, the bytes environment are guarded; os.getenv and os.getenvb read
+# through them.
+originals = [("environ", os.environ)] + ([("environb", os.environb)] if os.supports_bytes_environ else [])
+recorders = [Environ(mapping) for _, mapping in originals]
+for (name, _), recorder in zip(originals, recorders):
+    setattr(os, name, recorder)
 phase[0] = "calls"
-first = t.scenario_text(inputs)
-second = t.scenario_text(inputs)
-phase[0] = "done"
-os.environ = original
-print(json.dumps({"events": events, "environment": recorder.reads, "logs": records, "same": first == second}))
+try:
+    first = t.scenario_text(inputs)
+    second = t.scenario_text(inputs)
+finally:
+    phase[0] = "done"
+    for name, mapping in originals:
+        setattr(os, name, mapping)
+print(json.dumps({"events": events, "environment": [read for recorder in recorders for read in recorder.reads],
+                  "clock": clock, "logs": records, "same": first == second}))
 """
         stdout, stderr = run_python(code, {"TZ": "Europe/London"})
         self.assertEqual(stderr, "")
         self.assertEqual(len(stdout.strip().splitlines()), 1, stdout)
-        self.assertEqual(json.loads(stdout), {"events": [], "environment": [], "logs": [], "same": True})
+        self.assertEqual(json.loads(stdout), {"events": [], "environment": [], "clock": [], "logs": [], "same": True})
 
     def test_values_are_frozen(self) -> None:
         summary = build_day_summary(DaySpec(TODAY))
@@ -1263,6 +1349,7 @@ class R8PeriodsGivenBack(Checks):
             ("last-7-dates", date(2026, 11, 21), TODAY),
             ("last-30-dates", date(2026, 10, 31), TODAY),
             ("last-90-dates", date(2026, 8, 30), TODAY),
+            ("last-90-dates", date(2026, 9, 1), TODAY),
             ("last-year", date(2025, 11, 28), TODAY),
             ("last-year", date(2025, 11, 30), TODAY),
             ("last-year", date(2027, 3, 2), date(2028, 2, 29)),
@@ -1303,6 +1390,7 @@ class R8PeriodsGivenBack(Checks):
             iso_year, week = iso_week_of(number_of(today))
             built = [preset_period(7, today) if today >= date(1, 1, 7) else None,
                      preset_period(30, today) if today >= date(1, 1, 30) else None,
+                     preset_period(90, today) if today >= date(1, 3, 31) else None,
                      last_year_period(today) if today.year > 1 else None,
                      calendar_year_period(today.year, today), calendar_month_period(today.year, today.month, today),
                      iso_week_period(iso_year, week, today) if iso_year <= 9999 else None,
@@ -1322,12 +1410,21 @@ class R8PeriodsGivenBack(Checks):
 
 
 def accepted(period: RangePeriod):
-    """"accepted" when period_dates gives the model's dates, else the failure name."""
-    try:
-        dates = period_dates(period)
-    except RangeSummaryFailure as failure:
-        return failure.args[0]
-    return "accepted" if dates == model_dates(period.first_date, period.last_date) else "wrong-dates"
+    """"accepted" when both period_dates and summarize_range take the period with the model's dates, else the
+    failure name. R8 applies to both, so they must agree."""
+    outcomes = []
+    for consumer in ("period_dates", "summarize_range"):
+        try:
+            if consumer == "period_dates":
+                dates = period_dates(period)
+            else:
+                result = summarize(period, ())
+                dates = result.absent_dates if result.date_count == len(result.absent_dates) else None
+        except RangeSummaryFailure as failure:
+            outcomes.append(failure.args[0])
+            continue
+        outcomes.append("accepted" if dates == model_dates(period.first_date, period.last_date) else "wrong-dates")
+    return outcomes[0] if outcomes[0] == outcomes[1] else tuple(outcomes)
 
 
 # ---- R9 ----
@@ -1721,16 +1818,20 @@ class R15HealthDataFree(Checks):
             for text in (str(failure), repr(failure), repr(failure.args), repr(vars(failure)),
                          "".join(traceback.format_exception(failure))):
                 self.assertFalse(carries_marker(text), text[-2000:])
-            first = None
-            tb = failure.__traceback__
-            while tb is not None:
-                if tb.tb_frame.f_code.co_filename.startswith(PACKAGE_DIR):
-                    first = first or tb
-                    for name, value in tb.tb_frame.f_locals.items():
-                        self.assertFalse(carries_marker(value), f"local {name!r} of {tb.tb_frame.f_code.co_name}")
-                tb = tb.tb_next
+            # The failure's own attributes are inspected structurally, not only through their repr.
+            self.assertFalse(held(failure.args), "failure args")
+            self.assertFalse(held(vars(failure)), "failure attributes")
+            # The caller's own frames, in this file, hold its input; every frame after them belongs to the call.
+            here = os.path.realpath(__file__)
+            first = failure.__traceback__
+            while first is not None and os.path.realpath(first.tb_frame.f_code.co_filename) == here:
+                first = first.tb_next
             self.assertIsNotNone(first)
-            # Caller frames own their inputs. Format the unit's frames with their locals.
+            tb = first
+            while tb is not None:
+                for name, value in tb.tb_frame.f_locals.items():
+                    self.assertFalse(held(value), f"local {name!r} of {tb.tb_frame.f_code.co_name}")
+                tb = tb.tb_next
             rendered = "".join(traceback.TracebackException(type(failure), failure, first, capture_locals=True).format())
             self.assertFalse(carries_marker(rendered), rendered[-2000:])
         else:
