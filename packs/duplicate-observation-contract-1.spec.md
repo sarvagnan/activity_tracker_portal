@@ -254,7 +254,7 @@ After Gate A, the executable pack adds:
 
 **RED, against the stub.**
 - 6 tests pass, because they read only the contract, the effects declaration, the scope map, and the constants, or build the dataclasses directly: the three R1 tests, `test_constants_are_exact`, `test_values_are_frozen`, and `test_reprs_carry_no_instants_values_or_origins`.
-- The other 38 fail, with 262 failing entries, counting subtests. Every failure is the stub's `NotImplementedError`.
+- The other 38 fail, with 265 failing entries, counting subtests. Every failure is the stub's `NotImplementedError`.
 - `tests/unit`, `tests/governance`, and the bound runner of `summary-contract@1` still pass.
 
 **How the suite checks results.** Most tests compare the whole result with a model of R5–R8 written in the suite. The model groups by instant, splits by value with a `dict`, and writes everything as plain tuples, including each value's type and `repr`. So `0.0` and `-0.0`, and `1` and `1.0`, differ. The comparison reads every field and property. The model also runs on 60 seeded generated sets, of up to 1,500 observations, with many shared and adjacent instants, and on R11's 300,000 observations.
@@ -264,7 +264,7 @@ After Gate A, the executable pack adds:
 - **Types** (*settles*): every sequence field and property is a `tuple`. Members are `ObservationRef`. Origin pairs are 2-tuples of `str`. `is_group` is a `bool`.
 - **Origin order** (*settles*): origin pairs sort by kind, then origin, in code-point order.
 - **`bool`** (*settles*): `True` and `False` are refused in `record_id`, `index`, and `instant_ns`, as well as in `value`.
-- **Argument** (*settles*): an argument that is not an iterable of `Observation` is `duplicate-observation-input-invalid`. That includes `None`, an `int`, and a bare `Observation`. Any iterable is accepted, including a one-shot iterator, a generator, a `frozenset`, and a `dict`.
+- **Argument** (*settles*): an argument that is not an iterable of `Observation` is `duplicate-observation-input-invalid`. That includes `None`, an `int`, and a bare `Observation`. Any iterable is accepted, including a one-shot iterator, a generator, and a `frozenset`. A `dict` is read as Python iterates it, by its keys: one whose keys are observations resolves, and one with a key that is not an observation, such as `{123: observation}`, is refused.
 - **Domains, as the text gives them:**
   - any `int` instant is accepted, including negative ones and ones beyond 64 bits;
   - any `int` value is accepted, including negative values and zero;
@@ -272,8 +272,19 @@ After Gate A, the executable pack adds:
   - origins and kinds may hold any non-empty text, including non-ASCII.
 - **Validation:** a bad observation is refused wherever it is, including last in 2,000. Not pinned: subclasses of `Observation`, `int`, `float`, or `str`; an iterable that raises while it is read; a call with no argument.
 - **Failures** (*settles*): R12 says "no `__cause__`". The suite also requires `__context__` to be `None`, as summary-contract@1's implementation review required. It checks 15 kinds of malformed input among marker observations, with markers in record identities, positions, kinds, origins, instants, and values. Each is checked three ways: in a normal call, while the caller handles a `ValueError`, and while it handles a `JSONDecodeError`. Each frame in the failure's `__traceback__` after the caller's own frames is checked, not only this module's:
-  - no local is, or contains, an input object;
+  - no local is, or holds, an input object;
   - `TracebackException(capture_locals=True)` output from those frames carries no marker.
+
+  "Holds" means what the suite's walker can reach. It opens:
+  - containers and dict views, dataclasses, and objects with a `__dict__` or `__slots__`;
+  - exceptions, through their arguments, context, cause, and traceback; tracebacks and frames, through their locals;
+  - generators and coroutines, through their frame's locals;
+  - functions, through their defaults, keyword defaults, and closure cells; and cells;
+  - bound methods, built-in bound methods, and method wrappers, through `__self__`;
+  - `functools.partial` and weak references;
+  - built-in iterators whose `__reduce__` names what they iterate: list, tuple, dict, set, `map`, `zip`, `enumerate`, `filter`, `reversed`, and callable iterators.
+
+  It cannot open itertools iterators, which lost `__reduce__` in Python 3.14, or other C-level objects that expose nothing. Those are a residual.
 - **Representations:** the suite checks only that no instant, value, kind, or origin appears. It treats the source-system kind like the origin (*settles*). The stub's `Resolution` repr also shows its three constant strings.
 - **Order of results:** contributions and ties are ordered by instant as numbers. Members are ordered by record and position as numbers, and tie classes by value as numbers. The tests use orders where text and number disagree.
 - **R10:** for Weight-shaped input, `duplicate-grouped` is reported when a group spans two or more records, and `equal-time-conflict` when any tie exists. The body is a synthetic `{"points":N}`. The test also shows Decision 4's consequence: a group inside one record, reported as `duplicate-grouped`, is refused by `summary_contract.build_summary` as `summary-state-inconsistent`.
@@ -283,7 +294,7 @@ After Gate A, the executable pack adds:
   - where the platform has `SIGALRM`, a timer stops a call that runs past the limit;
   - the reference implementation took 1.4 to 1.9 s on the drafting machine (Apple M2), so the limit is about 16 times its slowest run;
   - "sorts once and is otherwise linear" is not checked directly. A quadratic grouping fails the limit.
-- **Scope map:** the R1 test requires the row to name a "Duplicate Group" and an "unresolved tie", and not to say "cross-origin" (Decision 4).
+- **Scope map:** the R1 test requires the row to name a "Duplicate Group" and an "unresolved tie", and to say the group may come "from any origins" (Decision 4). It bans no other wording.
 - **The purity test** is summary-contract@1's, unchanged in its rules:
   - it runs in a subprocess with an audit hook;
   - `os.stat`, `os.lstat`, `os.fstat`, and `os.access` are wrapped directly, with a reentrancy flag;
@@ -294,7 +305,11 @@ After Gate A, the executable pack adds:
 
   It preloads `summary_contract`, which R10 uses, and `random`, `signal`, `subprocess`, and `statistics`. It runs every scenario twice, including failing calls, checks both runs, and checks that their results are equal.
 
-**Passability.** A throwaway reference implementation, kept outside the repository, passes all 44 tests. Each of 54 incorrect implementations fails at least one test. A 55th, which lazily imports `email.utils` and `xml.dom.minidom` during a call, passes, as a correct implementation may. The 54 are:
+**Passability.** A throwaway reference implementation, kept outside the repository, passes all 44 tests. Each of 73 incorrect implementations fails at least one test. Two more pass:
+- one lazily imports `email.utils` and `xml.dom.minidom` during a call, as a correct implementation may;
+- one keeps the input in an `itertools.chain` in the raising frame. The walker cannot open it, so this is a residual.
+
+The 73 are:
 - **Comparison:**
   - instants sorted as text, truncated to milliseconds, or compared as floats;
   - values compared with a relative or absolute tolerance, or as floats;
@@ -316,7 +331,7 @@ After Gate A, the executable pack adds:
   - origin pairs as lists, or members as a list;
   - singles counted as grouped;
   - tied records taken from one class only.
-- **Validation:** accepting a `bool` value, a `bool` index, `nan`, an empty origin, record 0, a `float` instant, mixed `int` and `float` values, a repeated `ObservationRef`, or a record with two origins. Also: checking only the first element, and a native `TypeError` for a non-iterable argument.
+- **Validation:** reading a `dict`'s values instead of its keys. Accepting a `bool` value, a `bool` index, `nan`, an empty origin, record 0, a `float` instant, mixed `int` and `float` values, a repeated `ObservationRef`, or a record with two origins. Also: checking only the first element, and a native `TypeError` for a non-iterable argument.
 - **State and input:**
   - mutating the input list;
   - a result cache shared between calls;
@@ -326,8 +341,15 @@ After Gate A, the executable pack adds:
   - keeping a caller's exception as context;
   - keeping the input in the raising frame's locals;
   - raising from a deeper frame that holds the input;
+  - keeping the input, in the raising frame, inside a tuple iterator, a lambda default, a closure cell, a keyword default, a generator, a coroutine, a `functools.partial`, a built-in bound method, a method wrapper, a Python bound method, a slotted object, a `SimpleNamespace`, a `map`, a `zip`, a dict view, an exception's arguments, weak references, or the caught inner exception;
   - a `repr` that shows a tie value, origins, or an instant.
 - **Purity:** reading the clock, reading the environment, calling `os.stat` on the module's own file, caching a file read on the first call, logging, and writing to stderr.
+
+**Implementer review resolutions.** Sol's read-only review of the pack at 35813ff found no test that a correct implementation could not pass. It made two should-fix findings and two notes, and each is resolved:
+1. **Traceback locals (should-fix).** The walker looked only into containers and dataclasses. An implementation that kept the input in `iter((observations,))` or in a lambda default passed every test. The walker now opens the holders listed under "Failures" above. Both of Sol's mutants fail, as do 16 more, one for each kind of holder. Holders it cannot open are named and listed as a residual.
+2. **Non-empty dicts (should-fix).** Only `{}` was tested, so reading a dict's values instead of its keys passed. The suite now resolves dicts keyed by observations, and refuses `{123: observation}`, `{"metadata": observation}`, and a dict with one non-observation key. Sol's mutant fails.
+3. **Scope-map wording (note).** The R1 test banned the text "cross-origin" anywhere in the row, which would refuse a true edit such as "from any origins, including cross-origin". It now requires "from any origins" instead.
+4. **R11 timing (note).** No change. Sol's own implementation took 1.2 s, and the limit stays 30 s.
 
 The implementer reviews the pack read-only for tests that a correct implementation could not pass, and those findings are resolved before freeze. The approver then confirms at Gate B that the pack carries this draft, that RED is genuine, that the effects declaration is empty as the contract says, and that the residuals below are complete.
 
@@ -335,7 +357,8 @@ The implementer reviews the pack read-only for tests that a correct implementati
 
 Not mechanically provable here; the approver confirms these in implementation review:
 - no clock, I/O, environment, or logging. A C-level clock read cannot be intercepted;
-- the module does not import `operational_store`.
+- the module does not import `operational_store`;
+- no failure's traceback keeps input inside an object the suite's walker cannot open, such as an itertools iterator or another C-level object (see "Failures" above).
 
 Left to other units:
 - choosing eligible records, extracting observations, converting instants, and attributing local dates: `derive-heart-rate-summary` and `derive-weight-series` (Decisions 9 and 10);

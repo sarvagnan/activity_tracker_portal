@@ -9,7 +9,9 @@ and origins prove that failures, tracebacks, and reprs carry no input.
 from __future__ import annotations
 
 import collections
+import collections.abc
 import dataclasses
+import functools
 import itertools
 import json
 import math
@@ -23,6 +25,7 @@ import time
 import traceback
 import types
 import unittest
+import weakref
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from fractions import Fraction
@@ -318,22 +321,77 @@ def failure_cases() -> list[tuple[str, object]]:
     ]
 
 
+def referents(value) -> list:
+    """The objects `value` holds, for the kinds of holder the walker can open (R12).
+
+    Containers, dict views, dataclasses, objects with a `__dict__` or `__slots__`, exceptions (their arguments,
+    context, cause, and traceback), tracebacks and frames (their locals), generators and coroutines (their frame's
+    locals), functions (defaults, keyword defaults, and closure cells), cells, bound methods (`__self__` and
+    `__func__`), built-in bound methods and method wrappers (`__self__`), `functools.partial`, weak references, and
+    built-in iterators whose `__reduce__` names what they iterate. It cannot open itertools iterators, which lost
+    `__reduce__` in Python 3.14, or other C-level objects that expose nothing.
+    """
+    if value is None or isinstance(value, (str, bytes, int, float, complex, type, types.ModuleType)):
+        return []
+    if isinstance(value, dict):
+        return [*value.keys(), *value.values()]
+    if isinstance(value, (list, tuple, set, frozenset, collections.deque, collections.abc.KeysView,
+                          collections.abc.ValuesView, collections.abc.ItemsView)):
+        return list(value)
+    if isinstance(value, types.GeneratorType):
+        return [value.gi_frame]
+    if isinstance(value, types.CoroutineType):
+        return [value.cr_frame]
+    if isinstance(value, types.AsyncGeneratorType):
+        return [value.ag_frame]
+    if isinstance(value, types.FrameType):
+        return list(value.f_locals.values())
+    if isinstance(value, types.TracebackType):
+        return [value.tb_frame, value.tb_next]
+    if isinstance(value, types.FunctionType):
+        return [*(value.__defaults__ or ()), *(value.__kwdefaults__ or {}).values(), *(value.__closure__ or ())]
+    if isinstance(value, types.CellType):
+        try:
+            return [value.cell_contents]
+        except ValueError:
+            return []
+    if isinstance(value, types.MethodType):
+        return [value.__self__, value.__func__]
+    if isinstance(value, (types.BuiltinMethodType, types.MethodWrapperType)):
+        return [value.__self__]
+    if isinstance(value, functools.partial):
+        return [value.func, *value.args, *value.keywords.values()]
+    if isinstance(value, weakref.ref):
+        return [value()]
+    out = []
+    if isinstance(value, BaseException):
+        out += [*value.args, value.__cause__, value.__context__, value.__traceback__]
+    if dataclasses.is_dataclass(value):
+        out += [getattr(value, f.name) for f in dataclasses.fields(value)]
+    if isinstance(value, collections.abc.Iterator):
+        try:
+            reduced = value.__reduce__()
+        except Exception:
+            reduced = None
+        if isinstance(reduced, tuple):
+            out += list(reduced[1:])
+    if hasattr(value, "__dict__"):
+        out += list(vars(value).values())
+    for klass in type(value).__mro__:
+        slots = vars(klass).get("__slots__", ())
+        for name in ((slots,) if isinstance(slots, str) else slots):
+            out.append(getattr(value, name, None))
+    return out
+
+
 def held(value, forbidden: set[int], seen: set[int], depth: int = 0) -> bool:
-    """Whether `value` is, or contains, one of the forbidden objects."""
+    """Whether `value` is, or holds through the referents above, one of the forbidden objects."""
     if id(value) in forbidden:
         return True
-    if depth > 8 or id(value) in seen:
+    if depth > 16 or id(value) in seen:
         return False
     seen.add(id(value))
-    if isinstance(value, dict):
-        inner = list(value.keys()) + list(value.values())
-    elif isinstance(value, (list, tuple, set, frozenset, collections.deque)):
-        inner = list(value)
-    elif dataclasses.is_dataclass(value) and not isinstance(value, type):
-        inner = [getattr(value, f.name) for f in dataclasses.fields(value)]
-    else:
-        return False
-    return any(held(item, forbidden, seen, depth + 1) for item in inner)
+    return any(held(item, forbidden, seen, depth + 1) for item in referents(value))
 
 
 def input_objects(argument) -> set[int]:
@@ -451,8 +509,8 @@ class R1GovernedScopeContract(unittest.TestCase):
                          {item["scope"] for item in CONTRACT["dependencies"]})
         self.assertIn("Duplicate Group", row)
         self.assertIn("unresolved tie", row)
-        # Decision 4: a group may span origins; the row does not limit it to cross-origin duplicates.
-        self.assertNotIn("cross-origin", row.lower())
+        # Decision 4: a group may come from any origins.
+        self.assertIn("from any origins", row)
 
 
 # ---- R2 ----
@@ -479,8 +537,12 @@ class R2PureDeterministicOrderIndependent(Checks):
                 rng.shuffle(shuffled)
                 self.assertEqual(shape(resolve(shuffled)), shape(expected))
             copies = [dataclasses.replace(item) for item in reversed(items)]
-            for given in (copies, tuple(items), iter(items), (item for item in items), frozenset(items)):
+            # A dict is an iterable of its keys.
+            keyed = {item: f"metadata-{k}" for k, item in enumerate(items)}
+            for given in (copies, tuple(items), iter(items), (item for item in items), frozenset(items), keyed):
                 self.assertEqual(shape(resolve(given)), shape(expected))
+        first, second = obs(1), obs(2, origin=ORIGIN_B)
+        self.assertEqual(len(self.resolved([first, second], given={first: "metadata-a", second: "metadata-b"}).groups), 1)
 
     def test_result_ignores_hash_seed_and_host_timezone(self) -> None:
         expected = scenario_text()
@@ -794,8 +856,9 @@ class R4InputValidation(Checks):
                 self.refused([element])
                 self.refused([good, element])
                 self.refused([element, good])
-        # An argument that is not an iterable of observations (settles).
-        for argument in (None, 72, good, "observations", b"observations"):
+        # An argument that is not an iterable of observations (settles). A dict yields its keys.
+        for argument in (None, 72, good, "observations", b"observations", {123: good}, {"metadata": good},
+                         {good: "metadata", 123: obs(2)}):
             with self.subTest(argument=type(argument).__name__):
                 self.refused(argument)
 
