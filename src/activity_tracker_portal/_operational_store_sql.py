@@ -326,6 +326,7 @@ CREATE INDEX known_origin_cover ON source_records (record_type, source_system_ki
 
 
 _SUMMARY_SQL = """
+CREATE INDEX summary_retraction_identity ON source_records (record_type, source_identity, record_id);
 CREATE TABLE processor_generations (
     generation_id INTEGER PRIMARY KEY,
     manifest_sha256 TEXT NOT NULL UNIQUE,

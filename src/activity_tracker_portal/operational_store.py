@@ -12,6 +12,8 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from functools import wraps
+from inspect import signature
 import hashlib
 import json
 import os
@@ -20,7 +22,7 @@ from os import PathLike
 import shutil
 import sqlite3
 import time
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from ._operational_store_sql import (
     _BASELINE_SQL, _POLICY_SQL, _PROCESSING_SQL, _SOURCE_INDEX_SQL, _SUMMARY_SQL,
@@ -1516,6 +1518,54 @@ WITH typed_batches AS MATERIALIZED (
 """
 
 
+def _summary_failure_boundary(operation: Callable[..., Any]) -> Callable[..., Any]:
+    """Expose only health-data-free failures from the seventeen @6 operations.
+
+    Like summary-contract's boundary, replace the internal traceback and raise
+    inside the replacement's own handler: even an active caller exception must
+    not become reachable as context. Argument binding stays outside the handler.
+    """
+    parameters = signature(operation)
+
+    @wraps(operation)
+    def checked(*args: Any, **kwargs: Any) -> Any:
+        parameters.bind(*args, **kwargs)
+        try:
+            return operation(*args, **kwargs)
+        except (StoreRefusal, StoreRetryable) as exc:
+            failure_type = StoreRefusal if isinstance(exc, StoreRefusal) else StoreRetryable
+            failure = exc.failure if type(exc.failure) is str and exc.failure in FAILURES else "store-database-error"
+        except sqlite3.Error as exc:
+            failure_type = type(exc) if type(exc).__module__ == "sqlite3" else sqlite3.DatabaseError
+            failure = "store-database-error"
+        except OSError:
+            failure_type = OSError
+            failure = "store-capacity-unavailable"
+        except Exception:
+            failure_type = RuntimeError
+            failure = "store-database-error"
+        # No input-bearing operation, helper or SQL frame survives. The wrapper
+        # itself must also drop all inputs before a locals-capturing formatter.
+        del args, kwargs
+        try:
+            raise failure_type(failure)
+        except Exception as exc:
+            exc.__context__ = None
+            exc.__cause__ = None
+            raise
+
+    return checked
+
+
+def _summary_chunks(
+    connection: sqlite3.Connection, values: Sequence[Any], width: int = 1, reserved: int = 0,
+) -> Iterator[Sequence[Any]]:
+    """Bound bulk SQL by both the runtime parameter ceiling and a modest batch."""
+    size = max(1, min(1000, (connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER) - reserved) // width))
+    for start in range(0, len(values), size):
+        yield values[start:start + size]
+
+
 def _summary_integer(value: object, minimum: int = 0) -> bool:
     return type(value) is int and minimum <= value <= 2**63 - 1
 
@@ -1646,11 +1696,11 @@ def _validate_evidence_acknowledgement(connection: sqlite3.Connection, ack: Evid
     if not (old.outcomes_through <= ack.outcomes_through <= maxima[0]
             and old.selections_through <= ack.selections_through <= maxima[1]):
         raise StoreRefusal("summary-request-invalid")
-    if ack.failed_jobs:
-        values = ",".join("(?)" for _ in ack.failed_jobs)
+    for chunk in _summary_chunks(connection, ack.failed_jobs):
+        values = ",".join("(?)" for _ in chunk)
         invalid = _execute(connection, "WITH requested(job_id) AS (VALUES " + values + ") "
                            "SELECT 1 FROM requested r LEFT JOIN processing_jobs j USING (job_id) "
-                           "WHERE j.job_id IS NULL OR j.state != 'failed' LIMIT 1", ack.failed_jobs).fetchone()
+                           "WHERE j.job_id IS NULL OR j.state != 'failed' LIMIT 1", chunk).fetchone()
         if invalid is not None:
             raise StoreRefusal("summary-request-invalid")
 
@@ -1677,7 +1727,6 @@ def _validate_summary_watermark(
     if not isinstance(watermark, tuple) or not watermark:
         raise StoreRefusal("summary-watermark-invalid")
     previous = None
-    parameters: list[object] = []
     normalized = []
     for position in watermark:
         if (not isinstance(position, ProcessedPosition) or not isinstance(position.installation_id, str)
@@ -1688,23 +1737,25 @@ def _validate_summary_watermark(
             raise StoreRefusal("summary-watermark-invalid")
         previous = position.installation_id
         receipt, processed = _timestamp(position.receipt_time), _timestamp(position.processed_at)
-        parameters.extend((position.installation_id, position.sequence, receipt, processed))
         normalized.append(ProcessedPosition(position.installation_id, position.sequence, _datetime(receipt), _datetime(processed)))
-    # Validate every requested position in one query; an earlier archived sequence
-    # uses its own receipt and the settlement times through that earlier prefix.
-    values = ",".join("(?, ?, ?, ?)" for _ in watermark)
-    invalid = _execute(connection, _PROCESSED_PREFIX_SQL +
-        ", requested(installation_id, sequence, receipt_time, processed_at) AS (VALUES " + values + ") "
-        "SELECT 1 FROM requested r LEFT JOIN positions p USING (installation_id) "
-        "LEFT JOIN archived_messages m ON m.installation_id = r.installation_id AND m.sequence = r.sequence "
-        "WHERE p.sequence IS NULL OR r.sequence > p.sequence OR m.sequence IS NULL "
-        "OR r.receipt_time != m.receipt_time OR r.processed_at != max(m.receipt_time, coalesce("
-        "(SELECT max(i.settled_at) FROM item_times i WHERE i.installation_id = r.installation_id "
-        "AND i.sequence <= r.sequence), m.receipt_time)) LIMIT 1",
-        _processed_parameters(record_type, processor_version) + tuple(parameters),
-    ).fetchone()
-    if invalid is not None:
-        raise StoreRefusal("summary-watermark-invalid")
+    # An earlier archived sequence uses its own receipt and the settlement times
+    # through that earlier prefix. Each bounded query sees the same transaction.
+    for chunk in _summary_chunks(connection, normalized, width=4, reserved=6):
+        values = ",".join("(?, ?, ?, ?)" for _ in chunk)
+        parameters = tuple(value for position in chunk for value in (
+            position.installation_id, position.sequence, _timestamp(position.receipt_time), _timestamp(position.processed_at)))
+        invalid = _execute(connection, _PROCESSED_PREFIX_SQL +
+            ", requested(installation_id, sequence, receipt_time, processed_at) AS (VALUES " + values + ") "
+            "SELECT 1 FROM requested r LEFT JOIN positions p USING (installation_id) "
+            "LEFT JOIN archived_messages m ON m.installation_id = r.installation_id AND m.sequence = r.sequence "
+            "WHERE p.sequence IS NULL OR r.sequence > p.sequence OR m.sequence IS NULL "
+            "OR r.receipt_time != m.receipt_time OR r.processed_at != max(m.receipt_time, coalesce("
+            "(SELECT max(i.settled_at) FROM item_times i WHERE i.installation_id = r.installation_id "
+            "AND i.sequence <= r.sequence), m.receipt_time)) LIMIT 1",
+            _processed_parameters(record_type, processor_version) + parameters,
+        ).fetchone()
+        if invalid is not None:
+            raise StoreRefusal("summary-watermark-invalid")
     return tuple(normalized)
 
 
@@ -1732,14 +1783,14 @@ def _validate_summary_entry(
     if (not isinstance(entry.contributors, tuple) or any(not _summary_integer(o, 1) for o in entry.contributors)
             or tuple(sorted(set(entry.contributors))) != entry.contributors):
         raise StoreRefusal("summary-contributor-invalid")
-    if entry.contributors:
-        values = ",".join("(?)" for _ in entry.contributors)
+    for chunk in _summary_chunks(connection, entry.contributors, reserved=4):
+        values = ",".join("(?)" for _ in chunk)
         invalid = _execute(connection, "WITH requested(outcome_id) AS (VALUES " + values + ") "
             "SELECT 1 FROM requested q LEFT JOIN processing_outcomes o USING (outcome_id) "
             "LEFT JOIN source_records r USING (record_id) LEFT JOIN canonical_revisions c USING (outcome_id) "
             "WHERE c.outcome_id IS NULL OR o.kind != 'revision' OR r.record_type != ? OR o.processor_version != ? "
             "OR c.start_local_date > ? OR coalesce(c.end_local_date, c.start_local_date) < ? LIMIT 1",
-            entry.contributors + (job["record_type"], version, job["local_date"], job["local_date"]),
+            tuple(chunk) + (job["record_type"], version, job["local_date"], job["local_date"]),
         ).fetchone()
         if invalid is not None:
             raise StoreRefusal("summary-contributor-invalid")
@@ -2216,35 +2267,41 @@ class StoreView:
             () if record_type is None else (record_type,),
         ))
 
+    @_summary_failure_boundary
     def processor_generation(self, generation_id: int) -> ProcessorGeneration | None:
         row = None if not _summary_integer(generation_id, 1) else _execute(
             self._connection, "SELECT * FROM processor_generations WHERE generation_id = ?", (generation_id,),
         ).fetchone()
         return None if row is None else _processor_generation(self._connection, row)
 
+    @_summary_failure_boundary
     def processor_generations(self) -> tuple[ProcessorGeneration, ...]:
         return tuple(_processor_generation(self._connection, row) for row in _execute(
             self._connection, "SELECT * FROM processor_generations ORDER BY generation_id",
         ))
 
+    @_summary_failure_boundary
     def summary_refresh_job(self, job_id: int) -> SummaryRefreshJob | None:
         row = None if not _summary_integer(job_id, 1) else _execute(
             self._connection, _REFRESH_JOB_SELECT + "WHERE j.job_id = ?", (job_id,),
         ).fetchone()
         return None if row is None else _refresh_job(self._connection, row)
 
+    @_summary_failure_boundary
     def summary_refresh_jobs(self, key: SummaryKey) -> tuple[SummaryRefreshJob, ...]:
         return tuple(_refresh_job(self._connection, row) for row in _execute(
             self._connection, _REFRESH_JOB_SELECT + "WHERE " + _SUMMARY_KEY_WHERE + " ORDER BY j.job_id",
             _summary_key_parameters(key),
         ))
 
+    @_summary_failure_boundary
     def summaries(self, key: SummaryKey) -> tuple[StoredSummary, ...]:
         return tuple(_stored_summary(self._connection, row) for row in _execute(
             self._connection, _SUMMARY_SELECT + "WHERE " + _SUMMARY_KEY_WHERE + " ORDER BY s.summary_id",
             _summary_key_parameters(key),
         ))
 
+    @_summary_failure_boundary
     def latest_summary(self, key: SummaryKey, target: SummaryTarget) -> StoredSummary | None:
         parameters = _summary_key_parameters(key)
         if (not isinstance(target, SummaryTarget) or type(target.generation_id) is not int or target.generation_id < 1
@@ -2257,9 +2314,11 @@ class StoreView:
                        parameters + (target.generation_id, target.policy_horizon)).fetchone()
         return None if row is None else _stored_summary(self._connection, row)
 
+    @_summary_failure_boundary
     def policies_awaiting_refresh(self) -> tuple[int, ...]:
         return tuple(row[0] for row in _execute(self._connection, _AWAITING_REFRESH_SQL + " ORDER BY p.policy_id"))
 
+    @_summary_failure_boundary
     def evidence_changes(self, limit: int) -> EvidenceChanges:
         _summary_bound(limit, 2**63 - 1)
         bookmark = _evidence_bookmark(self._connection)
@@ -2270,6 +2329,7 @@ class StoreView:
         ))
         return EvidenceChanges(bookmark, changes)
 
+    @_summary_failure_boundary
     def processed_positions(self, record_type: str, processor_version: str) -> tuple[ProcessedPosition, ...]:
         if not isinstance(record_type, str) or not record_type:
             raise StoreRefusal("summary-request-invalid")
@@ -2280,6 +2340,7 @@ class StoreView:
             _processed_parameters(record_type, processor_version),
         ))
 
+    @_summary_failure_boundary
     def summary_evidence(
         self, measure: str, record_type: str, first_date: date, last_date: date, target: SummaryTarget,
         after: int, limit: int,
@@ -2317,15 +2378,15 @@ class StoreView:
         # that is both the current outcome and the last Canonical Revision.
         identities = tuple(sorted({row[name] for row in page for name in ("outcome_id", "revision_id")
                                    if row[name] is not None}))
-        outcomes = {} if not identities else {
-            row["outcome_id"]: _summary_evidence_outcome(row) for row in _execute(
+        outcomes = {}
+        for chunk in _summary_chunks(self._connection, identities):
+            outcomes.update((row["outcome_id"], _summary_evidence_outcome(row)) for row in _execute(
                 self._connection, "SELECT o.*, c.header_bytes, c.body_bytes, c.body_version, c.start_epoch_ns, "
                 "c.end_epoch_ns, c.start_local_date, c.end_local_date, c.start_attribution, c.end_attribution, "
                 "c.header_sha256, c.body_sha256 FROM processing_outcomes o "
                 "LEFT JOIN canonical_revisions c USING (outcome_id) WHERE o.outcome_id IN (" +
-                ",".join("?" for _ in identities) + ")", identities,
-            )
-        }
+                ",".join("?" for _ in chunk) + ")", chunk,
+            ))
         items = tuple(SummaryEvidenceItem(
             row["record_id"], row["source_system_kind"], row["origin"], row["selection_id"], row["selection_kind"],
             outcomes.get(row["outcome_id"]), bool(row["job_failed"]), outcomes[row["revision_id"]],
@@ -2336,6 +2397,7 @@ class StoreView:
         ))
         return SummaryEvidence(items, policies, page[-1]["record_id"] if len(rows) > limit else None)
 
+    @_summary_failure_boundary
     def refresh_counts(self, at: datetime) -> RefreshCounts:
         timestamp = _timestamp(at)
         bookmark = _evidence_bookmark(self._connection)
@@ -3159,6 +3221,7 @@ class OperationalStore:
             assert isinstance(policy, SourceSelectionPolicyRecord)
             return policy
 
+    @_summary_failure_boundary
     def register_processor_generation(self, manifest: Mapping[str, str], at: datetime) -> ProcessorGeneration:
         timestamp = _timestamp(at)
         if (not isinstance(manifest, Mapping) or not manifest
@@ -3192,6 +3255,7 @@ class OperationalStore:
                          (generation_id, record_type, version))
             return ProcessorGeneration(generation_id, pairs, digest, _datetime(timestamp))
 
+    @_summary_failure_boundary
     def request_summary_refresh(
         self, keys: tuple[SummaryKey, ...], target: SummaryTarget, max_attempts: int, at: datetime, *,
         policy_id: int | None = None, acknowledge: EvidenceAcknowledgement | None = None,
@@ -3244,6 +3308,7 @@ class OperationalStore:
                              "ON CONFLICT DO NOTHING", (job_id,))
             return RefreshRequest(*counts)
 
+    @_summary_failure_boundary
     def claim_summary_refresh(self, owner: str, lease_seconds: int, at: datetime) -> RefreshLease | None:
         timestamp = _timestamp(at)
         _summary_bound(lease_seconds, 86_400)
@@ -3281,6 +3346,7 @@ class OperationalStore:
                     (job["job_id"], fence, owner, job["token"], timestamp, expiry))
                 return _refresh_lease(self._connection, _held_refresh_job(self._connection, job["job_id"], fence))
 
+    @_summary_failure_boundary
     def renew_summary_refresh_lease(self, job_id: int, fence: int, lease_seconds: int, at: datetime) -> RefreshLease:
         _timestamp(at)
         _summary_bound(lease_seconds, 86_400)
@@ -3292,6 +3358,7 @@ class OperationalStore:
                      (expiry, job_id))
             return _refresh_lease(self._connection, _held_refresh_job(self._connection, job_id, fence))
 
+    @_summary_failure_boundary
     def complete_summary_refresh(self, job_id: int, fence: int, entry: SummaryEntry, at: datetime) -> RefreshCompletion:
         timestamp = _timestamp(at)
         with _transaction(self._connection):
@@ -3334,6 +3401,7 @@ class OperationalStore:
             _close_refresh_job(self._connection, job_id, "completed", timestamp)
             return RefreshCompletion(summary, False)
 
+    @_summary_failure_boundary
     def fail_summary_refresh(
         self, job_id: int, fence: int, kind: FailureKind, reason: str, retry_at: datetime | None, at: datetime
     ) -> SummaryRefreshJob:
